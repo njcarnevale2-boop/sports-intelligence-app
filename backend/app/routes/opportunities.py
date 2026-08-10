@@ -3,10 +3,14 @@ from pathlib import Path
 import pandas as pd
 from fastapi import APIRouter, HTTPException
 
-router = APIRouter(prefix="/api/opportunities", tags=["opportunities"])
+router = APIRouter(prefix="/api", tags=["sports-intelligence"])
 
 MODEL_ROOT = Path.home() / "Downloads" / "NFL_Analytics_OS_v1_9"
+
 RANKED_BET_BOARD = MODEL_ROOT / "outputs" / "ranked_bet_board.csv"
+PORTFOLIO_RECOMMENDATIONS = (
+    MODEL_ROOT / "outputs" / "portfolio_recommendations.csv"
+)
 
 
 def format_pick(row):
@@ -60,7 +64,7 @@ def row_to_opportunity(row):
     }
 
 
-@router.get("")
+@router.get("/opportunities")
 def get_opportunities(limit: int = 10):
     df = pd.read_csv(RANKED_BET_BOARD)
 
@@ -78,7 +82,7 @@ def get_opportunities(limit: int = 10):
     }
 
 
-@router.get("/{opportunity_id}")
+@router.get("/opportunities/{opportunity_id}")
 def get_opportunity(opportunity_id: str):
     df = pd.read_csv(RANKED_BET_BOARD)
 
@@ -98,3 +102,100 @@ def get_opportunity(opportunity_id: str):
     row = match.iloc[0]
 
     return row_to_opportunity(row)
+
+
+@router.get("/portfolio")
+def get_portfolio():
+    df = pd.read_csv(PORTFOLIO_RECOMMENDATIONS)
+
+    portfolio = []
+
+    for index, row in df.iterrows():
+        portfolio.append(
+            {
+                "id": f'{row["api_event_id"]}-portfolio-{index + 1}',
+                "eventId": row["api_event_id"],
+                "commenceTime": row["commence_time"],
+                "matchup": f'{row["away_team"]} @ {row["home_team"]}',
+                "awayTeam": row["away_team"],
+                "homeTeam": row["home_team"],
+                "pick": format_pick(row),
+                "book": row["sportsbook"],
+                "market": row["market"],
+                "side": row["side"],
+                "point": float(row["point"]),
+                "price": float(row["price"]),
+                "modelProbability": round(
+                    float(row["model_prob"]) * 100,
+                    1,
+                ),
+                "impliedProbability": round(
+                    float(row["implied_prob_raw"]) * 100,
+                    1,
+                ),
+                "fairOdds": round(float(row["fair_odds"])),
+                "edge": round(float(row["edge_pp"]) * 100, 1),
+                "evPerDollar": round(
+                    float(row["ev_per_dollar"]),
+                    3,
+                ),
+                "kellyFull": round(
+                    float(row["kelly_full"]),
+                    3,
+                ),
+                "kelly20": round(
+                    float(row["kelly_20pct"]),
+                    3,
+                ),
+                "recommendation": row["recommendation"],
+                "rawUnits": float(row["raw_units"]),
+                "recommendedUnits": float(
+                    row["recommended_units"]
+                ),
+            }
+        )
+
+    total_units = sum(
+        item["recommendedUnits"]
+        for item in portfolio
+    )
+
+    average_edge = (
+        sum(item["edge"] for item in portfolio)
+        / len(portfolio)
+        if portfolio
+        else 0
+    )
+
+    average_model_probability = (
+        sum(
+            item["modelProbability"]
+            for item in portfolio
+        )
+        / len(portfolio)
+        if portfolio
+        else 0
+    )
+
+    expected_value_units = sum(
+        item["recommendedUnits"] * item["evPerDollar"]
+        for item in portfolio
+    )
+
+    return {
+        "count": len(portfolio),
+        "source": str(PORTFOLIO_RECOMMENDATIONS),
+        "summary": {
+            "totalRecommendedUnits": round(total_units, 2),
+            "averageEdge": round(average_edge, 1),
+            "averageModelProbability": round(
+                average_model_probability,
+                1,
+            ),
+            "expectedValueUnits": round(
+                expected_value_units,
+                3,
+            ),
+        },
+        "portfolio": portfolio,
+    }
