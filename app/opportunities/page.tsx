@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
@@ -65,21 +66,42 @@ export default function OpportunitiesPage() {
     loadOpportunities();
   }, []);
 
+  useEffect(() => {
+    const saved = localStorage.getItem("sports-intelligence-card");
+
+    if (!saved) return;
+
+    try {
+      const card: Opportunity[] = JSON.parse(saved);
+      setAdded(card.map((item) => item.id));
+    } catch (err) {
+      console.error("Unable to read saved card:", err);
+    }
+  }, []);
+
   function addToCard(opportunity: Opportunity) {
     const existing = localStorage.getItem("sports-intelligence-card");
 
-    const currentCard: Opportunity[] = existing
-      ? JSON.parse(existing)
-      : [];
+    let currentCard: Opportunity[] = [];
+
+    if (existing) {
+      try {
+        currentCard = JSON.parse(existing);
+      } catch {
+        currentCard = [];
+      }
+    }
 
     const alreadyExists = currentCard.some(
       (bet) => bet.id === opportunity.id
     );
 
     if (!alreadyExists) {
+      const updatedCard = [...currentCard, opportunity];
+
       localStorage.setItem(
         "sports-intelligence-card",
-        JSON.stringify([...currentCard, opportunity])
+        JSON.stringify(updatedCard)
       );
     }
 
@@ -136,18 +158,17 @@ export default function OpportunitiesPage() {
             </h1>
 
             <p className="mt-5 max-w-2xl text-base leading-7 text-zinc-500">
-              Ranked directly from NFL Analytics OS v1.9 using model probability,
-              market implied probability, EV, confidence, and Kelly sizing.
+              Ranked directly from NFL Analytics OS v1.9 using model
+              probability, market implied probability, EV, confidence, and
+              Kelly sizing.
             </p>
           </div>
 
-          <Link href="/my-card">
-            <Button
-              variant="outline"
-              className="border-white/10 bg-transparent text-white hover:bg-white/[0.05]"
-            >
-              View My Card →
-            </Button>
+          <Link
+            href="/my-card"
+            className="flex h-11 items-center justify-center rounded-lg border border-white/10 bg-transparent px-5 text-sm font-medium text-white transition hover:bg-white/[0.05]"
+          >
+            View My Card →
           </Link>
         </div>
 
@@ -216,7 +237,8 @@ export default function OpportunitiesPage() {
                     </h2>
 
                     <p className="mt-1 text-sm text-zinc-600">
-                      {opportunity.book} • {opportunity.price > 0 ? "+" : ""}
+                      {opportunity.book} •{" "}
+                      {opportunity.price > 0 ? "+" : ""}
                       {opportunity.price}
                     </p>
 
@@ -225,8 +247,9 @@ export default function OpportunitiesPage() {
                         <p className="text-[10px] uppercase tracking-wider text-zinc-700">
                           Model Prob
                         </p>
+
                         <p className="mt-2 font-semibold">
-                          {opportunity.modelProbability}%
+                          {opportunity.modelProbability.toFixed(1)}%
                         </p>
                       </div>
 
@@ -234,8 +257,9 @@ export default function OpportunitiesPage() {
                         <p className="text-[10px] uppercase tracking-wider text-zinc-700">
                           Market Implied
                         </p>
+
                         <p className="mt-2 font-semibold">
-                          {opportunity.impliedProbability}%
+                          {opportunity.impliedProbability.toFixed(1)}%
                         </p>
                       </div>
 
@@ -243,6 +267,7 @@ export default function OpportunitiesPage() {
                         <p className="text-[10px] uppercase tracking-wider text-zinc-700">
                           EV / $1
                         </p>
+
                         <p className="mt-2 font-semibold">
                           ${opportunity.evPerDollar.toFixed(3)}
                         </p>
@@ -264,7 +289,7 @@ export default function OpportunitiesPage() {
 
                       <div className="rounded-2xl border border-white/[0.07] bg-black/10 p-5">
                         <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
-                          Edge
+                          Model Edge
                         </p>
 
                         <p className="mt-2 text-2xl font-semibold text-emerald-400">
@@ -294,35 +319,31 @@ export default function OpportunitiesPage() {
                     </div>
 
                     <div className="mt-3 grid gap-3">
-                      <Link href={`/opportunities/${opportunity.id}`}>
-                        <Button
-                          variant="outline"
-                          className="h-11 w-full border-white/10 bg-transparent text-white hover:bg-white/[0.05]"
-                        >
-                          View Full Analysis →
-                        </Button>
-                      </Link>
+                   <a
+  href={`/opportunities/${opportunity.id}`}
+  className="flex h-11 w-full items-center justify-center rounded-lg border border-white/10 bg-transparent px-5 text-sm font-medium text-white transition hover:bg-white/[0.05]"
+>
+  View Full Analysis →
+</a>
 
                       <Button
                         onClick={() => addToCard(opportunity)}
                         disabled={isAdded}
                         className={
                           isAdded
-                            ? "h-11 bg-emerald-400/10 text-emerald-300"
-                            : "h-11 bg-white text-black hover:bg-zinc-200"
+                            ? "h-11 w-full bg-emerald-400/10 text-emerald-300"
+                            : "h-11 w-full bg-white text-black hover:bg-zinc-200"
                         }
                       >
                         {isAdded ? "Added ✓" : "Add to My Card"}
                       </Button>
 
                       {isAdded && (
-                        <Link href="/my-card">
-                          <Button
-                            variant="outline"
-                            className="h-11 w-full border-white/10 bg-transparent text-white hover:bg-white/[0.05]"
-                          >
-                            View My Card →
-                          </Button>
+                        <Link
+                          href="/my-card"
+                          className="flex h-11 w-full items-center justify-center rounded-lg border border-white/10 bg-transparent px-5 text-sm font-medium text-white transition hover:bg-white/[0.05]"
+                        >
+                          View My Card →
                         </Link>
                       )}
                     </div>
