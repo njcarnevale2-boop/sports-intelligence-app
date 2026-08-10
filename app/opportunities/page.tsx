@@ -1,16 +1,69 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  opportunities,
-  type Opportunity,
-} from "@/data/opportunities";
+
+type Opportunity = {
+  id: string;
+  eventId: string;
+  commenceTime: string;
+  matchup: string;
+  pick: string;
+  book: string;
+  market: string;
+  side: string;
+  point: number;
+  price: number;
+  modelProbability: number;
+  impliedProbability: number;
+  fairOdds: number;
+  edge: number;
+  evPerDollar: number;
+  kellyFull: number;
+  kelly20: number;
+  recommendation: string;
+  confidence: number;
+  rank: number;
+};
+
+type ApiResponse = {
+  count: number;
+  source: string;
+  opportunities: Opportunity[];
+};
 
 export default function OpportunitiesPage() {
+  const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
   const [added, setAdded] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    async function loadOpportunities() {
+      try {
+        const response = await fetch(
+          "http://localhost:8000/api/opportunities?limit=10"
+        );
+
+        if (!response.ok) {
+          throw new Error("Failed to load opportunities");
+        }
+
+        const data: ApiResponse = await response.json();
+
+        setOpportunities(data.opportunities);
+      } catch (err) {
+        console.error(err);
+        setError("Unable to load model opportunities.");
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    loadOpportunities();
+  }, []);
 
   function addToCard(opportunity: Opportunity) {
     const existing = localStorage.getItem("sports-intelligence-card");
@@ -37,13 +90,45 @@ export default function OpportunitiesPage() {
     );
   }
 
+  if (loading) {
+    return (
+      <main className="min-h-screen bg-[#070A0F] text-white">
+        <div className="mx-auto max-w-6xl px-6 py-16 lg:px-10">
+          <p className="text-sm text-zinc-500">
+            Loading model opportunities...
+          </p>
+        </div>
+      </main>
+    );
+  }
+
+  if (error) {
+    return (
+      <main className="min-h-screen bg-[#070A0F] text-white">
+        <div className="mx-auto max-w-6xl px-6 py-16 lg:px-10">
+          <p className="text-red-400">{error}</p>
+        </div>
+      </main>
+    );
+  }
+
+  const strongestEdge =
+    opportunities.length > 0
+      ? Math.max(...opportunities.map((item) => item.edge))
+      : 0;
+
+  const highestConfidence =
+    opportunities.length > 0
+      ? Math.max(...opportunities.map((item) => item.confidence))
+      : 0;
+
   return (
     <main className="min-h-screen bg-[#070A0F] text-white">
       <div className="mx-auto max-w-6xl px-6 py-10 lg:px-10">
         <div className="flex flex-col gap-6 md:flex-row md:items-end md:justify-between">
           <div>
             <p className="text-xs font-medium uppercase tracking-[0.2em] text-zinc-600">
-              Opportunity Intelligence
+              Live Model Opportunities
             </p>
 
             <h1 className="mt-3 text-4xl font-semibold tracking-[-0.03em] md:text-6xl">
@@ -51,8 +136,8 @@ export default function OpportunitiesPage() {
             </h1>
 
             <p className="mt-5 max-w-2xl text-base leading-7 text-zinc-500">
-              Opportunities are ranked using model edge, confidence, injuries,
-              market movement, weather, and decision risk.
+              Ranked directly from NFL Analytics OS v1.9 using model probability,
+              market implied probability, EV, confidence, and Kelly sizing.
             </p>
           </div>
 
@@ -71,6 +156,7 @@ export default function OpportunitiesPage() {
             <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
               Opportunities
             </p>
+
             <p className="mt-1 text-xl font-semibold">
               {opportunities.length}
             </p>
@@ -80,8 +166,9 @@ export default function OpportunitiesPage() {
             <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
               Strongest Edge
             </p>
+
             <p className="mt-1 text-xl font-semibold text-emerald-400">
-              {opportunities[0]?.edge ?? "—"}
+              +{strongestEdge.toFixed(1)}%
             </p>
           </div>
 
@@ -89,14 +176,15 @@ export default function OpportunitiesPage() {
             <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
               Highest Confidence
             </p>
+
             <p className="mt-1 text-xl font-semibold">
-              {Math.max(...opportunities.map((item) => item.confidence))}
+              {highestConfidence}
             </p>
           </div>
         </div>
 
         <section className="mt-8 space-y-5">
-          {opportunities.map((opportunity, index) => {
+          {opportunities.map((opportunity) => {
             const isAdded = added.includes(opportunity.id);
 
             return (
@@ -108,14 +196,14 @@ export default function OpportunitiesPage() {
                   <div className="max-w-2xl">
                     <div className="flex items-center gap-3">
                       <span className="text-xs text-zinc-700">
-                        0{index + 1}
+                        #{opportunity.rank}
                       </span>
 
                       <Badge
                         variant="outline"
                         className="border-emerald-400/20 bg-emerald-400/[0.05] text-emerald-400"
                       >
-                        {opportunity.status}
+                        {opportunity.recommendation}
                       </Badge>
                     </div>
 
@@ -128,12 +216,38 @@ export default function OpportunitiesPage() {
                     </h2>
 
                     <p className="mt-1 text-sm text-zinc-600">
-                      Best available at {opportunity.book}
+                      {opportunity.book} • {opportunity.price > 0 ? "+" : ""}
+                      {opportunity.price}
                     </p>
 
-                    <p className="mt-5 text-sm leading-7 text-zinc-500">
-                      {opportunity.reason}
-                    </p>
+                    <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                      <div className="rounded-xl border border-white/[0.07] bg-black/10 p-4">
+                        <p className="text-[10px] uppercase tracking-wider text-zinc-700">
+                          Model Prob
+                        </p>
+                        <p className="mt-2 font-semibold">
+                          {opportunity.modelProbability}%
+                        </p>
+                      </div>
+
+                      <div className="rounded-xl border border-white/[0.07] bg-black/10 p-4">
+                        <p className="text-[10px] uppercase tracking-wider text-zinc-700">
+                          Market Implied
+                        </p>
+                        <p className="mt-2 font-semibold">
+                          {opportunity.impliedProbability}%
+                        </p>
+                      </div>
+
+                      <div className="rounded-xl border border-white/[0.07] bg-black/10 p-4">
+                        <p className="text-[10px] uppercase tracking-wider text-zinc-700">
+                          EV / $1
+                        </p>
+                        <p className="mt-2 font-semibold">
+                          ${opportunity.evPerDollar.toFixed(3)}
+                        </p>
+                      </div>
+                    </div>
                   </div>
 
                   <div className="min-w-[300px]">
@@ -150,11 +264,31 @@ export default function OpportunitiesPage() {
 
                       <div className="rounded-2xl border border-white/[0.07] bg-black/10 p-5">
                         <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
-                          Model Edge
+                          Edge
                         </p>
 
                         <p className="mt-2 text-2xl font-semibold text-emerald-400">
-                          {opportunity.edge}
+                          +{opportunity.edge.toFixed(1)}%
+                        </p>
+                      </div>
+
+                      <div className="rounded-2xl border border-white/[0.07] bg-black/10 p-5">
+                        <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
+                          Kelly 20%
+                        </p>
+
+                        <p className="mt-2 text-xl font-semibold">
+                          {(opportunity.kelly20 * 100).toFixed(1)}%
+                        </p>
+                      </div>
+
+                      <div className="rounded-2xl border border-white/[0.07] bg-black/10 p-5">
+                        <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
+                          Fair Odds
+                        </p>
+
+                        <p className="mt-2 text-xl font-semibold">
+                          {opportunity.fairOdds}
                         </p>
                       </div>
                     </div>
