@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 
 import { Badge } from "@/components/ui/badge";
@@ -35,17 +35,23 @@ type ApiResponse = {
   opportunities: Opportunity[];
 };
 
+type SortOption = "rank" | "edge" | "ev" | "confidence";
+
 export default function OpportunitiesPage() {
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
   const [added, setAdded] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
+  const [sortBy, setSortBy] = useState<SortOption>("rank");
+  const [sportsbookFilter, setSportsbookFilter] = useState("all");
+  const [marketFilter, setMarketFilter] = useState("all");
+
   useEffect(() => {
     async function loadOpportunities() {
       try {
         const response = await fetch(
-          "http://localhost:8000/api/opportunities?limit=10"
+          "http://localhost:8000/api/opportunities?limit=100"
         );
 
         if (!response.ok) {
@@ -53,7 +59,6 @@ export default function OpportunitiesPage() {
         }
 
         const data: ApiResponse = await response.json();
-
         setOpportunities(data.opportunities);
       } catch (err) {
         console.error(err);
@@ -112,6 +117,67 @@ export default function OpportunitiesPage() {
     );
   }
 
+  const sportsbooks = useMemo(() => {
+    return Array.from(
+      new Set(opportunities.map((item) => item.book))
+    ).sort();
+  }, [opportunities]);
+
+  const markets = useMemo(() => {
+    return Array.from(
+      new Set(opportunities.map((item) => item.market))
+    ).sort();
+  }, [opportunities]);
+
+  const filteredOpportunities = useMemo(() => {
+    const filtered = opportunities.filter((item) => {
+      const sportsbookMatch =
+        sportsbookFilter === "all" ||
+        item.book === sportsbookFilter;
+
+      const marketMatch =
+        marketFilter === "all" ||
+        item.market === marketFilter;
+
+      return sportsbookMatch && marketMatch;
+    });
+
+    return [...filtered].sort((a, b) => {
+      if (sortBy === "edge") {
+        return b.edge - a.edge;
+      }
+
+      if (sortBy === "ev") {
+        return b.evPerDollar - a.evPerDollar;
+      }
+
+      if (sortBy === "confidence") {
+        return b.confidence - a.confidence;
+      }
+
+      return a.rank - b.rank;
+    });
+  }, [
+    opportunities,
+    sportsbookFilter,
+    marketFilter,
+    sortBy,
+  ]);
+
+  const strongestEdge =
+    filteredOpportunities.length > 0
+      ? Math.max(...filteredOpportunities.map((item) => item.edge))
+      : 0;
+
+  const highestConfidence =
+    filteredOpportunities.length > 0
+      ? Math.max(
+          ...filteredOpportunities.map(
+            (item) => item.confidence
+          )
+        )
+      : 0;
+
   if (loading) {
     return (
       <main className="min-h-screen bg-[#070A0F] text-white">
@@ -134,16 +200,6 @@ export default function OpportunitiesPage() {
     );
   }
 
-  const strongestEdge =
-    opportunities.length > 0
-      ? Math.max(...opportunities.map((item) => item.edge))
-      : 0;
-
-  const highestConfidence =
-    opportunities.length > 0
-      ? Math.max(...opportunities.map((item) => item.confidence))
-      : 0;
-
   return (
     <main className="min-h-screen bg-[#070A0F] text-white">
       <div className="mx-auto max-w-6xl px-6 py-10 lg:px-10">
@@ -158,9 +214,8 @@ export default function OpportunitiesPage() {
             </h1>
 
             <p className="mt-5 max-w-2xl text-base leading-7 text-zinc-500">
-              Ranked directly from NFL Analytics OS v1.9 using model
-              probability, market implied probability, EV, confidence, and
-              Kelly sizing.
+              Filter and rank the live model board by edge, EV,
+              confidence, sportsbook, and market.
             </p>
           </div>
 
@@ -172,14 +227,108 @@ export default function OpportunitiesPage() {
           </Link>
         </div>
 
-        <div className="mt-10 flex flex-wrap items-center gap-8 border-y border-white/[0.07] py-5">
+        <section className="mt-8 rounded-3xl border border-white/[0.07] bg-[#0B1119] p-5">
+          <div className="grid gap-4 md:grid-cols-3">
+            <div>
+              <label className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
+                Sort By
+              </label>
+
+              <select
+                value={sortBy}
+                onChange={(event) =>
+                  setSortBy(event.target.value as SortOption)
+                }
+                className="mt-2 h-11 w-full rounded-xl border border-white/[0.08] bg-[#0D131C] px-4 text-sm text-white outline-none"
+              >
+                <option value="rank">Model Rank</option>
+                <option value="edge">Highest Edge</option>
+                <option value="ev">Highest EV</option>
+                <option value="confidence">
+                  Highest Confidence
+                </option>
+              </select>
+            </div>
+
+            <div>
+              <label className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
+                Sportsbook
+              </label>
+
+              <select
+                value={sportsbookFilter}
+                onChange={(event) =>
+                  setSportsbookFilter(event.target.value)
+                }
+                className="mt-2 h-11 w-full rounded-xl border border-white/[0.08] bg-[#0D131C] px-4 text-sm text-white outline-none"
+              >
+                <option value="all">All Sportsbooks</option>
+
+                {sportsbooks.map((book) => (
+                  <option key={book} value={book}>
+                    {book}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
+                Market
+              </label>
+
+              <select
+                value={marketFilter}
+                onChange={(event) =>
+                  setMarketFilter(event.target.value)
+                }
+                className="mt-2 h-11 w-full rounded-xl border border-white/[0.08] bg-[#0D131C] px-4 text-sm capitalize text-white outline-none"
+              >
+                <option value="all">All Markets</option>
+
+                {markets.map((market) => (
+                  <option key={market} value={market}>
+                    {market}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-white/[0.06] pt-4">
+            <p className="text-sm text-zinc-500">
+              Showing{" "}
+              <span className="font-medium text-zinc-200">
+                {filteredOpportunities.length}
+              </span>{" "}
+              of {opportunities.length} opportunities
+            </p>
+
+            {(sportsbookFilter !== "all" ||
+              marketFilter !== "all" ||
+              sortBy !== "rank") && (
+              <button
+                onClick={() => {
+                  setSortBy("rank");
+                  setSportsbookFilter("all");
+                  setMarketFilter("all");
+                }}
+                className="text-sm text-zinc-600 transition hover:text-white"
+              >
+                Reset filters
+              </button>
+            )}
+          </div>
+        </section>
+
+        <div className="mt-8 flex flex-wrap items-center gap-8 border-y border-white/[0.07] py-5">
           <div>
             <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
-              Opportunities
+              Results
             </p>
 
             <p className="mt-1 text-xl font-semibold">
-              {opportunities.length}
+              {filteredOpportunities.length}
             </p>
           </div>
 
@@ -205,7 +354,7 @@ export default function OpportunitiesPage() {
         </div>
 
         <section className="mt-8 space-y-5">
-          {opportunities.map((opportunity) => {
+          {filteredOpportunities.map((opportunity) => {
             const isAdded = added.includes(opportunity.id);
 
             return (
@@ -247,7 +396,6 @@ export default function OpportunitiesPage() {
                         <p className="text-[10px] uppercase tracking-wider text-zinc-700">
                           Model Prob
                         </p>
-
                         <p className="mt-2 font-semibold">
                           {opportunity.modelProbability.toFixed(1)}%
                         </p>
@@ -257,7 +405,6 @@ export default function OpportunitiesPage() {
                         <p className="text-[10px] uppercase tracking-wider text-zinc-700">
                           Market Implied
                         </p>
-
                         <p className="mt-2 font-semibold">
                           {opportunity.impliedProbability.toFixed(1)}%
                         </p>
@@ -267,9 +414,8 @@ export default function OpportunitiesPage() {
                         <p className="text-[10px] uppercase tracking-wider text-zinc-700">
                           EV / $1
                         </p>
-
                         <p className="mt-2 font-semibold">
-                          ${opportunity.evPerDollar.toFixed(3)}
+                          +${opportunity.evPerDollar.toFixed(3)}
                         </p>
                       </div>
                     </div>
@@ -281,7 +427,6 @@ export default function OpportunitiesPage() {
                         <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
                           Confidence
                         </p>
-
                         <p className="mt-2 text-2xl font-semibold">
                           {opportunity.confidence}
                         </p>
@@ -291,7 +436,6 @@ export default function OpportunitiesPage() {
                         <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
                           Model Edge
                         </p>
-
                         <p className="mt-2 text-2xl font-semibold text-emerald-400">
                           +{opportunity.edge.toFixed(1)}%
                         </p>
@@ -301,7 +445,6 @@ export default function OpportunitiesPage() {
                         <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
                           Kelly 20%
                         </p>
-
                         <p className="mt-2 text-xl font-semibold">
                           {(opportunity.kelly20 * 100).toFixed(1)}%
                         </p>
@@ -311,7 +454,6 @@ export default function OpportunitiesPage() {
                         <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
                           Fair Odds
                         </p>
-
                         <p className="mt-2 text-xl font-semibold">
                           {opportunity.fairOdds}
                         </p>
@@ -319,12 +461,12 @@ export default function OpportunitiesPage() {
                     </div>
 
                     <div className="mt-3 grid gap-3">
-                   <a
-  href={`/opportunities/${opportunity.id}`}
-  className="flex h-11 w-full items-center justify-center rounded-lg border border-white/10 bg-transparent px-5 text-sm font-medium text-white transition hover:bg-white/[0.05]"
->
-  View Full Analysis →
-</a>
+                      <a
+                        href={`/opportunities/${opportunity.id}`}
+                        className="flex h-11 w-full items-center justify-center rounded-lg border border-white/10 bg-transparent px-5 text-sm font-medium text-white transition hover:bg-white/[0.05]"
+                      >
+                        View Full Analysis →
+                      </a>
 
                       <Button
                         onClick={() => addToCard(opportunity)}
@@ -353,6 +495,29 @@ export default function OpportunitiesPage() {
             );
           })}
         </section>
+
+        {filteredOpportunities.length === 0 && (
+          <section className="mt-8 rounded-3xl border border-white/[0.08] bg-[#0D131C] p-8">
+            <h2 className="text-2xl font-semibold">
+              No opportunities match those filters.
+            </h2>
+
+            <p className="mt-3 text-sm text-zinc-500">
+              Reset the filters to return to the full model board.
+            </p>
+
+            <Button
+              onClick={() => {
+                setSortBy("rank");
+                setSportsbookFilter("all");
+                setMarketFilter("all");
+              }}
+              className="mt-6 bg-white text-black hover:bg-zinc-200"
+            >
+              Reset Filters
+            </Button>
+          </section>
+        )}
       </div>
     </main>
   );
