@@ -14,6 +14,7 @@ from app.services.injury_matchup import InjuryMatchupContext
 from app.services.executive_analyst import generate_executive_analysis
 from app.services.explainability import generate_explainability
 from app.services.weather import WeatherAnalyzer
+from app.services.market_data import market_data_service, select_best_line_row
 
 
 router = APIRouter(
@@ -148,6 +149,7 @@ def build_id(
 def row_to_opportunity(
     row,
     include_alternates=None,
+    market_snapshot=None,
 ):
     result = {
         "id": build_id(row),
@@ -293,6 +295,44 @@ def row_to_opportunity(
         "rank": int(
             row["rank"]
         ),
+        "marketProvider": (
+            market_snapshot.get("provider")
+            if market_snapshot
+            else None
+        ),
+        "marketLastUpdated": (
+            market_snapshot.get("lastUpdated")
+            if market_snapshot
+            else None
+        ),
+        "marketDataStatus": (
+            market_snapshot.get("dataStatus")
+            if market_snapshot
+            else "UNAVAILABLE"
+        ),
+        "booksTracked": (
+            market_snapshot.get("booksTracked")
+            if market_snapshot
+            else 0
+        ),
+        "bestLineComparison": {
+            "bestLine": {
+                "awaySpread": market_snapshot.get("bestAwaySpread") if market_snapshot else None,
+                "homeSpread": market_snapshot.get("bestHomeSpread") if market_snapshot else None,
+                "awayMoneyline": market_snapshot.get("bestAwayMoneyline") if market_snapshot else None,
+                "homeMoneyline": market_snapshot.get("bestHomeMoneyline") if market_snapshot else None,
+                "over": market_snapshot.get("bestOver") if market_snapshot else None,
+                "under": market_snapshot.get("bestUnder") if market_snapshot else None,
+            },
+            "bestPrice": {
+                "awaySpread": market_snapshot.get("bestPriceAwaySpread") if market_snapshot else None,
+                "homeSpread": market_snapshot.get("bestPriceHomeSpread") if market_snapshot else None,
+                "awayMoneyline": market_snapshot.get("bestPriceAwayMoneyline") if market_snapshot else None,
+                "homeMoneyline": market_snapshot.get("bestPriceHomeMoneyline") if market_snapshot else None,
+                "over": market_snapshot.get("bestPriceOver") if market_snapshot else None,
+                "under": market_snapshot.get("bestPriceUnder") if market_snapshot else None,
+            },
+        },
     }
 
     # -----------------------------------------------------
@@ -363,119 +403,7 @@ def row_to_opportunity(
 def best_line_for_group(
     group,
 ):
-    market = str(
-        group.iloc[0][
-            "market"
-        ]
-    )
-
-    side = str(
-        group.iloc[0][
-            "side"
-        ]
-    )
-
-    if market == "spread":
-        best_point = (
-            group[
-                "point"
-            ].max()
-        )
-
-        candidates = group[
-            group[
-                "point"
-            ]
-            == best_point
-        ]
-
-        best_price = (
-            candidates[
-                "price"
-            ].max()
-        )
-
-        return candidates[
-            candidates[
-                "price"
-            ]
-            == best_price
-        ].iloc[0]
-
-    if market == "total":
-
-        if (
-            side.lower()
-            == "over"
-        ):
-            best_point = (
-                group[
-                    "point"
-                ].min()
-            )
-
-            candidates = group[
-                group[
-                    "point"
-                ]
-                == best_point
-            ]
-
-            best_price = (
-                candidates[
-                    "price"
-                ].max()
-            )
-
-            return candidates[
-                candidates[
-                    "price"
-                ]
-                == best_price
-            ].iloc[0]
-
-        if (
-            side.lower()
-            == "under"
-        ):
-            best_point = (
-                group[
-                    "point"
-                ].max()
-            )
-
-            candidates = group[
-                group[
-                    "point"
-                ]
-                == best_point
-            ]
-
-            best_price = (
-                candidates[
-                    "price"
-                ].max()
-            )
-
-            return candidates[
-                candidates[
-                    "price"
-                ]
-                == best_price
-            ].iloc[0]
-
-    return group.sort_values(
-        [
-            "ev_per_dollar",
-            "edge_pp",
-            "price",
-        ],
-        ascending=[
-            False,
-            False,
-            False,
-        ],
-    ).iloc[0]
+    return select_best_line_row(group)
 
 
 # ---------------------------------------------------------
@@ -589,6 +517,8 @@ def get_opportunities(
     ),
     best_lines_only: bool = True,
 ):
+    market_meta = market_data_service.metadata()
+
     if (
         not RANKED_BET_BOARD.exists()
     ):
@@ -605,6 +535,8 @@ def get_opportunities(
     )
 
     if not best_lines_only:
+        market_snapshots = market_data_service.all_event_snapshots()
+
         df = (
             df
             .sort_values(
@@ -615,7 +547,8 @@ def get_opportunities(
 
         opportunities = [
             row_to_opportunity(
-                row
+                row,
+                market_snapshot=market_snapshots.get(str(row["api_event_id"])),
             )
             for _, row
             in df.iterrows()
@@ -633,6 +566,9 @@ def get_opportunities(
             "bestLinesOnly": (
                 False
             ),
+            "provider": market_meta["provider"],
+            "lastUpdated": market_meta["lastUpdated"],
+            "dataStatus": market_meta["dataStatus"],
 
             "opportunities": (
                 opportunities
@@ -650,6 +586,7 @@ def get_opportunities(
     )
 
     best_rows = []
+    market_snapshots = market_data_service.all_event_snapshots()
 
     for _, group in grouped:
         selected = (
@@ -671,6 +608,7 @@ def get_opportunities(
                 include_alternates=(
                     alternates
                 ),
+                market_snapshot=market_snapshots.get(str(selected["api_event_id"])),
             )
         )
 
@@ -702,6 +640,9 @@ def get_opportunities(
         ),
 
         "bestLinesOnly": True,
+        "provider": market_meta["provider"],
+        "lastUpdated": market_meta["lastUpdated"],
+        "dataStatus": market_meta["dataStatus"],
 
         "opportunities": (
             opportunities
@@ -779,6 +720,7 @@ def get_opportunity_analysis(
             include_alternates=(
                 alternates
             ),
+            market_snapshot=market_data_service.event_market_snapshot(str(selected["api_event_id"])),
         )
     )
 
@@ -894,6 +836,7 @@ def get_opportunity_timeline(
         row_to_opportunity(
             selected,
             include_alternates=False,
+            market_snapshot=market_data_service.event_market_snapshot(str(selected["api_event_id"])),
         )
     )
 
@@ -965,6 +908,7 @@ def get_opportunity(
             include_alternates=(
                 alternates
             ),
+            market_snapshot=market_data_service.event_market_snapshot(str(selected["api_event_id"])),
         )
     )
 
@@ -1305,308 +1249,132 @@ def get_line_movement(
     ),
     steam_only: bool = False,
 ):
-    if (
-        not LINE_MOVEMENT_BOARD.exists()
-    ):
-        return {
-            "count": 0,
+    market_meta = market_data_service.metadata()
 
-            "source": str(
-                LINE_MOVEMENT_BOARD
-            ),
-
-            "steamOnly": (
-                steam_only
-            ),
-
-            "summary": {
-                "steamMoves": 0,
-                "biggestPointMove": 0,
-            },
-
-            "movements": [],
-        }
-
-    try:
-        df = pd.read_csv(
-            LINE_MOVEMENT_BOARD
-        )
-
-    except (
-        pd.errors.EmptyDataError
-    ):
-        return {
-            "count": 0,
-
-            "source": str(
-                LINE_MOVEMENT_BOARD
-            ),
-
-            "steamOnly": (
-                steam_only
-            ),
-
-            "summary": {
-                "steamMoves": 0,
-                "biggestPointMove": 0,
-            },
-
-            "movements": [],
-        }
-
-    if df.empty:
-        return {
-            "count": 0,
-
-            "source": str(
-                LINE_MOVEMENT_BOARD
-            ),
-
-            "steamOnly": (
-                steam_only
-            ),
-
-            "summary": {
-                "steamMoves": 0,
-                "biggestPointMove": 0,
-            },
-
-            "movements": [],
-        }
-
+    rows = market_data_service.load_normalized_market_rows()
     if steam_only:
-        df = df[
-            df[
-                "steam_flag"
-            ]
-            == True
-        ]
+        rows = [row for row in rows if row.get("steamFlag")]
 
-    df = df.head(
-        limit
-    )
+    rows = rows[:limit]
 
     movements = []
+    market_name_map = {
+        "spread": "spreads",
+        "total": "totals",
+        "moneyline": "h2h",
+    }
 
-    for (
-        index,
-        row,
-    ) in df.iterrows():
+    for index, row in enumerate(rows):
+        opening_point = row.get("openingPoint")
+        latest_point = row.get("latestPoint")
+        opening_price = row.get("openingOdds")
+        latest_price = row.get("latestOdds")
 
-        point_move = safe_float(
-            row[
-                "point_move"
-            ]
-        )
+        point_move = None
+        if opening_point is not None and latest_point is not None:
+            point_move = round(latest_point - opening_point, 3)
 
-        price_move = safe_float(
-            row[
-                "price_move"
-            ]
-        )
-
-        opening_point = (
-            safe_float(
-                row[
-                    "opening_point_observed"
-                ]
-            )
-        )
-
-        latest_point = (
-            safe_float(
-                row[
-                    "latest_point"
-                ]
-            )
-        )
-
-        opening_price = (
-            safe_float(
-                row[
-                    "opening_price_observed"
-                ]
-            )
-        )
-
-        latest_price = (
-            safe_float(
-                row[
-                    "latest_price"
-                ]
-            )
-        )
-
-        movement = {
-            "id": (
-                f'{row["api_event_id"]}-'
-                f'{row["sportsbook"]}-'
-                f'{row["market"]}-'
-                f'{row["side"]}-'
-                f'{index}'
-            ),
-
-            "eventId": (
-                row[
-                    "api_event_id"
-                ]
-            ),
-
-            "commenceTime": (
-                row[
-                    "commence_time"
-                ]
-            ),
-
-            "matchup": (
-                f'{row["away_team"]} @ '
-                f'{row["home_team"]}'
-            ),
-
-            "awayTeam": (
-                row[
-                    "away_team"
-                ]
-            ),
-
-            "homeTeam": (
-                row[
-                    "home_team"
-                ]
-            ),
-
-            "sportsbook": (
-                row[
-                    "sportsbook"
-                ]
-            ),
-
-            "market": (
-                row[
-                    "market"
-                ]
-            ),
-
-            "side": (
-                row[
-                    "side"
-                ]
-            ),
-
-            "firstSeen": (
-                row[
-                    "first_seen"
-                ]
-            ),
-
-            "lastSeen": (
-                row[
-                    "last_seen"
-                ]
-            ),
-
-            "openingPoint": (
-                opening_point
-            ),
-
-            "latestPoint": (
-                latest_point
-            ),
-
-            "pointMove": (
-                point_move
-            ),
-
-            "openingPrice": (
-                opening_price
-            ),
-
-            "latestPrice": (
-                latest_price
-            ),
-
-            "priceMove": (
-                price_move
-            ),
-
-            "steamFlag": bool(
-                row[
-                    "steam_flag"
-                ]
-            ),
-
-            "snapshots": (
-                safe_int(
-                    row[
-                        "snapshots"
-                    ]
-                )
-            ),
-        }
+        price_move = None
+        if opening_price is not None and latest_price is not None:
+            price_move = round(latest_price - opening_price, 3)
 
         movements.append(
-            movement
+            {
+                "id": f'{row["eventId"]}-{row.get("sportsbook", "unknown")}-{row.get("market", "unknown")}-{row.get("side", "unknown")}-{index}',
+                "eventId": row.get("eventId"),
+                "commenceTime": row.get("commenceTime"),
+                "matchup": f'{row.get("awayTeam", "") } @ {row.get("homeTeam", "")}',
+                "awayTeam": row.get("awayTeam"),
+                "homeTeam": row.get("homeTeam"),
+                "sportsbook": row.get("sportsbook"),
+                "market": market_name_map.get(row.get("market"), row.get("market")),
+                "side": row.get("side"),
+                "firstSeen": row.get("firstSeen"),
+                "lastSeen": row.get("lastSeen"),
+                "openingPoint": opening_point,
+                "latestPoint": latest_point,
+                "pointMove": point_move,
+                "openingPrice": opening_price,
+                "latestPrice": latest_price,
+                "priceMove": price_move,
+                "steamFlag": bool(row.get("steamFlag", False)),
+                "snapshots": row.get("snapshots"),
+            }
         )
 
-    steam_count = sum(
-        1
-        for item
-        in movements
-        if item[
-            "steamFlag"
-        ]
-    )
+    steam_count = sum(1 for item in movements if item.get("steamFlag"))
+    point_moves = [abs(item["pointMove"]) for item in movements if item.get("pointMove") is not None]
+    biggest_point_move = max(point_moves) if point_moves else 0
 
-    point_moves = [
-        abs(
-            item[
-                "pointMove"
-            ]
-        )
-        for item
-        in movements
-        if item[
-            "pointMove"
-        ]
-        is not None
-    ]
-
-    biggest_point_move = (
-        max(
-            point_moves
-        )
-        if point_moves
-        else 0
-    )
+    historical_snapshots = [item.get("snapshots") for item in movements if item.get("snapshots") is not None]
+    opening_available = any(item.get("openingPoint") is not None or item.get("openingPrice") is not None for item in movements)
 
     return {
-        "count": len(
-            movements
-        ),
-
-        "source": str(
-            LINE_MOVEMENT_BOARD
-        ),
-
-        "steamOnly": (
-            steam_only
-        ),
-
+        "count": len(movements),
+        "source": str(LINE_MOVEMENT_BOARD),
+        "steamOnly": steam_only,
+        "provider": market_meta["provider"],
+        "lastUpdated": market_meta["lastUpdated"],
+        "dataStatus": market_meta["dataStatus"],
         "summary": {
-            "steamMoves": (
-                steam_count
-            ),
-
-            "biggestPointMove": round(
-                biggest_point_move,
-                1,
+            "steamMoves": steam_count,
+            "biggestPointMove": round(biggest_point_move, 1),
+        },
+        "lineHistory": {
+            "openingLineAvailable": opening_available,
+            "currentLineAvailable": bool(movements),
+            "closingLineAvailable": False,
+            "historicalSnapshots": max(historical_snapshots) if historical_snapshots else 0,
+            "message": (
+                "Opening and current lines are available from file snapshots; closing lines are not currently stored."
+                if movements
+                else "No line movement records available."
             ),
         },
-
-        "movements": (
-            movements
-        ),
+        "movements": movements,
     }
+
+
+@router.get(
+    "/markets"
+)
+def get_markets(
+    event_id: str | None = Query(default=None),
+):
+    meta = market_data_service.metadata()
+
+    if event_id:
+        snapshot = market_data_service.event_market_snapshot(event_id)
+        return {
+            "count": len(snapshot.get("records", [])),
+            "provider": snapshot.get("provider", meta["provider"]),
+            "lastUpdated": snapshot.get("lastUpdated", meta["lastUpdated"]),
+            "dataStatus": snapshot.get("dataStatus", meta["dataStatus"]),
+            "event": snapshot,
+        }
+
+    snapshots = market_data_service.all_event_snapshots()
+    summaries = []
+    for snapshot in snapshots.values():
+        trimmed = dict(snapshot)
+        trimmed.pop("records", None)
+        summaries.append(trimmed)
+
+    return {
+        "count": len(summaries),
+        "provider": meta["provider"],
+        "lastUpdated": meta["lastUpdated"],
+        "dataStatus": meta["dataStatus"],
+        "events": summaries,
+    }
+
+
+@router.get(
+    "/markets/{event_id}"
+)
+def get_market_for_event(event_id: str):
+    snapshot = market_data_service.event_market_snapshot(event_id)
+    return snapshot
 
 
 # ---------------------------------------------------------

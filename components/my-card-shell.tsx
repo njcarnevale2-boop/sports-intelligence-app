@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import GameIntelligenceCard from "@/components/game-intelligence-card";
-import { buildCardSummary, buildPortfolioRiskWarnings, createExportPayload, getEdgeValue, normalizeSavedBet, type RiskWarning, type SavedBet } from "@/lib/my-card-helpers";
+import { buildCardSummary, buildPortfolioRiskWarnings, createExportPayload, getBestLineAndPriceOffers, getEdgeValue, normalizeSavedBet, type RiskWarning, type SavedBet } from "@/lib/my-card-helpers";
 
 const sportsbookOptions = ["DraftKings", "FanDuel", "BetMGM", "Caesars", "ESPN BET", "Fanatics", "bet365"];
 
@@ -187,8 +187,22 @@ export default function MyCardShell({ initialBets }: { initialBets: SavedBet[] }
                 {bets.map((bet) => (
                   <tr key={bet.id ?? `${bet.matchup}-${bet.book}`} className="border-t border-white/[0.06]">
                     <td className="px-3 py-3">{bet.matchup}</td>
-                    <td className="px-3 py-3">{bet.pick}</td>
-                    <td className="px-3 py-3">{bet.book}</td>
+                    <td className="px-3 py-3">
+                      {(() => {
+                        const best = getBestLineAndPriceOffers(bet).bestLine;
+                        if (!best) return "—";
+                        return `${best.book} • ${best.point ?? "N/A"} (${best.price ?? "N/A"})`;
+                      })()}
+                      <span className="ml-2 rounded-full border border-emerald-400/20 bg-emerald-400/[0.08] px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-emerald-300">BEST LINE</span>
+                    </td>
+                    <td className="px-3 py-3">
+                      {(() => {
+                        const best = getBestLineAndPriceOffers(bet).bestPrice;
+                        if (!best) return "—";
+                        return `${best.book} • ${best.price ?? "N/A"}`;
+                      })()}
+                      <span className="ml-2 rounded-full border border-sky-400/20 bg-sky-400/[0.08] px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-sky-300">BEST PRICE</span>
+                    </td>
                     <td className="px-3 py-3 text-emerald-400">{bet.evPerDollar ? `+$${bet.evPerDollar.toFixed(2)}` : "—"}</td>
                   </tr>
                 ))}

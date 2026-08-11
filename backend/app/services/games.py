@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 from app.providers.provider_manager import ProviderManager
+from app.services.market_data import market_data_service
 from app.services.market_intelligence import get_market_intelligence
 from app.services.sports_intelligence_score import calculate_sports_intelligence_score
 
@@ -120,6 +121,8 @@ class GamesService:
         self.provider_manager = ProviderManager()
 
     def list_games(self, week: Optional[int] = None, game_date: Optional[str] = None) -> Dict[str, Any]:
+        market_meta = market_data_service.metadata()
+
         if not GAME_PROJECTIONS.exists():
             return {
                 "count": 0,
@@ -128,6 +131,8 @@ class GamesService:
                 "availableDates": [],
                 "source": "unavailable",
                 "dataStatus": self._data_status(schedule_available=False, opportunities_available=False),
+                "provider": market_meta["provider"],
+                "lastUpdated": market_meta["lastUpdated"],
             }
 
         schedule_df = pd.read_csv(GAME_PROJECTIONS)
@@ -139,6 +144,8 @@ class GamesService:
                 "availableDates": [],
                 "source": str(GAME_PROJECTIONS),
                 "dataStatus": self._data_status(schedule_available=True, opportunities_available=RANKED_BET_BOARD.exists()),
+                "provider": market_meta["provider"],
+                "lastUpdated": market_meta["lastUpdated"],
             }
 
         schedule_df = schedule_df.copy()
@@ -146,6 +153,7 @@ class GamesService:
 
         context_lookup = self._load_schedule_context_lookup()
         opportunities_lookup = self._load_best_opportunities_lookup()
+        market_lookup = market_data_service.all_event_snapshots()
 
         rows: List[Dict[str, Any]] = []
         now_utc = datetime.now(timezone.utc)
@@ -177,6 +185,26 @@ class GamesService:
             enrichment = opportunities_lookup.get(event_id)
             market_intelligence = enrichment.get("marketIntelligence") if enrichment else None
             sports_score = enrichment.get("sportsIntelligenceScore") if enrichment else None
+            market_snapshot = market_lookup.get(event_id, {})
+
+            best_away_spread = market_snapshot.get("bestAwaySpread")
+            best_home_spread = market_snapshot.get("bestHomeSpread")
+            best_over = market_snapshot.get("bestOver")
+            best_under = market_snapshot.get("bestUnder")
+
+            best_available_line = {
+                "awaySpread": best_away_spread,
+                "homeSpread": best_home_spread,
+                "over": best_over,
+                "under": best_under,
+            }
+
+            best_sportsbook = {
+                "awaySpread": best_away_spread.get("sportsbook") if best_away_spread else None,
+                "homeSpread": best_home_spread.get("sportsbook") if best_home_spread else None,
+                "over": best_over.get("sportsbook") if best_over else None,
+                "under": best_under.get("sportsbook") if best_under else None,
+            }
 
             rows.append(
                 {
@@ -192,12 +220,18 @@ class GamesService:
                     "awayLogo": team_away.get("logo"),
                     "homeLogo": team_home.get("logo"),
                     "status": derive_game_status(kickoff, now_utc),
-                    "spread": safe_float(source_row.get("market_home_spread")),
-                    "total": safe_float(source_row.get("market_total")),
-                    "moneyline": enrichment.get("moneyline") if enrichment else None,
+                    "spread": market_snapshot.get("consensusSpread", safe_float(source_row.get("market_home_spread"))),
+                    "total": market_snapshot.get("consensusTotal", safe_float(source_row.get("market_total"))),
+                    "moneyline": market_snapshot.get("consensusMoneyline"),
                     "bestOpportunity": enrichment.get("bestOpportunity") if enrichment else None,
                     "sportsIntelligenceScore": sports_score,
                     "marketIntelligence": market_intelligence,
+                    "bestAvailableLine": best_available_line,
+                    "bestSportsbook": best_sportsbook,
+                    "booksTracked": market_snapshot.get("booksTracked", 0),
+                    "marketLastUpdated": market_snapshot.get("lastUpdated"),
+                    "marketProvider": market_snapshot.get("provider", market_meta["provider"]),
+                    "marketDataStatus": market_snapshot.get("dataStatus", "UNAVAILABLE"),
                     "injuryContext": None,
                     "weatherContext": None,
                 }
@@ -213,6 +247,8 @@ class GamesService:
                 "availableDates": [],
                 "source": str(GAME_PROJECTIONS),
                 "dataStatus": self._data_status(schedule_available=True, opportunities_available=RANKED_BET_BOARD.exists()),
+                "provider": market_meta["provider"],
+                "lastUpdated": market_meta["lastUpdated"],
             }
 
         filtered = rows
@@ -232,6 +268,8 @@ class GamesService:
             "availableDates": available_dates,
             "source": str(GAME_PROJECTIONS),
             "dataStatus": self._data_status(schedule_available=True, opportunities_available=RANKED_BET_BOARD.exists()),
+            "provider": market_meta["provider"],
+            "lastUpdated": market_meta["lastUpdated"],
         }
 
     def _load_schedule_context_lookup(self) -> Dict[Tuple[str, str, str], Tuple[int, int]]:
@@ -398,10 +436,12 @@ class GamesService:
         injury_status = "LIVE" if injury_provider.get("isLive") else "MOCK" if injury_provider.get("provider") == "Mock" else "UNAVAILABLE"
         weather_status = "LIVE" if weather_provider.get("isLive") else "MOCK" if weather_provider.get("provider") == "Mock" else "UNAVAILABLE"
 
+        market_meta = market_data_service.metadata()
+
         return {
             "schedule": "CACHED" if schedule_available else "UNAVAILABLE",
-            "opportunities": "CACHED" if opportunities_available else "UNAVAILABLE",
-            "marketIntelligence": "CACHED" if opportunities_available else "UNAVAILABLE",
+            "opportunities": "FILE" if opportunities_available else "UNAVAILABLE",
+            "marketIntelligence": market_meta.get("dataStatus", "UNAVAILABLE"),
             "injury": injury_status,
             "weather": weather_status,
         }

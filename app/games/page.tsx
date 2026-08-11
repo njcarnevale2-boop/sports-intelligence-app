@@ -26,6 +26,22 @@ type GameCard = {
   bestOpportunity?: string | null;
   sportsIntelligenceScore?: number | null;
   marketIntelligence?: { grade?: string; signal?: string; booksTracked?: number } | null;
+  bestAvailableLine?: {
+    awaySpread?: { sportsbook?: string; line?: number | null; price?: number | null } | null;
+    homeSpread?: { sportsbook?: string; line?: number | null; price?: number | null } | null;
+    over?: { sportsbook?: string; line?: number | null; price?: number | null } | null;
+    under?: { sportsbook?: string; line?: number | null; price?: number | null } | null;
+  } | null;
+  bestSportsbook?: {
+    awaySpread?: string | null;
+    homeSpread?: string | null;
+    over?: string | null;
+    under?: string | null;
+  } | null;
+  booksTracked?: number;
+  marketLastUpdated?: string | null;
+  marketProvider?: string;
+  marketDataStatus?: string;
   injuryContext?: unknown | null;
   weatherContext?: unknown | null;
 };
@@ -277,6 +293,11 @@ export default function GamesPage() {
                         <div className="space-y-2 text-sm leading-7 text-zinc-400">
                           <p><span className="font-medium text-zinc-200">Best opportunity:</span> {game.bestOpportunity ?? "Unavailable"}</p>
                           <p><span className="font-medium text-zinc-200">Market signal:</span> {game.marketIntelligence?.signal ?? "Unavailable"}</p>
+                          <p><span className="font-medium text-zinc-200">Best sportsbook:</span> {game.bestSportsbook?.homeSpread ?? game.bestSportsbook?.awaySpread ?? "Unavailable"}</p>
+                          <p><span className="font-medium text-zinc-200">Best spread line:</span> {game.bestAvailableLine?.homeSpread ? `${game.bestAvailableLine.homeSpread.line ?? "N/A"} (${game.bestAvailableLine.homeSpread.price ?? "N/A"})` : "Unavailable"}</p>
+                          <p><span className="font-medium text-zinc-200">Books tracked:</span> {game.booksTracked ?? 0}</p>
+                          <p><span className="font-medium text-zinc-200">Market last updated:</span> {game.marketLastUpdated ? new Date(game.marketLastUpdated).toLocaleString() : "Unavailable"}</p>
+                          <p><span className="font-medium text-zinc-200">Market source:</span> {game.marketProvider ?? "Unavailable"} ({game.marketDataStatus ?? "UNAVAILABLE"})</p>
                           <p><span className="font-medium text-zinc-200">Injury context:</span> Unavailable</p>
                           <p><span className="font-medium text-zinc-200">Weather context:</span> Unavailable</p>
                         </div>

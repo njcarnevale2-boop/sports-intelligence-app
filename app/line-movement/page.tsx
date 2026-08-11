@@ -30,6 +30,16 @@ type LineMovementResponse = {
   count: number;
   source: string;
   steamOnly: boolean;
+  provider?: string;
+  lastUpdated?: string | null;
+  dataStatus?: "LIVE" | "CACHED" | "MOCK" | "FILE" | "UNAVAILABLE" | string;
+  lineHistory?: {
+    openingLineAvailable?: boolean;
+    currentLineAvailable?: boolean;
+    closingLineAvailable?: boolean;
+    historicalSnapshots?: number;
+    message?: string;
+  };
   summary: {
     steamMoves: number;
     biggestPointMove: number;
@@ -124,6 +134,12 @@ export default function LineMovementPage() {
   const [movements, setMovements] = useState<
     LineMovement[]
   >([]);
+  const [marketMeta, setMarketMeta] = useState<{
+    provider?: string;
+    lastUpdated?: string | null;
+    dataStatus?: string;
+    historyMessage?: string;
+  }>({});
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -151,6 +167,12 @@ export default function LineMovementPage() {
         );
 
         setMovements(data.movements);
+        setMarketMeta({
+          provider: data.provider,
+          lastUpdated: data.lastUpdated,
+          dataStatus: data.dataStatus,
+          historyMessage: data.lineHistory?.message,
+        });
       } catch (err) {
         console.error(err);
 
@@ -340,7 +362,7 @@ export default function LineMovementPage() {
             </div>
 
             <div className="rounded-full border border-emerald-400/20 bg-emerald-400/[0.05] px-4 py-2 text-sm text-emerald-400">
-              Live Market Feed
+              {marketMeta.dataStatus ?? "UNAVAILABLE"} • {marketMeta.provider ?? "Unknown provider"}
             </div>
           </div>
         </section>
@@ -414,6 +436,9 @@ export default function LineMovementPage() {
               </div>
             )}
           </div>
+          {marketMeta.historyMessage ? (
+            <p className="mt-4 text-sm text-zinc-500">{marketMeta.historyMessage}</p>
+          ) : null}
         </section>
 
         {/* FILTERS */}

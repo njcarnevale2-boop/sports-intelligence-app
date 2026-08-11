@@ -7,6 +7,7 @@ export type SavedBet = {
   pick: string;
   book: string;
   market?: string;
+  side?: string;
   commenceTime?: string;
   point?: number;
   price?: number;
@@ -36,6 +37,12 @@ export type RiskWarning = {
   severity: 'warning' | 'danger';
 };
 
+export type BestBookOffer = {
+  book: string;
+  point?: number;
+  price?: number;
+};
+
 export function normalizeSavedBet(bet: Record<string, unknown> & Partial<SavedBet>): SavedBet {
   return {
     id: typeof bet.id === 'string' ? bet.id : undefined,
@@ -46,6 +53,7 @@ export function normalizeSavedBet(bet: Record<string, unknown> & Partial<SavedBe
     pick: typeof bet.pick === 'string' ? bet.pick : 'Market edge',
     book: typeof bet.book === 'string' ? bet.book : 'Primary sportsbook',
     market: typeof bet.market === 'string' ? bet.market : undefined,
+    side: typeof bet.side === 'string' ? bet.side : undefined,
     commenceTime: typeof bet.commenceTime === 'string' ? bet.commenceTime : undefined,
     point: typeof bet.point === 'number' ? bet.point : undefined,
     price: typeof bet.price === 'number' ? bet.price : undefined,
@@ -59,6 +67,50 @@ export function normalizeSavedBet(bet: Record<string, unknown> & Partial<SavedBe
     injuryContext: typeof bet.injuryContext === 'object' && bet.injuryContext ? bet.injuryContext as { summary?: string; awayInjuryScore?: number; homeInjuryScore?: number } : undefined,
     alternateBooks: Array.isArray(bet.alternateBooks) ? bet.alternateBooks as Array<{ book: string; point: number; price: number; edge: number; evPerDollar: number }> : undefined,
   };
+}
+
+function compareForBestLine(a: BestBookOffer, b: BestBookOffer, market?: string, side?: string): number {
+  const aPoint = typeof a.point === 'number' ? a.point : Number.NEGATIVE_INFINITY;
+  const bPoint = typeof b.point === 'number' ? b.point : Number.NEGATIVE_INFINITY;
+  const aPrice = typeof a.price === 'number' ? a.price : Number.NEGATIVE_INFINITY;
+  const bPrice = typeof b.price === 'number' ? b.price : Number.NEGATIVE_INFINITY;
+
+  if (market === 'total' && side === 'over') {
+    if (aPoint !== bPoint) return aPoint - bPoint;
+    return bPrice - aPrice;
+  }
+
+  if (market === 'total' && side === 'under') {
+    if (aPoint !== bPoint) return bPoint - aPoint;
+    return bPrice - aPrice;
+  }
+
+  if (aPoint !== bPoint) return bPoint - aPoint;
+  return bPrice - aPrice;
+}
+
+export function getBestLineAndPriceOffers(bet: SavedBet): { bestLine: BestBookOffer | null; bestPrice: BestBookOffer | null } {
+  const offers: BestBookOffer[] = [
+    { book: bet.book, point: bet.point, price: bet.price },
+    ...(bet.alternateBooks ?? []).map((item) => ({
+      book: item.book,
+      point: item.point,
+      price: item.price,
+    })),
+  ].filter((offer) => !!offer.book);
+
+  if (offers.length === 0) {
+    return { bestLine: null, bestPrice: null };
+  }
+
+  const bestLine = [...offers].sort((a, b) => compareForBestLine(a, b, bet.market, bet.side))[0] ?? null;
+  const bestPrice = [...offers].sort((a, b) => {
+    const aPrice = typeof a.price === 'number' ? a.price : Number.NEGATIVE_INFINITY;
+    const bPrice = typeof b.price === 'number' ? b.price : Number.NEGATIVE_INFINITY;
+    return bPrice - aPrice;
+  })[0] ?? null;
+
+  return { bestLine, bestPrice };
 }
 
 export function getEdgeValue(edge: SavedBet['edge']): number {
