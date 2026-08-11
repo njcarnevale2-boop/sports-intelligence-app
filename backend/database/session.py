@@ -5,6 +5,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.config import settings
 from database.base import Base
+import database.models  # noqa: F401
 
 
 engine = create_engine(

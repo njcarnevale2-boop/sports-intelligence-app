@@ -131,8 +131,35 @@ def upgrade() -> None:
     )
     op.create_index(op.f("ix_odds_snapshots_id"), "odds_snapshots", ["id"], unique=False)
 
+    op.create_table(
+        "performance_records",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("game", sa.String(length=255), nullable=True),
+        sa.Column("sportsbook", sa.String(length=100), nullable=True),
+        sa.Column("market", sa.String(length=100), nullable=True),
+        sa.Column("recommendation", sa.String(length=100), nullable=True),
+        sa.Column("sports_intelligence_score", sa.Float(), nullable=True),
+        sa.Column("market_intelligence", sa.Text(), nullable=True),
+        sa.Column("injury_context", sa.Text(), nullable=True),
+        sa.Column("weather_context", sa.Text(), nullable=True),
+        sa.Column("model_probability", sa.Float(), nullable=True),
+        sa.Column("implied_probability", sa.Float(), nullable=True),
+        sa.Column("edge", sa.Float(), nullable=True),
+        sa.Column("expected_value", sa.Float(), nullable=True),
+        sa.Column("line_at_recommendation", sa.Float(), nullable=True),
+        sa.Column("closing_line", sa.Float(), nullable=True),
+        sa.Column("final_score", sa.Float(), nullable=True),
+        sa.Column("result", sa.String(length=50), nullable=True),
+        sa.Column("units_won_lost", sa.Float(), nullable=True),
+        sa.Column("timestamp", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_index(op.f("ix_performance_records_id"), "performance_records", ["id"], unique=False)
+
 
 def downgrade() -> None:
+    op.drop_table("performance_records")
     op.drop_table("odds_snapshots")
     op.drop_table("weather")
     op.drop_table("injuries")

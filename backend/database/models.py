@@ -76,6 +76,31 @@ class Recommendation(Base):
     opportunity: Mapped[Opportunity | None] = relationship(back_populates="recommendations")
 
 
+class PerformanceRecord(Base):
+    __tablename__ = "performance_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    game: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    sportsbook: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    market: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    recommendation: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    sports_intelligence_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    market_intelligence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    injury_context: Mapped[str | None] = mapped_column(Text, nullable=True)
+    weather_context: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model_probability: Mapped[float | None] = mapped_column(Float, nullable=True)
+    implied_probability: Mapped[float | None] = mapped_column(Float, nullable=True)
+    edge: Mapped[float | None] = mapped_column(Float, nullable=True)
+    expected_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    line_at_recommendation: Mapped[float | None] = mapped_column(Float, nullable=True)
+    closing_line: Mapped[float | None] = mapped_column(Float, nullable=True)
+    final_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    result: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    units_won_lost: Mapped[float | None] = mapped_column(Float, nullable=True)
+    timestamp: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+
+
 class Injury(Base):
     __tablename__ = "injuries"
 

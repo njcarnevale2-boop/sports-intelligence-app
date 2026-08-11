@@ -5,6 +5,7 @@ from app.routes.opportunities import router as opportunities_router
 from app.routes.context import router as context_router
 from app.routes.injuries import router as injuries_router
 from app.routes.admin import router as admin_router
+from app.routes.performance import router as performance_router
 from database.session import init_db
 
 app = FastAPI(
@@ -24,6 +25,7 @@ app.include_router(opportunities_router)
 app.include_router(context_router)
 app.include_router(injuries_router)
 app.include_router(admin_router)
+app.include_router(performance_router)
 
 
 @app.on_event("startup")
