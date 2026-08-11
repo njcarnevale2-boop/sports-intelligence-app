@@ -139,12 +139,43 @@ def score_to_recommendation(score):
     return "Pass"
 
 
+def normalize_injury_context(injury_context):
+    """
+    Convert matchup injury context into a 0-100 component score.
+
+    Healthy advantage -> 100
+    Small disadvantage -> 80
+    Moderate disadvantage -> 60
+    Significant disadvantage -> 35
+    Major disadvantage -> 10
+    """
+
+    if not injury_context:
+        return 100.0
+
+    severity = str(injury_context.get("severity", "Neutral")).lower()
+
+    if severity == "neutral":
+        return 100.0
+    if severity == "small":
+        return 80.0
+    if severity == "moderate":
+        return 60.0
+    if severity == "significant":
+        return 35.0
+    if severity == "major":
+        return 10.0
+
+    return 100.0
+
+
 def build_reasons(
     edge,
     ev,
     confidence,
     market_intelligence,
     data_completeness,
+    injury_context,
 ):
     reasons = []
 
@@ -264,6 +295,29 @@ def build_reasons(
             "Data coverage is incomplete, reducing conviction."
         )
 
+    if injury_context:
+        severity = str(injury_context.get("severity", "Neutral")).lower()
+        if severity == "neutral":
+            reasons.append(
+                "Injury context is neutral and does not materially change the play."
+            )
+        elif severity == "small":
+            reasons.append(
+                "Injury context slightly weakens the recommendation."
+            )
+        elif severity == "moderate":
+            reasons.append(
+                "Injury context materially affects the recommendation."
+            )
+        elif severity == "significant":
+            reasons.append(
+                "Injury context is a meaningful headwind for the recommendation."
+            )
+        elif severity == "major":
+            reasons.append(
+                "Injury context is a major concern and meaningfully cuts into conviction."
+            )
+
     if not reasons:
         reasons.append(
             "The current signals do not show a major strength or weakness."
@@ -322,6 +376,8 @@ def calculate_sports_intelligence_score(
         )
     )
 
+    injury_context = opportunity.get("injuryContext") or opportunity.get("injury_context")
+
     edge_component = normalize_edge(
         edge
     )
@@ -347,13 +403,17 @@ def calculate_sports_intelligence_score(
             data_completeness
         )
     )
+    injury_component = normalize_injury_context(
+        injury_context
+    )
 
     weighted_score = (
         edge_component * 0.30
         + ev_component * 0.20
-        + confidence_component * 0.20
-        + market_component * 0.20
+        + confidence_component * 0.15
+        + market_component * 0.15
         + data_component * 0.10
+        + injury_component * 0.10
     )
 
     final_score = round(
@@ -395,13 +455,18 @@ def calculate_sports_intelligence_score(
                 data_component,
                 1,
             ),
+            "injuryContext": round(
+                injury_component,
+                1,
+            ),
         },
         "weights": {
             "modelEdge": 30,
             "expectedValue": 20,
-            "confidence": 20,
-            "marketIntelligence": 20,
+            "confidence": 15,
+            "marketIntelligence": 15,
             "dataCompleteness": 10,
+            "injuryContext": 10,
         },
         "reasons": build_reasons(
             edge=edge,
@@ -409,5 +474,6 @@ def calculate_sports_intelligence_score(
             confidence=confidence,
             market_intelligence=market_intelligence,
             data_completeness=data_completeness,
+            injury_context=injury_context,
         ),
     }

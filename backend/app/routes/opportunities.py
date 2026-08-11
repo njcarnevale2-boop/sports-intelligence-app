@@ -311,6 +311,22 @@ def row_to_opportunity(
     ] = market_intelligence
 
     # -----------------------------------------------------
+    # INJURY MATCHUP CONTEXT
+    # -----------------------------------------------------
+
+    injury_context = (
+        InjuryMatchupContext().build_context(
+            away_team=str(
+                row["away_team"]
+            ),
+            home_team=str(
+                row["home_team"]
+            ),
+        )
+    )
+    result["injuryContext"] = injury_context
+
+    # -----------------------------------------------------
     # SPORTS INTELLIGENCE SCORE
     # -----------------------------------------------------
 
