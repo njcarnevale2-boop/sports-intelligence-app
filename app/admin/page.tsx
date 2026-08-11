@@ -15,6 +15,11 @@ type AdminStatus = {
   weatherLoaded: number;
   databaseStatus: string;
   queueStatus: string;
+  providerMetadata?: {
+    injury?: { provider?: string; lastUpdated?: string; isLive?: boolean };
+    weather?: { provider?: string; lastUpdated?: string; isLive?: boolean };
+    odds?: { provider?: string; lastUpdated?: string; isLive?: boolean };
+  };
   errorLog: Array<{ timestamp: string; message: string }>;
 };
 
@@ -113,6 +118,26 @@ export default function AdminPage() {
                   <div className="flex items-center justify-between rounded-xl border border-white/10 bg-black/20 px-4 py-3"><span>API health</span><span className="font-medium text-white">{status.apiHealth}</span></div>
                   <div className="flex items-center justify-between rounded-xl border border-white/10 bg-black/20 px-4 py-3"><span>Database</span><span className="font-medium text-white">{status.databaseStatus}</span></div>
                   <div className="flex items-center justify-between rounded-xl border border-white/10 bg-black/20 px-4 py-3"><span>Queue</span><span className="font-medium text-white">{status.queueStatus}</span></div>
+                </div>
+
+                <div className="mt-6">
+                  <h3 className="text-sm font-semibold text-white">Provider Health</h3>
+                  <div className="mt-3 space-y-2">
+                    {Object.entries(status.providerMetadata ?? {}).map(([key, entry]) => (
+                      <div key={key} className="flex items-center justify-between rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                        <div>
+                          <p className="font-medium text-white">{key}</p>
+                          <p className="text-zinc-500">{entry?.provider ?? "Mock"}</p>
+                        </div>
+                        <div className="text-right">
+                          <p className={`text-sm ${entry?.isLive ? "text-emerald-400" : "text-amber-400"}`}>
+                            {entry?.isLive ? "Live" : "Mock"}
+                          </p>
+                          <p className="text-xs text-zinc-500">{entry?.lastUpdated ? new Date(entry.lastUpdated).toLocaleString() : "n/a"}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
 

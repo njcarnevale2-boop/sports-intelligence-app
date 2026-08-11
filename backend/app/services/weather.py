@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+from app.providers.provider_manager import ProviderManager
+
 
 class WeatherAnalyzer:
     """
@@ -12,6 +14,9 @@ class WeatherAnalyzer:
     """
 
     def __init__(self, weather_data: Optional[Dict[str, Any]] = None):
+        self.provider_manager = ProviderManager()
+        self.provider = self.provider_manager.get_weather_provider()
+        self.provider_metadata = self.provider.get_metadata()
         self.weather_data = weather_data or self._mock_weather()
 
     def analyze(self) -> Dict[str, Any]:
@@ -79,6 +84,7 @@ class WeatherAnalyzer:
             "totalImpact": total_impact,
             "summary": summary,
             "recommendation": recommendation,
+            "providerMetadata": self.provider_metadata,
         }
 
     def _mock_weather(self) -> Dict[str, Any]:

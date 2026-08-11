@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 
 import pandas as pd
 
+from app.providers.provider_manager import ProviderManager
 from app.services.data_refresh import refresh_all_data
 from database.models import PerformanceRecord
 from database.session import SessionLocal
@@ -19,6 +20,7 @@ GAME_PROJECTIONS = MODEL_ROOT / "outputs" / "current_game_projections.csv"
 class AdminStatusService:
     def __init__(self) -> None:
         self.session = SessionLocal()
+        self.provider_manager = ProviderManager()
 
     def get_status(self) -> Dict[str, Any]:
         last_refresh = self._read_last_refresh()
@@ -28,6 +30,8 @@ class AdminStatusService:
         weather_loaded = self._count_weather()
         database_status = self._database_status()
         error_log = self._error_log()
+
+        provider_metadata = self.provider_manager.metadata()
 
         return {
             "apiHealth": "healthy" if database_status == "connected" else "degraded",
@@ -39,6 +43,7 @@ class AdminStatusService:
             "weatherLoaded": weather_loaded,
             "databaseStatus": database_status,
             "queueStatus": "idle",
+            "providerMetadata": provider_metadata,
             "errorLog": error_log,
         }
 

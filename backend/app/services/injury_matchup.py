@@ -69,6 +69,7 @@ class InjuryMatchupContext:
             "severity": severity,
             "keyInjuries": key_injuries,
             "summary": summary,
+            "providerMetadata": self.analyzer.provider_metadata,
         }
 
     def _neutral_context(self, away_team: str, home_team: str) -> Dict[str, Any]:

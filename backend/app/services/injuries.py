@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from app.providers.provider_manager import ProviderManager
+
 
 class InjuryAnalyzer:
     """
@@ -12,6 +14,9 @@ class InjuryAnalyzer:
     """
 
     def __init__(self, injuries: Optional[List[Dict[str, Any]]] = None):
+        self.provider_manager = ProviderManager()
+        self.provider = self.provider_manager.get_injury_provider()
+        self.provider_metadata = self.provider.get_metadata()
         # Use supplied injuries when available; otherwise fall back to the
         # realistic mock roster that exercises the key positions.
         self.injuries = injuries or self._mock_injuries()
@@ -93,6 +98,7 @@ class InjuryAnalyzer:
             "keyPlayers": overall_key_players,
             "summary": self._build_summary(overall_score),
             "teams": team_reports,
+            "providerMetadata": self.provider_metadata,
         }
 
     def _analyze_team(self, team: str, injuries: List[Dict[str, Any]]) -> Dict[str, Any]:
