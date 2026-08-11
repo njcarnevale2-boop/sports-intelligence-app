@@ -834,7 +834,70 @@ def get_opportunity_analysis(
                 opportunity
             )
         ),
+        "decisionTimeline": build_decision_timeline(opportunity),
     }
+
+
+@router.get(
+    "/opportunities/{opportunity_id}/timeline"
+)
+def get_opportunity_timeline(
+    opportunity_id: str,
+):
+    if (
+        not RANKED_BET_BOARD.exists()
+    ):
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Ranked bet board "
+                "not found"
+            ),
+        )
+
+    df = pd.read_csv(
+        RANKED_BET_BOARD
+    )
+
+    df[
+        "generated_id"
+    ] = df.apply(
+        lambda row: (
+            build_id(row)
+        ),
+        axis=1,
+    )
+
+    match = df[
+        df[
+            "generated_id"
+        ]
+        == opportunity_id
+    ]
+
+    if match.empty:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Opportunity "
+                "not found"
+            ),
+        )
+
+    selected = (
+        best_line_for_group(
+            match
+        )
+    )
+
+    opportunity = (
+        row_to_opportunity(
+            selected,
+            include_alternates=False,
+        )
+    )
+
+    return build_decision_timeline(opportunity)
 
 
 @router.get(
