@@ -52,6 +52,11 @@ TEAM_META: Dict[str, Dict[str, str]] = {
     "WAS": {"name": "Washington Commanders", "logo": "https://a.espncdn.com/i/teamlogos/nfl/500/wsh.png"},
 }
 
+TEAM_CODE_ALIASES = {
+    "LA": "LAR",
+    "JAC": "JAX",
+}
+
 
 def safe_float(value: Any) -> Optional[float]:
     if pd.isna(value):
@@ -95,6 +100,11 @@ def parse_commence_time(value: Any) -> Optional[datetime]:
         return parsed.replace(tzinfo=timezone.utc)
 
     return parsed.astimezone(timezone.utc)
+
+
+def normalize_team_code(team_code: str) -> str:
+    code = str(team_code or "").strip().upper()
+    return TEAM_CODE_ALIASES.get(code, code)
 
 
 def derive_game_status(kickoff: datetime, now_utc: datetime) -> str:
@@ -149,8 +159,8 @@ class GamesService:
             if kickoff is None:
                 continue
 
-            away_code = str(source_row.get("away_team", "")).strip().upper()
-            home_code = str(source_row.get("home_team", "")).strip().upper()
+            away_code = normalize_team_code(source_row.get("away_team", ""))
+            home_code = normalize_team_code(source_row.get("home_team", ""))
             game_date_text = kickoff.date().isoformat()
 
             season, mapped_week = self._season_and_week_for_game(
@@ -245,8 +255,8 @@ class GamesService:
                 continue
 
             game_day = str(row.get("gameday", "")).strip()
-            away_team = str(row.get("away_team", "")).strip()
-            home_team = str(row.get("home_team", "")).strip()
+            away_team = normalize_team_code(row.get("away_team", ""))
+            home_team = normalize_team_code(row.get("home_team", ""))
             if not game_day or not away_team or not home_team:
                 continue
 
@@ -262,9 +272,17 @@ class GamesService:
         home_team: str,
         context_lookup: Dict[Tuple[str, str, str], Tuple[int, int]],
     ) -> Tuple[int, int]:
-        direct = context_lookup.get((game_date, away_team, home_team))
-        if direct is not None:
-            return direct
+        kickoff_date = kickoff.date()
+        candidate_dates = [
+            game_date,
+            (kickoff_date - timedelta(days=1)).isoformat(),
+            (kickoff_date + timedelta(days=1)).isoformat(),
+        ]
+
+        for candidate in candidate_dates:
+            direct = context_lookup.get((candidate, away_team, home_team))
+            if direct is not None:
+                return direct
 
         season = infer_nfl_season(kickoff)
         season_start = datetime(season, 9, 1, tzinfo=timezone.utc)
