@@ -5,6 +5,7 @@ import Link from "next/link";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import GameIntelligenceCard from "@/components/game-intelligence-card";
 import { fetchJson } from "./lib/api";
 import { trackAnalyticsEvent } from "./lib/analytics";
 

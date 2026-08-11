@@ -7,6 +7,7 @@ export type SavedBet = {
   pick: string;
   book: string;
   market?: string;
+  commenceTime?: string;
   point?: number;
   price?: number;
   confidence?: number;
@@ -45,6 +46,7 @@ export function normalizeSavedBet(bet: Record<string, unknown> & Partial<SavedBe
     pick: typeof bet.pick === 'string' ? bet.pick : 'Market edge',
     book: typeof bet.book === 'string' ? bet.book : 'Primary sportsbook',
     market: typeof bet.market === 'string' ? bet.market : undefined,
+    commenceTime: typeof bet.commenceTime === 'string' ? bet.commenceTime : undefined,
     point: typeof bet.point === 'number' ? bet.point : undefined,
     price: typeof bet.price === 'number' ? bet.price : undefined,
     confidence: typeof bet.confidence === 'number' ? bet.confidence : undefined,

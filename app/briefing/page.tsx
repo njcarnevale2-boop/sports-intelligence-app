@@ -5,6 +5,7 @@ import Link from "next/link";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import GameIntelligenceCard from "@/components/game-intelligence-card";
 import { fetchJson } from "../lib/api";
 
 type Opportunity = {
@@ -315,34 +316,33 @@ export default function BriefingPage() {
 
           <div className="mt-5 grid gap-4 lg:grid-cols-3">
             {opportunities.slice(1, 4).map((opportunity) => (
-              <Link
+              <GameIntelligenceCard
                 key={opportunity.id}
+                game={{
+                  id: opportunity.id,
+                  eventId: opportunity.eventId,
+                  matchup: opportunity.matchup,
+                  commenceTime: opportunity.commenceTime,
+                  sportsIntelligenceScore: opportunity.confidence,
+                  marketGrade: opportunity.recommendation,
+                  recommendation: opportunity.recommendation,
+                  confidence: opportunity.confidence,
+                  bestAvailableLine: `${opportunity.book} • ${opportunity.market}`,
+                  expectedValue: `+$${opportunity.evPerDollar.toFixed(2)} / $1`,
+                  weatherSummary: "Briefing context available in full analysis.",
+                  injurySummary: "Detailed injury context is available in the main analysis.",
+                  topReasons: [opportunity.recommendation, `${opportunity.edge.toFixed(1)}% edge`, `${opportunity.confidence}% confidence`],
+                  edge: opportunity.edge,
+                  evPerDollar: opportunity.evPerDollar,
+                  book: opportunity.book,
+                  market: opportunity.market,
+                  pick: opportunity.pick,
+                }}
+                compact
+                clickable
+                highlightElite={opportunity.edge >= 5}
                 href={`/opportunities/${opportunity.id}`}
-                className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-6 transition hover:border-white/15 hover:bg-[#101721]"
-              >
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-zinc-700">
-                    #{opportunity.rank}
-                  </span>
-
-                  <span className="text-xs font-medium text-emerald-400">
-                    +{opportunity.edge.toFixed(1)}%
-                  </span>
-                </div>
-
-                <p className="mt-5 text-sm text-zinc-500">
-                  {opportunity.matchup}
-                </p>
-
-                <h4 className="mt-1 text-2xl font-semibold">
-                  {opportunity.pick}
-                </h4>
-
-                <p className="mt-2 text-sm text-zinc-600">
-                  {opportunity.book} • Confidence{" "}
-                  {opportunity.confidence}
-                </p>
-              </Link>
+              />
             ))}
           </div>
         </section>

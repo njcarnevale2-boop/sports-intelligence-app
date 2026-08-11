@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import GameIntelligenceCard from "@/components/game-intelligence-card";
 import { buildCardSummary, buildPortfolioRiskWarnings, createExportPayload, getEdgeValue, normalizeSavedBet, type RiskWarning, type SavedBet } from "@/lib/my-card-helpers";
 
 const sportsbookOptions = ["DraftKings", "FanDuel", "BetMGM", "Caesars", "ESPN BET", "Fanatics", "bet365"];
@@ -103,39 +104,32 @@ export default function MyCardShell({ initialBets }: { initialBets: SavedBet[] }
               {bets.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-white/[0.08] p-8 text-sm text-zinc-500">Add opportunities from the opportunities grid to populate the card.</div>
               ) : bets.map((bet) => (
-                <article key={bet.id ?? `${bet.matchup}-${bet.book}`} className="rounded-2xl border border-white/[0.08] bg-black/20 p-5">
-                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                    <div>
-                      <p className="text-sm text-zinc-500">{bet.matchup}</p>
-                      <h3 className="mt-1 text-xl font-semibold">{bet.pick}</h3>
-                      <p className="mt-2 text-sm text-zinc-500">{bet.book} • {bet.point ?? "—"} • {bet.price ?? "—"}</p>
-                    </div>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
-                        <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">SI Score</p>
-                        <p className="mt-1 text-lg font-semibold">{bet.sportsIntelligenceScore?.score ?? "—"}</p>
-                      </div>
-                      <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
-                        <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">EV / $1</p>
-                        <p className="mt-1 text-lg font-semibold">{bet.evPerDollar ? `+$${bet.evPerDollar.toFixed(2)}` : "—"}</p>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="mt-4 grid gap-3 md:grid-cols-3">
-                    <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
-                      <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">Recommendation</p>
-                      <p className="mt-1 text-sm font-semibold">{bet.recommendation ?? "Model edge"}</p>
-                    </div>
-                    <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
-                      <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">Unit Recommendation</p>
-                      <p className="mt-1 text-sm font-semibold">{bet.kelly20 ? `${bet.kelly20.toFixed(2)}u` : "—"}</p>
-                    </div>
-                    <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
-                      <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">Injury Impact</p>
-                      <p className="mt-1 text-sm font-semibold">{bet.injuryContext?.summary ?? "Neutral"}</p>
-                    </div>
-                  </div>
-                </article>
+                <GameIntelligenceCard
+                  key={bet.id ?? `${bet.matchup}-${bet.book}`}
+                  game={{
+                    id: bet.id,
+                    matchup: bet.matchup,
+                    awayTeam: bet.awayTeam,
+                    homeTeam: bet.homeTeam,
+                    commenceTime: bet.commenceTime,
+                    sportsIntelligenceScore: bet.sportsIntelligenceScore?.score,
+                    marketGrade: bet.recommendation,
+                    recommendation: bet.recommendation,
+                    confidence: bet.confidence,
+                    bestAvailableLine: `${bet.book} • ${bet.point ?? "—"}`,
+                    expectedValue: bet.evPerDollar ? `+$${bet.evPerDollar.toFixed(2)} / $1` : "—",
+                    weatherSummary: "Prepared for review in the hand-off view.",
+                    injurySummary: bet.injuryContext?.summary ?? "Neutral",
+                    topReasons: [bet.recommendation ?? "Model edge", `${bet.kelly20 ? `${bet.kelly20.toFixed(2)}u` : "—"} sizing`, `${bet.evPerDollar ? `+$${bet.evPerDollar.toFixed(2)}` : "—"} EV`],
+                    evPerDollar: bet.evPerDollar,
+                    book: bet.book,
+                    market: bet.market,
+                    pick: bet.pick,
+                  }}
+                  compact
+                  clickable={false}
+                  highlightElite={Boolean(bet.sportsIntelligenceScore?.score && bet.sportsIntelligenceScore.score >= 85)}
+                />
               ))}
             </div>
           </div>

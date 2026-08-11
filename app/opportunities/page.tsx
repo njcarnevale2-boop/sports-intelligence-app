@@ -5,7 +5,7 @@ import Link from "next/link";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import SportsIntelligenceScoreCard from "@/components/sports-intelligence-score-card";
+import GameIntelligenceCard from "@/components/game-intelligence-card";
 import { fetchJson } from "../lib/api";
 import { trackAnalyticsEvent } from "../lib/analytics";
 
@@ -843,11 +843,11 @@ export default function OpportunitiesPage() {
                       {/* SPORTS INTELLIGENCE */}
 
                       <div className="mt-5">
-                        <SportsIntelligenceScoreCard
-                          score={
-                            sportsScore
-                          }
-                        />
+                        <div className="rounded-2xl border border-white/[0.07] bg-black/10 p-4">
+                          <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-700">Sports Intelligence Score</p>
+                          <p className="mt-2 text-3xl font-semibold text-emerald-400">{sportsScore.score.toFixed(1)}</p>
+                          <p className="mt-2 text-sm text-zinc-500">{sportsScore.grade}</p>
+                        </div>
                       </div>
 
                       {/* MODEL */}
