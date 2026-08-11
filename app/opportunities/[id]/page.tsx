@@ -50,13 +50,11 @@ type GameProjection = {
   matchup: string;
   awayTeam: string;
   homeTeam: string;
-
   teamPower: {
     away: number;
     home: number;
     differenceHomeMinusAway: number;
   };
-
   model: {
     marginHome: number;
     total: number;
@@ -65,20 +63,42 @@ type GameProjection = {
       home: number;
     };
   };
-
   market: {
     marginHome: number;
     homeSpread: number;
     total: number;
   };
-
   spreadAnalysis: {
     edgePoints: number;
     homeCoverProbability: number;
     homeCoverFairOdds: number;
   };
+};
 
-  source: string;
+type ScheduleContext = {
+  eventId: string;
+  gameId: string;
+  season: number;
+  week: number;
+  gameday: string;
+  matchup: string;
+  awayTeam: string;
+  homeTeam: string;
+  rest: {
+    homeDays: number | null;
+    awayDays: number | null;
+    advantageHomeDays: number | null;
+    label: string;
+    weekOneNeutralized: boolean;
+    shortRestHome: boolean;
+    shortRestAway: boolean;
+    longRestHome: boolean;
+    longRestAway: boolean;
+  };
+  travel: {
+    awayMiles: number | null;
+    awayTimezoneShiftHours: number | null;
+  };
 };
 
 function formatOdds(price: number) {
@@ -86,10 +106,7 @@ function formatOdds(price: number) {
 }
 
 function formatSignedNumber(value: number) {
-  if (value > 0) {
-    return `+${value}`;
-  }
-
+  if (value > 0) return `+${value}`;
   return `${value}`;
 }
 
@@ -118,14 +135,13 @@ export default function OpportunityAnalysisPage() {
   const [projection, setProjection] =
     useState<GameProjection | null>(null);
 
+  const [context, setContext] =
+    useState<ScheduleContext | null>(null);
+
   const [loading, setLoading] = useState(true);
-  const [projectionLoading, setProjectionLoading] =
-    useState(false);
-
+  const [projectionError, setProjectionError] = useState("");
+  const [contextError, setContextError] = useState("");
   const [error, setError] = useState("");
-  const [projectionError, setProjectionError] =
-    useState("");
-
   const [added, setAdded] = useState(false);
 
   useEffect(() => {
@@ -150,13 +166,11 @@ export default function OpportunityAnalysisPage() {
 
         if (saved) {
           try {
-            const card: Opportunity[] =
-              JSON.parse(saved);
+            const card: Opportunity[] = JSON.parse(saved);
 
             setAdded(
               card.some(
-                (bet) =>
-                  bet.id === opportunityData.id
+                (bet) => bet.id === opportunityData.id
               )
             );
           } catch {
@@ -164,38 +178,51 @@ export default function OpportunityAnalysisPage() {
           }
         }
 
-        setProjectionLoading(true);
+        const [projectionResult, contextResult] =
+          await Promise.allSettled([
+            fetch(
+              `http://localhost:8000/api/games/${opportunityData.eventId}`
+            ).then(async (response) => {
+              if (!response.ok) {
+                throw new Error("Projection unavailable");
+              }
 
-        try {
-          const projectionResponse = await fetch(
-            `http://localhost:8000/api/games/${opportunityData.eventId}`
+              return response.json();
+            }),
+
+            fetch(
+              `http://localhost:8000/api/games/${opportunityData.eventId}/context`
+            ).then(async (response) => {
+              if (!response.ok) {
+                throw new Error("Context unavailable");
+              }
+
+              return response.json();
+            }),
+          ]);
+
+        if (projectionResult.status === "fulfilled") {
+          setProjection(
+            projectionResult.value as GameProjection
           );
-
-          if (!projectionResponse.ok) {
-            throw new Error(
-              "Failed to load game projection"
-            );
-          }
-
-          const projectionData: GameProjection =
-            await projectionResponse.json();
-
-          setProjection(projectionData);
-        } catch (projectionErr) {
-          console.error(projectionErr);
-
+        } else {
           setProjectionError(
             "Game projection is currently unavailable."
           );
-        } finally {
-          setProjectionLoading(false);
+        }
+
+        if (contextResult.status === "fulfilled") {
+          setContext(
+            contextResult.value as ScheduleContext
+          );
+        } else {
+          setContextError(
+            "Schedule context is currently unavailable."
+          );
         }
       } catch (err) {
         console.error(err);
-
-        setError(
-          "Unable to load this opportunity."
-        );
+        setError("Unable to load this opportunity.");
       } finally {
         setLoading(false);
       }
@@ -274,8 +301,6 @@ export default function OpportunityAnalysisPage() {
   return (
     <main className="min-h-screen bg-[#070A0F] text-white">
       <div className="mx-auto max-w-6xl px-6 py-10 lg:px-10">
-
-        {/* TOP NAV */}
         <div className="flex flex-wrap items-center justify-between gap-4">
           <Link
             href="/opportunities"
@@ -298,7 +323,6 @@ export default function OpportunityAnalysisPage() {
           </div>
         </div>
 
-        {/* HERO */}
         <section className="mt-12">
           <p className="text-xs font-medium uppercase tracking-[0.2em] text-zinc-600">
             {opportunity.matchup}
@@ -330,7 +354,6 @@ export default function OpportunityAnalysisPage() {
                 <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
                   Confidence
                 </p>
-
                 <p className="mt-1 text-3xl font-semibold">
                   {opportunity.confidence}
                 </p>
@@ -340,7 +363,6 @@ export default function OpportunityAnalysisPage() {
                 <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
                   Model Edge
                 </p>
-
                 <p className="mt-1 text-3xl font-semibold text-emerald-400">
                   +{opportunity.edge.toFixed(1)}%
                 </p>
@@ -350,17 +372,14 @@ export default function OpportunityAnalysisPage() {
                 <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
                   EV / $1
                 </p>
-
                 <p className="mt-1 text-3xl font-semibold">
-                  +$
-                  {opportunity.evPerDollar.toFixed(3)}
+                  +${opportunity.evPerDollar.toFixed(3)}
                 </p>
               </div>
             </div>
           </div>
         </section>
 
-        {/* EXECUTIVE RECOMMENDATION */}
         <section className="mt-10 rounded-3xl border border-emerald-400/15 bg-[linear-gradient(135deg,#111A18_0%,#0C121A_100%)] p-8 lg:p-10">
           <p className="text-xs font-medium uppercase tracking-[0.18em] text-emerald-400">
             Executive Recommendation
@@ -368,22 +387,17 @@ export default function OpportunityAnalysisPage() {
 
           <h2 className="mt-3 max-w-4xl text-3xl font-semibold tracking-tight">
             The model sees a{" "}
-            {probabilityGap.toFixed(1)}
-            -point probability advantage over the
-            market.
+            {probabilityGap.toFixed(1)} percentage-point
+            probability advantage over the market.
           </h2>
 
           <p className="mt-5 max-w-3xl text-base leading-8 text-zinc-400">
-            NFL Analytics OS estimates this position
-            at{" "}
+            NFL Analytics OS estimates this position at{" "}
             {opportunity.modelProbability.toFixed(1)}%
             versus a market-implied probability of{" "}
-            {opportunity.impliedProbability.toFixed(
-              1
-            )}
-            %. The current best available price is{" "}
-            {opportunity.pick} at{" "}
-            {opportunity.book} for{" "}
+            {opportunity.impliedProbability.toFixed(1)}%.
+            The current best available price is{" "}
+            {opportunity.pick} at {opportunity.book} for{" "}
             {formatOdds(opportunity.price)}.
           </p>
 
@@ -419,49 +433,14 @@ export default function OpportunityAnalysisPage() {
             Matchup Projection
           </p>
 
-          <div className="mt-2 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-            <div>
-              <h2 className="text-3xl font-semibold">
-                Model view of the game itself.
-              </h2>
-
-              <p className="mt-3 max-w-2xl text-sm leading-7 text-zinc-500">
-                This section comes from the
-                matchup-level game projection model,
-                separate from the sportsbook-specific
-                opportunity calculation.
-              </p>
-            </div>
-
-            {projection && (
-              <Badge
-                variant="outline"
-                className="border-sky-400/20 bg-sky-400/[0.05] text-sky-400"
-              >
-                Game Model Live
-              </Badge>
-            )}
-          </div>
-
-          {projectionLoading && (
-            <div className="mt-5 rounded-3xl border border-white/[0.08] bg-[#0D131C] p-8">
-              <p className="text-sm text-zinc-500">
-                Loading matchup projection...
-              </p>
-            </div>
-          )}
-
           {projectionError && (
-            <div className="mt-5 rounded-3xl border border-amber-400/15 bg-amber-400/[0.03] p-8">
-              <p className="text-sm text-amber-400">
-                {projectionError}
-              </p>
-            </div>
+            <p className="mt-4 text-sm text-amber-400">
+              {projectionError}
+            </p>
           )}
 
           {projection && (
             <>
-              {/* PROJECTED SCORE */}
               <div className="mt-5 rounded-3xl border border-white/[0.08] bg-[linear-gradient(135deg,#101722_0%,#0B1017_100%)] p-8">
                 <p className="text-[11px] uppercase tracking-[0.18em] text-zinc-700">
                   Projected Score
@@ -473,126 +452,68 @@ export default function OpportunityAnalysisPage() {
                       {projection.awayTeam}
                     </p>
 
-                    <p className="mt-2 text-5xl font-semibold tracking-tight">
+                    <p className="mt-2 text-5xl font-semibold">
                       {projection.model.projectedScore.away.toFixed(
                         1
                       )}
                     </p>
                   </div>
 
-                  <div className="text-center text-sm text-zinc-700">
-                    @
-                  </div>
+                  <div className="text-zinc-700">@</div>
 
                   <div className="text-right">
                     <p className="text-sm text-zinc-500">
                       {projection.homeTeam}
                     </p>
 
-                    <p className="mt-2 text-5xl font-semibold tracking-tight">
+                    <p className="mt-2 text-5xl font-semibold">
                       {projection.model.projectedScore.home.toFixed(
                         1
                       )}
                     </p>
                   </div>
                 </div>
-
-                <div className="mt-8 grid gap-3 border-t border-white/[0.07] pt-6 md:grid-cols-3">
-                  <div>
-                    <p className="text-[10px] uppercase tracking-wider text-zinc-700">
-                      Model Total
-                    </p>
-
-                    <p className="mt-2 text-xl font-semibold">
-                      {projection.model.total.toFixed(
-                        1
-                      )}
-                    </p>
-                  </div>
-
-                  <div>
-                    <p className="text-[10px] uppercase tracking-wider text-zinc-700">
-                      Market Total
-                    </p>
-
-                    <p className="mt-2 text-xl font-semibold">
-                      {projection.market.total.toFixed(
-                        1
-                      )}
-                    </p>
-                  </div>
-
-                  <div>
-                    <p className="text-[10px] uppercase tracking-wider text-zinc-700">
-                      Total Difference
-                    </p>
-
-                    <p className="mt-2 text-xl font-semibold">
-                      {formatSignedNumber(
-                        Number(
-                          (
-                            projection.model.total -
-                            projection.market.total
-                          ).toFixed(1)
-                        )
-                      )}
-                    </p>
-                  </div>
-                </div>
               </div>
 
-              {/* MODEL VS MARKET */}
               <div className="mt-4 grid gap-4 lg:grid-cols-2">
                 <article className="rounded-3xl border border-white/[0.08] bg-[#0D131C] p-7">
-                  <p className="text-xs font-medium uppercase tracking-[0.18em] text-zinc-700">
+                  <p className="text-xs uppercase tracking-[0.18em] text-zinc-700">
                     Model vs Market
                   </p>
 
-                  <h3 className="mt-3 text-2xl font-semibold">
-                    Where the matchup model disagrees.
-                  </h3>
-
                   <div className="mt-6 space-y-5">
-                    <div className="flex items-end justify-between border-b border-white/[0.07] pb-4">
-                      <span className="text-sm text-zinc-500">
+                    <div className="flex justify-between">
+                      <span className="text-zinc-500">
                         Model margin — home
                       </span>
 
-                      <span className="text-xl font-semibold">
+                      <span className="font-semibold">
                         {formatSignedNumber(
                           projection.model.marginHome
                         )}
                       </span>
                     </div>
 
-                    <div className="flex items-end justify-between border-b border-white/[0.07] pb-4">
-                      <span className="text-sm text-zinc-500">
+                    <div className="flex justify-between">
+                      <span className="text-zinc-500">
                         Market margin — home
                       </span>
 
-                      <span className="text-xl font-semibold">
+                      <span className="font-semibold">
                         {formatSignedNumber(
                           projection.market.marginHome
                         )}
                       </span>
                     </div>
 
-                    <div className="flex items-end justify-between">
-                      <span className="text-sm text-zinc-500">
+                    <div className="flex justify-between">
+                      <span className="text-zinc-500">
                         Spread edge
                       </span>
 
-                      <span
-                        className={`text-xl font-semibold ${
-                          projection.spreadAnalysis
-                            .edgePoints < 0
-                            ? "text-emerald-400"
-                            : "text-sky-400"
-                        }`}
-                      >
+                      <span className="font-semibold text-emerald-400">
                         {formatSignedNumber(
-                          projection.spreadAnalysis
-                            .edgePoints
+                          projection.spreadAnalysis.edgePoints
                         )}{" "}
                         pts
                       </span>
@@ -600,102 +521,208 @@ export default function OpportunityAnalysisPage() {
                   </div>
                 </article>
 
-                {/* POWER RATINGS */}
                 <article className="rounded-3xl border border-white/[0.08] bg-[#0D131C] p-7">
-                  <p className="text-xs font-medium uppercase tracking-[0.18em] text-zinc-700">
+                  <p className="text-xs uppercase tracking-[0.18em] text-zinc-700">
                     Team Power
                   </p>
 
-                  <h3 className="mt-3 text-2xl font-semibold">
-                    Relative team-strength signal.
-                  </h3>
-
                   <div className="mt-6 grid grid-cols-2 gap-3">
-                    <div className="rounded-2xl border border-white/[0.07] bg-black/10 p-5">
-                      <p className="text-sm text-zinc-500">
+                    <div className="rounded-xl border border-white/[0.07] p-5">
+                      <p className="text-zinc-500">
                         {projection.awayTeam}
                       </p>
 
                       <p className="mt-2 text-3xl font-semibold">
-                        {projection.teamPower.away.toFixed(
-                          2
-                        )}
+                        {projection.teamPower.away.toFixed(2)}
                       </p>
                     </div>
 
-                    <div className="rounded-2xl border border-white/[0.07] bg-black/10 p-5">
-                      <p className="text-sm text-zinc-500">
+                    <div className="rounded-xl border border-white/[0.07] p-5">
+                      <p className="text-zinc-500">
                         {projection.homeTeam}
                       </p>
 
                       <p className="mt-2 text-3xl font-semibold">
-                        {projection.teamPower.home.toFixed(
-                          2
-                        )}
+                        {projection.teamPower.home.toFixed(2)}
                       </p>
                     </div>
                   </div>
-
-                  <div className="mt-4 rounded-2xl border border-white/[0.07] bg-black/10 p-5">
-                    <p className="text-[10px] uppercase tracking-wider text-zinc-700">
-                      Home minus away power
-                    </p>
-
-                    <p className="mt-2 text-2xl font-semibold">
-                      {formatSignedNumber(
-                        projection.teamPower
-                          .differenceHomeMinusAway
-                      )}
-                    </p>
-                  </div>
                 </article>
               </div>
+            </>
+          )}
+        </section>
 
-              {/* COVER ANALYSIS */}
-              <div className="mt-4 rounded-3xl border border-white/[0.08] bg-[#0D131C] p-7">
-                <p className="text-xs font-medium uppercase tracking-[0.18em] text-zinc-700">
-                  Spread Projection
-                </p>
+        {/* SCHEDULE CONTEXT */}
+        <section className="mt-8">
+          <p className="text-xs font-medium uppercase tracking-[0.18em] text-violet-400">
+            Schedule Context
+          </p>
 
-                <div className="mt-5 grid gap-4 md:grid-cols-3">
-                  <div className="rounded-2xl border border-white/[0.07] bg-black/10 p-5">
-                    <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-700">
-                      Market Home Spread
-                    </p>
+          <h2 className="mt-2 text-2xl font-semibold">
+            Rest, travel, and scheduling pressure.
+          </h2>
 
-                    <p className="mt-3 text-2xl font-semibold">
-                      {formatSignedNumber(
-                        projection.market.homeSpread
-                      )}
-                    </p>
-                  </div>
+          {contextError && (
+            <p className="mt-4 text-sm text-amber-400">
+              {contextError}
+            </p>
+          )}
 
-                  <div className="rounded-2xl border border-white/[0.07] bg-black/10 p-5">
-                    <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-700">
-                      Home Cover Probability
-                    </p>
+          {context && (
+            <>
+              <div className="mt-5 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+                <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-6">
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
+                    Rest Outlook
+                  </p>
 
-                    <p className="mt-3 text-2xl font-semibold">
-                      {projection.spreadAnalysis.homeCoverProbability.toFixed(
-                        1
-                      )}
-                      %
-                    </p>
-                  </div>
-
-                  <div className="rounded-2xl border border-white/[0.07] bg-black/10 p-5">
-                    <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-700">
-                      Home Cover Fair Odds
-                    </p>
-
-                    <p className="mt-3 text-2xl font-semibold">
-                      {formatOdds(
-                        projection.spreadAnalysis
-                          .homeCoverFairOdds
-                      )}
-                    </p>
-                  </div>
+                  <p className="mt-3 text-xl font-semibold">
+                    {context.rest.label}
+                  </p>
                 </div>
+
+                <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-6">
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
+                    Away Travel
+                  </p>
+
+                  <p className="mt-3 text-2xl font-semibold">
+                    {context.travel.awayMiles !== null
+                      ? `${context.travel.awayMiles.toFixed(0)} mi`
+                      : "N/A"}
+                  </p>
+                </div>
+
+                <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-6">
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
+                    Timezone Shift
+                  </p>
+
+                  <p className="mt-3 text-2xl font-semibold">
+                    {context.travel.awayTimezoneShiftHours !==
+                    null
+                      ? `${context.travel.awayTimezoneShiftHours.toFixed(
+                          1
+                        )} hr`
+                      : "N/A"}
+                  </p>
+                </div>
+
+                <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-6">
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
+                    Week
+                  </p>
+
+                  <p className="mt-3 text-2xl font-semibold">
+                    {context.week}
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                <article className="rounded-3xl border border-white/[0.08] bg-[#0D131C] p-7">
+                  <p className="text-xs uppercase tracking-[0.18em] text-zinc-700">
+                    Rest Profile
+                  </p>
+
+                  <div className="mt-6 space-y-4">
+                    <div className="flex justify-between">
+                      <span className="text-sm text-zinc-500">
+                        {context.awayTeam} rest
+                      </span>
+
+                      <span>
+                        {context.rest.weekOneNeutralized
+                          ? "Offseason"
+                          : `${context.rest.awayDays ?? "N/A"} days`}
+                      </span>
+                    </div>
+
+                    <div className="flex justify-between">
+                      <span className="text-sm text-zinc-500">
+                        {context.homeTeam} rest
+                      </span>
+
+                      <span>
+                        {context.rest.weekOneNeutralized
+                          ? "Offseason"
+                          : `${context.rest.homeDays ?? "N/A"} days`}
+                      </span>
+                    </div>
+
+                    <div className="flex justify-between">
+                      <span className="text-sm text-zinc-500">
+                        Rest advantage
+                      </span>
+
+                      <span>
+                        {context.rest.weekOneNeutralized
+                          ? "Neutral"
+                          : `${formatSignedNumber(
+                              context.rest.advantageHomeDays ??
+                                0
+                            )} days`}
+                      </span>
+                    </div>
+                  </div>
+                </article>
+
+                <article className="rounded-3xl border border-white/[0.08] bg-[#0D131C] p-7">
+                  <p className="text-xs uppercase tracking-[0.18em] text-zinc-700">
+                    Schedule Flags
+                  </p>
+
+                  <div className="mt-6 grid grid-cols-2 gap-3">
+                    <div className="rounded-xl border border-white/[0.07] p-4">
+                      <p className="text-xs text-zinc-600">
+                        Away Short Rest
+                      </p>
+
+                      <p className="mt-2 font-semibold">
+                        {context.rest.shortRestAway
+                          ? "Yes"
+                          : "No"}
+                      </p>
+                    </div>
+
+                    <div className="rounded-xl border border-white/[0.07] p-4">
+                      <p className="text-xs text-zinc-600">
+                        Home Short Rest
+                      </p>
+
+                      <p className="mt-2 font-semibold">
+                        {context.rest.shortRestHome
+                          ? "Yes"
+                          : "No"}
+                      </p>
+                    </div>
+
+                    <div className="rounded-xl border border-white/[0.07] p-4">
+                      <p className="text-xs text-zinc-600">
+                        Away Long Rest
+                      </p>
+
+                      <p className="mt-2 font-semibold">
+                        {context.rest.longRestAway
+                          ? "Yes"
+                          : "No"}
+                      </p>
+                    </div>
+
+                    <div className="rounded-xl border border-white/[0.07] p-4">
+                      <p className="text-xs text-zinc-600">
+                        Home Long Rest
+                      </p>
+
+                      <p className="mt-2 font-semibold">
+                        {context.rest.longRestHome
+                          ? "Yes"
+                          : "No"}
+                      </p>
+                    </div>
+                  </div>
+                </article>
               </div>
             </>
           )}
@@ -703,7 +730,7 @@ export default function OpportunityAnalysisPage() {
 
         {/* MARKET INTELLIGENCE */}
         <section className="mt-10">
-          <p className="text-xs font-medium uppercase tracking-[0.18em] text-zinc-700">
+          <p className="text-xs uppercase tracking-[0.18em] text-zinc-700">
             Market Intelligence
           </p>
 
@@ -720,17 +747,11 @@ export default function OpportunityAnalysisPage() {
             </div>
 
             <div className="grid grid-cols-[1.4fr_0.8fr_0.8fr_0.8fr] gap-3 bg-emerald-400/[0.035] px-6 py-5">
-              <div className="flex items-center gap-2">
-                <span className="font-semibold">
-                  {opportunity.book}
-                </span>
+              <span className="font-semibold">
+                {opportunity.book}
+              </span>
 
-                <Badge className="bg-emerald-400 text-black hover:bg-emerald-400">
-                  Best
-                </Badge>
-              </div>
-
-              <span className="font-medium">
+              <span>
                 {formatPoint(
                   opportunity.market,
                   opportunity.side,
@@ -738,13 +759,12 @@ export default function OpportunityAnalysisPage() {
                 )}
               </span>
 
-              <span className="font-medium">
+              <span>
                 {formatOdds(opportunity.price)}
               </span>
 
-              <span className="font-medium text-emerald-400">
-                +$
-                {opportunity.evPerDollar.toFixed(3)}
+              <span className="text-emerald-400">
+                +${opportunity.evPerDollar.toFixed(3)}
               </span>
             </div>
 
@@ -753,11 +773,9 @@ export default function OpportunityAnalysisPage() {
                 key={`${book.book}-${book.point}-${book.price}`}
                 className="grid grid-cols-[1.4fr_0.8fr_0.8fr_0.8fr] gap-3 border-t border-white/[0.06] px-6 py-5 text-sm"
               >
-                <span className="text-zinc-300">
-                  {book.book}
-                </span>
+                <span>{book.book}</span>
 
-                <span className="text-zinc-400">
+                <span>
                   {formatPoint(
                     opportunity.market,
                     opportunity.side,
@@ -765,29 +783,17 @@ export default function OpportunityAnalysisPage() {
                   )}
                 </span>
 
-                <span className="text-zinc-400">
-                  {formatOdds(book.price)}
-                </span>
+                <span>{formatOdds(book.price)}</span>
 
-                <span className="text-zinc-400">
+                <span>
                   +${book.evPerDollar.toFixed(3)}
                 </span>
               </div>
             ))}
-
-            {alternateBooks.length === 0 && (
-              <div className="border-t border-white/[0.06] px-6 py-6">
-                <p className="text-sm text-zinc-600">
-                  No alternate sportsbook prices are
-                  currently available for this
-                  position.
-                </p>
-              </div>
-            )}
           </div>
         </section>
 
-        {/* BETTING METRICS */}
+        {/* MODEL METRICS */}
         <section className="mt-8 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
           <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-6">
             <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
@@ -795,8 +801,7 @@ export default function OpportunityAnalysisPage() {
             </p>
 
             <p className="mt-3 text-2xl font-semibold">
-              {opportunity.modelProbability.toFixed(1)}
-              %
+              {opportunity.modelProbability.toFixed(1)}%
             </p>
           </div>
 
@@ -806,10 +811,7 @@ export default function OpportunityAnalysisPage() {
             </p>
 
             <p className="mt-3 text-2xl font-semibold">
-              {opportunity.impliedProbability.toFixed(
-                1
-              )}
-              %
+              {opportunity.impliedProbability.toFixed(1)}%
             </p>
           </div>
 
@@ -819,10 +821,7 @@ export default function OpportunityAnalysisPage() {
             </p>
 
             <p className="mt-3 text-2xl font-semibold">
-              {(opportunity.kelly20 * 100).toFixed(
-                1
-              )}
-              %
+              {(opportunity.kelly20 * 100).toFixed(1)}%
             </p>
           </div>
 
@@ -837,216 +836,25 @@ export default function OpportunityAnalysisPage() {
           </div>
         </section>
 
-        {/* SIGNAL QUALITY + SIZING */}
-        <section className="mt-8 grid gap-4 lg:grid-cols-2">
-          <article className="rounded-3xl border border-white/[0.08] bg-[#0D131C] p-7">
-            <p className="text-xs font-medium uppercase tracking-[0.18em] text-zinc-700">
-              Signal Quality
-            </p>
-
-            <h3 className="mt-3 text-2xl font-semibold">
-              Confidence behind the recommendation.
-            </h3>
-
-            <div className="mt-6 space-y-5">
-              {[
-                {
-                  label: "Data completeness",
-                  value:
-                    opportunity.dataCompleteness,
-                },
-                {
-                  label: "Market confidence",
-                  value:
-                    opportunity.marketConfidence,
-                },
-                {
-                  label: "Model confidence",
-                  value:
-                    opportunity.modelConfidence,
-                },
-              ].map((metric) => (
-                <div key={metric.label}>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-zinc-500">
-                      {metric.label}
-                    </span>
-
-                    <span>
-                      {metric.value.toFixed(0)}%
-                    </span>
-                  </div>
-
-                  <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/[0.05]">
-                    <div
-                      className="h-full bg-white"
-                      style={{
-                        width: `${metric.value}%`,
-                      }}
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
-          </article>
-
-          <article className="rounded-3xl border border-white/[0.08] bg-[#0D131C] p-7">
-            <p className="text-xs font-medium uppercase tracking-[0.18em] text-zinc-700">
-              Position Sizing
-            </p>
-
-            <h3 className="mt-3 text-2xl font-semibold">
-              Model-derived allocation guidance.
-            </h3>
-
-            <div className="mt-6 space-y-5">
-              <div className="flex items-end justify-between border-b border-white/[0.07] pb-4">
-                <span className="text-sm text-zinc-500">
-                  Full Kelly
-                </span>
-
-                <span className="text-xl font-semibold">
-                  {(
-                    opportunity.kellyFull * 100
-                  ).toFixed(1)}
-                  %
-                </span>
-              </div>
-
-              <div className="flex items-end justify-between border-b border-white/[0.07] pb-4">
-                <span className="text-sm text-zinc-500">
-                  20% Kelly
-                </span>
-
-                <span className="text-xl font-semibold">
-                  {(
-                    opportunity.kelly20 * 100
-                  ).toFixed(1)}
-                  %
-                </span>
-              </div>
-
-              <div className="flex items-end justify-between">
-                <span className="text-sm text-zinc-500">
-                  Expected Value / $1
-                </span>
-
-                <span className="text-xl font-semibold text-emerald-400">
-                  +$
-                  {opportunity.evPerDollar.toFixed(
-                    3
-                  )}
-                </span>
-              </div>
-            </div>
-          </article>
-        </section>
-
-        {/* SUPPORTING CASE / RISKS */}
-        <section className="mt-8 grid gap-4 lg:grid-cols-2">
-          <article className="rounded-3xl border border-white/[0.08] bg-[#0D131C] p-7">
-            <p className="text-xs font-medium uppercase tracking-[0.18em] text-zinc-700">
-              Supporting Case
-            </p>
-
-            <h3 className="mt-3 text-2xl font-semibold">
-              What the current data supports.
-            </h3>
-
-            <div className="mt-5 space-y-4 text-sm leading-7 text-zinc-500">
-              <p>
-                The model probability exceeds the
-                market-implied probability by{" "}
-                {probabilityGap.toFixed(1)} percentage
-                points.
-              </p>
-
-              <p>
-                The best available line produces +
-                {opportunity.edge.toFixed(1)}% model
-                edge and +$
-                {opportunity.evPerDollar.toFixed(3)}
-                expected value per $1 risked.
-              </p>
-
-              {projection && (
-                <p>
-                  At the matchup level, the model
-                  projects{" "}
-                  {projection.awayTeam}{" "}
-                  {projection.model.projectedScore.away.toFixed(
-                    1
-                  )}{" "}
-                  and {projection.homeTeam}{" "}
-                  {projection.model.projectedScore.home.toFixed(
-                    1
-                  )}
-                  .
-                </p>
-              )}
-
-              <p>
-                Line shopping matters because
-                alternate sportsbooks may offer
-                different points, prices, and expected
-                value.
-              </p>
-            </div>
-          </article>
-
-          <article className="rounded-3xl border border-amber-400/15 bg-amber-400/[0.03] p-7">
-            <p className="text-xs font-medium uppercase tracking-[0.18em] text-amber-400">
-              Risk Factors
-            </p>
-
-            <h3 className="mt-3 text-2xl font-semibold">
-              What still needs monitoring.
-            </h3>
-
-            <div className="mt-5 space-y-4 text-sm leading-7 text-zinc-500">
-              <p>
-                The recommendation can weaken if the
-                market moves away from the current best
-                available number.
-              </p>
-
-              <p>
-                Injury, weather, and real-time line
-                movement are not yet surfaced here as
-                live contextual feeds.
-              </p>
-
-              <p>
-                Kelly sizing is model-derived and
-                should not be interpreted as a
-                guaranteed-return allocation.
-              </p>
-            </div>
-          </article>
-        </section>
-
         {/* BOTTOM LINE */}
         <section className="mt-8 rounded-3xl border border-emerald-400/15 bg-emerald-400/[0.035] p-8">
-          <p className="text-xs font-medium uppercase tracking-[0.18em] text-emerald-400">
+          <p className="text-xs uppercase tracking-[0.18em] text-emerald-400">
             Bottom Line
           </p>
 
           <h2 className="mt-3 text-3xl font-semibold">
-            {opportunity.pick} is currently a{" "}
+            {opportunity.pick} remains a{" "}
             {opportunity.recommendation.toLowerCase()}.
           </h2>
 
           <p className="mt-4 max-w-3xl text-sm leading-7 text-zinc-400">
-            The best available line is currently at{" "}
-            {opportunity.book}. The model sees a +
-            {opportunity.edge.toFixed(1)}% edge with{" "}
-            {opportunity.confidence} confidence.
-            Continue monitoring the market because
-            changes in line, price, injuries, or other
-            inputs can materially alter the value.
+            The opportunity currently combines positive
+            betting value, matchup-level model support, and
+            schedule context. Continue monitoring price and
+            contextual changes before kickoff.
           </p>
 
-          <div className="mt-7 flex flex-wrap gap-3">
+          <div className="mt-7 flex gap-3">
             <Button
               onClick={addToCard}
               disabled={added}
@@ -1064,7 +872,7 @@ export default function OpportunityAnalysisPage() {
             <Link href="/opportunities">
               <Button
                 variant="outline"
-                className="border-white/10 bg-transparent text-white hover:bg-white/[0.05]"
+                className="border-white/10 bg-transparent text-white"
               >
                 Back to Opportunities
               </Button>
