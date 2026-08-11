@@ -85,6 +85,7 @@ class WeatherAnalyzer:
             "summary": summary,
             "recommendation": recommendation,
             "providerMetadata": self.provider_metadata,
+            "dataMode": "mock" if self.provider_metadata.get("status") == "Mock" else "live",
         }
 
     def _mock_weather(self) -> Dict[str, Any]:

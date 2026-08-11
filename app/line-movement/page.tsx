@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import { fetchJson } from "../lib/api";
+
 type LineMovement = {
   id: string;
   eventId: string;
@@ -144,18 +146,9 @@ export default function LineMovementPage() {
         setLoading(true);
         setError("");
 
-        const response = await fetch(
-          "http://localhost:8000/api/line-movement?limit=1000"
+        const data = await fetchJson<LineMovementResponse>(
+          "/api/line-movement?limit=1000"
         );
-
-        if (!response.ok) {
-          throw new Error(
-            "Failed to load line movement"
-          );
-        }
-
-        const data: LineMovementResponse =
-          await response.json();
 
         setMovements(data.movements);
       } catch (err) {

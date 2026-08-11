@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import ExecutiveSummary from "@/components/executive-summary";
 import SportsIntelligenceScoreCard from "@/components/sports-intelligence-score-card";
+import { fetchJson } from "../../lib/api";
 
 type AlternateBook = {
   book: string;
@@ -325,21 +326,9 @@ export default function OpportunityAnalysisPage() {
         setLoading(true);
         setError("");
 
-        const opportunityResponse =
-          await fetch(
-            `http://localhost:8000/api/opportunities/${params.id}`
-          );
-
-        if (
-          !opportunityResponse.ok
-        ) {
-          throw new Error(
-            "Failed to load opportunity"
-          );
-        }
-
-        const opportunityData: Opportunity =
-          await opportunityResponse.json();
+        const opportunityData = await fetchJson<Opportunity>(
+          `/api/opportunities/${params.id}`
+        );
 
         setOpportunity(
           opportunityData
@@ -367,32 +356,47 @@ export default function OpportunityAnalysisPage() {
           }
         }
 
-        const analysisResponse =
-          await fetch(
-            `http://localhost:8000/api/opportunities/${opportunityData.id}/analysis`
-          );
-
-        if (analysisResponse.ok) {
-          const analysisData =
-            await analysisResponse.json();
-          setExecutiveAnalysis(
-            analysisData.executiveAnalysis
-          );
-          setExplainability(
-            analysisData.explainability
-          );
-          setDecisionTimeline(
-            analysisData.decisionTimeline
-          );
+        try {
+          const analysisData = await fetchJson<{
+            executiveAnalysis: {
+              headline: string;
+              recommendation: string;
+              summary: string;
+              strengths: string[];
+              risks: string[];
+              watchItems: string[];
+              stakeRecommendation: string;
+              bestPriceSummary: string;
+            };
+            explainability: {
+              overallSummary: string;
+              strengths: string[];
+              weaknesses: string[];
+              confidenceExplanation: string;
+              marketExplanation: string;
+              injuryExplanation: string;
+              weatherExplanation: string;
+              keyReasons: string[];
+              whatCouldImprove: string[];
+              riskFactors: string[];
+            };
+            decisionTimeline: DecisionTimeline;
+          }>(`/api/opportunities/${opportunityData.id}/analysis`);
+          setExecutiveAnalysis(analysisData.executiveAnalysis);
+          setExplainability(analysisData.explainability);
+          setDecisionTimeline(analysisData.decisionTimeline);
+        } catch {
+          setExecutiveAnalysis(null);
+          setExplainability(null);
         }
 
-        const timelineResponse = await fetch(
-          `http://localhost:8000/api/opportunities/${opportunityData.id}/timeline`
-        );
-
-        if (timelineResponse.ok) {
-          const timelineData = await timelineResponse.json();
+        try {
+          const timelineData = await fetchJson<DecisionTimeline>(
+            `/api/opportunities/${opportunityData.id}/timeline`
+          );
           setDecisionTimeline(timelineData);
+        } catch {
+          setDecisionTimeline(null);
         }
 
         const [
@@ -400,33 +404,9 @@ export default function OpportunityAnalysisPage() {
           contextResult,
         ] =
           await Promise.allSettled([
-            fetch(
-              `http://localhost:8000/api/games/${opportunityData.eventId}`
-            ).then(
-              async (response) => {
-                if (!response.ok) {
-                  throw new Error(
-                    "Projection unavailable"
-                  );
-                }
+            fetchJson<GameProjection>(`/api/games/${opportunityData.eventId}`),
 
-                return response.json();
-              }
-            ),
-
-            fetch(
-              `http://localhost:8000/api/games/${opportunityData.eventId}/context`
-            ).then(
-              async (response) => {
-                if (!response.ok) {
-                  throw new Error(
-                    "Context unavailable"
-                  );
-                }
-
-                return response.json();
-              }
-            ),
+            fetchJson<ScheduleContext>(`/api/games/${opportunityData.eventId}/context`),
           ]);
 
         if (

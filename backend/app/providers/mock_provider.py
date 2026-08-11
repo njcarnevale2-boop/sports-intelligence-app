@@ -13,5 +13,5 @@ class MockProvider(BaseProvider):
 
     def get_metadata(self) -> Dict[str, Any]:
         metadata = super().get_metadata()
-        metadata.update({"provider": "Mock", "isLive": False})
+        metadata.update({"provider": "Mock", "isLive": False, "status": "Mock"})
         return metadata

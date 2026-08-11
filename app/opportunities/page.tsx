@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import SportsIntelligenceScoreCard from "@/components/sports-intelligence-score-card";
+import { fetchJson } from "../lib/api";
 
 type AlternateBook = {
   book: string;
@@ -180,18 +181,9 @@ export default function OpportunitiesPage() {
         setLoading(true);
         setError("");
 
-        const response = await fetch(
-          "http://localhost:8000/api/opportunities?limit=100"
+        const data = await fetchJson<OpportunitiesResponse>(
+          "/api/opportunities?limit=100"
         );
-
-        if (!response.ok) {
-          throw new Error(
-            "Failed to load model opportunities"
-          );
-        }
-
-        const data: OpportunitiesResponse =
-          await response.json();
 
         setOpportunities(
           data.opportunities

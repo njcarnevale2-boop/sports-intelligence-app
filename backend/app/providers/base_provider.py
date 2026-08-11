@@ -15,4 +15,5 @@ class BaseProvider:
             "provider": self.provider_name,
             "lastUpdated": datetime.now(timezone.utc).isoformat(),
             "isLive": False,
+            "status": "Unavailable",
         }

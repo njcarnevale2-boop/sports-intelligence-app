@@ -99,6 +99,7 @@ class InjuryAnalyzer:
             "summary": self._build_summary(overall_score),
             "teams": team_reports,
             "providerMetadata": self.provider_metadata,
+            "dataMode": "mock" if self.provider_metadata.get("status") == "Mock" else "live",
         }
 
     def _analyze_team(self, team: str, injuries: List[Dict[str, Any]]) -> Dict[str, Any]:

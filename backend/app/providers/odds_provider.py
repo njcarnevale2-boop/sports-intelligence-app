@@ -20,5 +20,5 @@ class OddsProvider(BaseProvider):
 
     def get_metadata(self) -> Dict[str, Any]:
         metadata = super().get_metadata()
-        metadata.update({"provider": "Odds", "isLive": bool(self.api_key)})
+        metadata.update({"provider": "Odds", "isLive": bool(self.api_key), "status": "Live" if self.api_key else "Unavailable"})
         return metadata

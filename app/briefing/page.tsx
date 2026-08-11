@@ -5,6 +5,7 @@ import Link from "next/link";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { fetchJson } from "../lib/api";
 
 type Opportunity = {
   id: string;
@@ -43,15 +44,7 @@ export default function BriefingPage() {
   useEffect(() => {
     async function loadBriefing() {
       try {
-        const response = await fetch(
-          "http://localhost:8000/api/opportunities?limit=10"
-        );
-
-        if (!response.ok) {
-          throw new Error("Failed to load briefing data");
-        }
-
-        const data: ApiResponse = await response.json();
+        const data = await fetchJson<ApiResponse>("/api/opportunities?limit=10");
         setOpportunities(data.opportunities);
       } catch (err) {
         console.error(err);

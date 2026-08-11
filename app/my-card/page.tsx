@@ -5,6 +5,7 @@ import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { fetchJson } from "../lib/api";
 
 type SavedBet = {
   id?: string;
@@ -78,15 +79,7 @@ export default function MyCardPage() {
   useEffect(() => {
     async function loadPortfolio() {
       try {
-        const response = await fetch(
-          "http://localhost:8000/api/portfolio"
-        );
-
-        if (!response.ok) {
-          throw new Error("Failed to load portfolio");
-        }
-
-        const data: PortfolioResponse = await response.json();
+        const data = await fetchJson<PortfolioResponse>("/api/portfolio");
 
         setPortfolio(data.portfolio);
         setPortfolioSummary(data.summary);

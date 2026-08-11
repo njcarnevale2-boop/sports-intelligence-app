@@ -16,9 +16,9 @@ type AdminStatus = {
   databaseStatus: string;
   queueStatus: string;
   providerMetadata?: {
-    injury?: { provider?: string; lastUpdated?: string; isLive?: boolean };
-    weather?: { provider?: string; lastUpdated?: string; isLive?: boolean };
-    odds?: { provider?: string; lastUpdated?: string; isLive?: boolean };
+    injury?: { provider?: string; lastUpdated?: string; isLive?: boolean; status?: string };
+    weather?: { provider?: string; lastUpdated?: string; isLive?: boolean; status?: string };
+    odds?: { provider?: string; lastUpdated?: string; isLive?: boolean; status?: string };
   };
   errorLog: Array<{ timestamp: string; message: string }>;
 };
@@ -38,10 +38,23 @@ export default function AdminPage() {
   const loadStatus = async () => {
     try {
       setLoading(true);
-      const response = await fetch("http://localhost:8000/api/admin/status");
-      if (!response.ok) throw new Error("Status unavailable");
-      const payload = await response.json();
-      setStatus(payload);
+      try {
+        const payload = await fetchJson<AdminStatus>("/api/admin/status");
+        setStatus(payload);
+      } catch {
+        setStatus({
+          apiHealth: "degraded",
+          lastRefresh: "n/a",
+          refreshDuration: 0,
+          gamesLoaded: 0,
+          opportunitiesLoaded: 0,
+          injuriesLoaded: 0,
+          weatherLoaded: 0,
+          databaseStatus: "disconnected",
+          queueStatus: "idle",
+          errorLog: [{ timestamp: new Date().toISOString(), message: "Unable to fetch admin status" }],
+        });
+      }
     } catch (error) {
       console.error(error);
       setStatus({
@@ -68,8 +81,7 @@ export default function AdminPage() {
   const handleRefresh = async () => {
     setRefreshing(true);
     try {
-      const response = await fetch("http://localhost:8000/api/admin/refresh", { method: "POST" });
-      if (!response.ok) throw new Error("Refresh failed");
+      await fetchJson("/api/admin/refresh", { method: "POST" });
       await loadStatus();
     } finally {
       setRefreshing(false);
@@ -130,8 +142,8 @@ export default function AdminPage() {
                           <p className="text-zinc-500">{entry?.provider ?? "Mock"}</p>
                         </div>
                         <div className="text-right">
-                          <p className={`text-sm ${entry?.isLive ? "text-emerald-400" : "text-amber-400"}`}>
-                            {entry?.isLive ? "Live" : "Mock"}
+                          <p className={`text-sm ${entry?.status === "Live" ? "text-emerald-400" : entry?.status === "Unavailable" ? "text-amber-400" : "text-sky-400"}`}>
+                            {entry?.status ?? (entry?.isLive ? "Live" : "Mock")}
                           </p>
                           <p className="text-xs text-zinc-500">{entry?.lastUpdated ? new Date(entry.lastUpdated).toLocaleString() : "n/a"}</p>
                         </div>

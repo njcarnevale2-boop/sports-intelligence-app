@@ -21,7 +21,14 @@ export async function fetchJson<T>(path: string, init?: RequestInit, timeoutMs =
       throw new Error(`Request failed (${response.status})`);
     }
 
-    return (await response.json()) as T;
+    const contentType = response.headers.get("content-type") || "";
+
+    if (contentType.includes("application/json")) {
+      return (await response.json()) as T;
+    }
+
+    const text = await response.text();
+    return (text ? JSON.parse(text) : undefined) as T;
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       throw new Error("Request timed out");
