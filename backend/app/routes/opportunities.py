@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pandas as pd
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 router = APIRouter(prefix="/api", tags=["sports-intelligence"])
 
@@ -31,9 +31,22 @@ def format_pick(row):
     return f"{side.title()} {point:g}"
 
 
-def row_to_opportunity(row):
-    return {
-        "id": f'{row["api_event_id"]}-{int(row["rank"])}',
+def build_id(row, suffix=None):
+    base = (
+        f'{row["api_event_id"]}-'
+        f'{row["market"]}-'
+        f'{row["side"]}'
+    )
+
+    if suffix:
+        return f"{base}-{suffix}"
+
+    return base
+
+
+def row_to_opportunity(row, include_alternates=None):
+    result = {
+        "id": build_id(row),
         "eventId": row["api_event_id"],
         "commenceTime": row["commence_time"],
         "matchup": f'{row["away_team"]} @ {row["home_team"]}',
@@ -57,27 +70,161 @@ def row_to_opportunity(row):
         "kelly20": round(float(row["kelly_20pct"]), 3),
         "recommendation": row["recommendation"],
         "confidence": int(round(float(row["confidence_score"]))),
-        "dataCompleteness": round(float(row["data_completeness"]) * 100, 1),
-        "marketConfidence": round(float(row["market_confidence"]) * 100, 1),
-        "modelConfidence": round(float(row["model_confidence"]) * 100, 1),
+        "dataCompleteness": round(
+            float(row["data_completeness"]) * 100,
+            1,
+        ),
+        "marketConfidence": round(
+            float(row["market_confidence"]) * 100,
+            1,
+        ),
+        "modelConfidence": round(
+            float(row["model_confidence"]) * 100,
+            1,
+        ),
         "rank": int(row["rank"]),
     }
 
+    if include_alternates is not None:
+        result["alternateBooks"] = include_alternates
+
+    return result
+
+
+def best_line_for_group(group):
+    market = str(group.iloc[0]["market"])
+    side = str(group.iloc[0]["side"])
+
+    if market == "spread":
+        if side in {"home", "away"}:
+            best_point = group["point"].max()
+            candidates = group[group["point"] == best_point]
+
+            best_price = candidates["price"].max()
+            best = candidates[candidates["price"] == best_price].iloc[0]
+
+            return best
+
+    if market == "total":
+        if side.lower() == "over":
+            best_point = group["point"].min()
+            candidates = group[group["point"] == best_point]
+
+            best_price = candidates["price"].max()
+            best = candidates[candidates["price"] == best_price].iloc[0]
+
+            return best
+
+        if side.lower() == "under":
+            best_point = group["point"].max()
+            candidates = group[group["point"] == best_point]
+
+            best_price = candidates["price"].max()
+            best = candidates[candidates["price"] == best_price].iloc[0]
+
+            return best
+
+    return group.sort_values(
+        ["ev_per_dollar", "edge_pp", "price"],
+        ascending=[False, False, False],
+    ).iloc[0]
+
+
+def make_alternate_books(group, selected_row):
+    alternates = []
+
+    for _, row in group.iterrows():
+        if (
+            str(row["sportsbook"]) == str(selected_row["sportsbook"])
+            and float(row["point"]) == float(selected_row["point"])
+            and float(row["price"]) == float(selected_row["price"])
+        ):
+            continue
+
+        alternates.append(
+            {
+                "book": row["sportsbook"],
+                "point": float(row["point"]),
+                "price": float(row["price"]),
+                "edge": round(float(row["edge_pp"]) * 100, 1),
+                "evPerDollar": round(
+                    float(row["ev_per_dollar"]),
+                    3,
+                ),
+            }
+        )
+
+    alternates.sort(
+        key=lambda item: (
+            item["point"],
+            item["price"],
+            item["evPerDollar"],
+        ),
+        reverse=True,
+    )
+
+    return alternates[:5]
+
 
 @router.get("/opportunities")
-def get_opportunities(limit: int = 10):
+def get_opportunities(
+    limit: int = Query(default=100, ge=1, le=500),
+    best_lines_only: bool = True,
+):
     df = pd.read_csv(RANKED_BET_BOARD)
 
-    df = df.sort_values("rank").head(limit)
+    if not best_lines_only:
+        df = df.sort_values("rank").head(limit)
 
-    opportunities = [
-        row_to_opportunity(row)
-        for _, row in df.iterrows()
-    ]
+        opportunities = [
+            row_to_opportunity(row)
+            for _, row in df.iterrows()
+        ]
+
+        return {
+            "count": len(opportunities),
+            "source": str(RANKED_BET_BOARD),
+            "bestLinesOnly": False,
+            "opportunities": opportunities,
+        }
+
+    grouped = df.groupby(
+        ["api_event_id", "market", "side"],
+        dropna=False,
+        sort=False,
+    )
+
+    best_rows = []
+
+    for _, group in grouped:
+        selected = best_line_for_group(group)
+
+        alternates = make_alternate_books(
+            group,
+            selected,
+        )
+
+        item = row_to_opportunity(
+            selected,
+            include_alternates=alternates,
+        )
+
+        best_rows.append(item)
+
+    best_rows.sort(
+        key=lambda item: (
+            item["rank"],
+            -item["edge"],
+            -item["evPerDollar"],
+        )
+    )
+
+    opportunities = best_rows[:limit]
 
     return {
         "count": len(opportunities),
         "source": str(RANKED_BET_BOARD),
+        "bestLinesOnly": True,
         "opportunities": opportunities,
     }
 
@@ -87,7 +234,7 @@ def get_opportunity(opportunity_id: str):
     df = pd.read_csv(RANKED_BET_BOARD)
 
     df["generated_id"] = df.apply(
-        lambda row: f'{row["api_event_id"]}-{int(row["rank"])}',
+        lambda row: build_id(row),
         axis=1,
     )
 
@@ -99,9 +246,17 @@ def get_opportunity(opportunity_id: str):
             detail="Opportunity not found",
         )
 
-    row = match.iloc[0]
+    selected = best_line_for_group(match)
 
-    return row_to_opportunity(row)
+    alternates = make_alternate_books(
+        match,
+        selected,
+    )
+
+    return row_to_opportunity(
+        selected,
+        include_alternates=alternates,
+    )
 
 
 @router.get("/portfolio")
@@ -113,7 +268,10 @@ def get_portfolio():
     for index, row in df.iterrows():
         portfolio.append(
             {
-                "id": f'{row["api_event_id"]}-portfolio-{index + 1}',
+                "id": build_id(
+                    row,
+                    suffix=f"portfolio-{index + 1}",
+                ),
                 "eventId": row["api_event_id"],
                 "commenceTime": row["commence_time"],
                 "matchup": f'{row["away_team"]} @ {row["home_team"]}',
@@ -178,7 +336,8 @@ def get_portfolio():
     )
 
     expected_value_units = sum(
-        item["recommendedUnits"] * item["evPerDollar"]
+        item["recommendedUnits"]
+        * item["evPerDollar"]
         for item in portfolio
     )
 
@@ -186,8 +345,14 @@ def get_portfolio():
         "count": len(portfolio),
         "source": str(PORTFOLIO_RECOMMENDATIONS),
         "summary": {
-            "totalRecommendedUnits": round(total_units, 2),
-            "averageEdge": round(average_edge, 1),
+            "totalRecommendedUnits": round(
+                total_units,
+                2,
+            ),
+            "averageEdge": round(
+                average_edge,
+                1,
+            ),
             "averageModelProbability": round(
                 average_model_probability,
                 1,
