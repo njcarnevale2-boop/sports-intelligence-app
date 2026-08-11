@@ -67,13 +67,14 @@ def get_injuries(
     injuries = load_injuries()
 
     if not injuries:
-        injury_analysis = InjuryAnalyzer().analyze()
+        analyzer = InjuryAnalyzer()
+        injury_analysis = analyzer.analyze()
 
         return {
             "status": "mock",
-            "count": 5,
+            "count": len(analyzer.injuries),
             "source": "mock",
-            "injuryAnalysis": injury_analysis,
+            "teams": injury_analysis["teams"],
         }
 
     filtered = injuries
