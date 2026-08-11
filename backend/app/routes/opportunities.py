@@ -11,6 +11,9 @@ RANKED_BET_BOARD = MODEL_ROOT / "outputs" / "ranked_bet_board.csv"
 PORTFOLIO_RECOMMENDATIONS = (
     MODEL_ROOT / "outputs" / "portfolio_recommendations.csv"
 )
+GAME_PROJECTIONS = (
+    MODEL_ROOT / "outputs" / "current_game_projections.csv"
+)
 
 
 def format_pick(row):
@@ -96,14 +99,11 @@ def best_line_for_group(group):
     side = str(group.iloc[0]["side"])
 
     if market == "spread":
-        if side in {"home", "away"}:
-            best_point = group["point"].max()
-            candidates = group[group["point"] == best_point]
+        best_point = group["point"].max()
+        candidates = group[group["point"] == best_point]
 
-            best_price = candidates["price"].max()
-            best = candidates[candidates["price"] == best_price].iloc[0]
-
-            return best
+        best_price = candidates["price"].max()
+        return candidates[candidates["price"] == best_price].iloc[0]
 
     if market == "total":
         if side.lower() == "over":
@@ -111,18 +111,18 @@ def best_line_for_group(group):
             candidates = group[group["point"] == best_point]
 
             best_price = candidates["price"].max()
-            best = candidates[candidates["price"] == best_price].iloc[0]
-
-            return best
+            return candidates[
+                candidates["price"] == best_price
+            ].iloc[0]
 
         if side.lower() == "under":
             best_point = group["point"].max()
             candidates = group[group["point"] == best_point]
 
             best_price = candidates["price"].max()
-            best = candidates[candidates["price"] == best_price].iloc[0]
-
-            return best
+            return candidates[
+                candidates["price"] == best_price
+            ].iloc[0]
 
     return group.sort_values(
         ["ev_per_dollar", "edge_pp", "price"],
@@ -259,6 +259,107 @@ def get_opportunity(opportunity_id: str):
     )
 
 
+@router.get("/games/{event_id}")
+def get_game_projection(event_id: str):
+    df = pd.read_csv(GAME_PROJECTIONS)
+
+    match = df[df["api_event_id"] == event_id]
+
+    if match.empty:
+        raise HTTPException(
+            status_code=404,
+            detail="Game projection not found",
+        )
+
+    row = match.iloc[0]
+
+    model_margin_home = float(row["model_margin_home"])
+    model_total = float(row["model_total_baseline"])
+
+    projected_home_score = (
+        model_total + model_margin_home
+    ) / 2
+
+    projected_away_score = (
+        model_total - model_margin_home
+    ) / 2
+
+    return {
+        "eventId": row["api_event_id"],
+        "commenceTime": row["commence_time"],
+        "matchup": f'{row["away_team"]} @ {row["home_team"]}',
+        "awayTeam": row["away_team"],
+        "homeTeam": row["home_team"],
+
+        "teamPower": {
+            "away": round(
+                float(row["away_power"]),
+                2,
+            ),
+            "home": round(
+                float(row["home_power"]),
+                2,
+            ),
+            "differenceHomeMinusAway": round(
+                float(row["home_power"])
+                - float(row["away_power"]),
+                2,
+            ),
+        },
+
+        "model": {
+            "marginHome": round(
+                model_margin_home,
+                2,
+            ),
+            "total": round(
+                model_total,
+                1,
+            ),
+            "projectedScore": {
+                "away": round(
+                    projected_away_score,
+                    1,
+                ),
+                "home": round(
+                    projected_home_score,
+                    1,
+                ),
+            },
+        },
+
+        "market": {
+            "marginHome": round(
+                float(row["market_margin_home"]),
+                2,
+            ),
+            "homeSpread": float(
+                row["market_home_spread"]
+            ),
+            "total": float(
+                row["market_total"]
+            ),
+        },
+
+        "spreadAnalysis": {
+            "edgePoints": round(
+                float(row["spread_edge_points"]),
+                2,
+            ),
+            "homeCoverProbability": round(
+                float(row["home_cover_prob_est"])
+                * 100,
+                1,
+            ),
+            "homeCoverFairOdds": round(
+                float(row["home_cover_fair_odds"])
+            ),
+        },
+
+        "source": str(GAME_PROJECTIONS),
+    }
+
+
 @router.get("/portfolio")
 def get_portfolio():
     df = pd.read_csv(PORTFOLIO_RECOMMENDATIONS)
@@ -292,7 +393,10 @@ def get_portfolio():
                     1,
                 ),
                 "fairOdds": round(float(row["fair_odds"])),
-                "edge": round(float(row["edge_pp"]) * 100, 1),
+                "edge": round(
+                    float(row["edge_pp"]) * 100,
+                    1,
+                ),
                 "evPerDollar": round(
                     float(row["ev_per_dollar"]),
                     3,

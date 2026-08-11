@@ -44,8 +44,53 @@ type Opportunity = {
   alternateBooks?: AlternateBook[];
 };
 
+type GameProjection = {
+  eventId: string;
+  commenceTime: string;
+  matchup: string;
+  awayTeam: string;
+  homeTeam: string;
+
+  teamPower: {
+    away: number;
+    home: number;
+    differenceHomeMinusAway: number;
+  };
+
+  model: {
+    marginHome: number;
+    total: number;
+    projectedScore: {
+      away: number;
+      home: number;
+    };
+  };
+
+  market: {
+    marginHome: number;
+    homeSpread: number;
+    total: number;
+  };
+
+  spreadAnalysis: {
+    edgePoints: number;
+    homeCoverProbability: number;
+    homeCoverFairOdds: number;
+  };
+
+  source: string;
+};
+
 function formatOdds(price: number) {
   return price > 0 ? `+${price}` : `${price}`;
+}
+
+function formatSignedNumber(value: number) {
+  if (value > 0) {
+    return `+${value}`;
+  }
+
+  return `${value}`;
 }
 
 function formatPoint(
@@ -70,23 +115,34 @@ export default function OpportunityAnalysisPage() {
   const [opportunity, setOpportunity] =
     useState<Opportunity | null>(null);
 
+  const [projection, setProjection] =
+    useState<GameProjection | null>(null);
+
   const [loading, setLoading] = useState(true);
+  const [projectionLoading, setProjectionLoading] =
+    useState(false);
+
   const [error, setError] = useState("");
+  const [projectionError, setProjectionError] =
+    useState("");
+
   const [added, setAdded] = useState(false);
 
   useEffect(() => {
-    async function loadOpportunity() {
+    async function loadData() {
       try {
-        const response = await fetch(
+        const opportunityResponse = await fetch(
           `http://localhost:8000/api/opportunities/${params.id}`
         );
 
-        if (!response.ok) {
+        if (!opportunityResponse.ok) {
           throw new Error("Failed to load opportunity");
         }
 
-        const data: Opportunity = await response.json();
-        setOpportunity(data);
+        const opportunityData: Opportunity =
+          await opportunityResponse.json();
+
+        setOpportunity(opportunityData);
 
         const saved = localStorage.getItem(
           "sports-intelligence-card"
@@ -94,25 +150,59 @@ export default function OpportunityAnalysisPage() {
 
         if (saved) {
           try {
-            const card: Opportunity[] = JSON.parse(saved);
+            const card: Opportunity[] =
+              JSON.parse(saved);
 
             setAdded(
-              card.some((bet) => bet.id === data.id)
+              card.some(
+                (bet) =>
+                  bet.id === opportunityData.id
+              )
             );
           } catch {
             setAdded(false);
           }
         }
+
+        setProjectionLoading(true);
+
+        try {
+          const projectionResponse = await fetch(
+            `http://localhost:8000/api/games/${opportunityData.eventId}`
+          );
+
+          if (!projectionResponse.ok) {
+            throw new Error(
+              "Failed to load game projection"
+            );
+          }
+
+          const projectionData: GameProjection =
+            await projectionResponse.json();
+
+          setProjection(projectionData);
+        } catch (projectionErr) {
+          console.error(projectionErr);
+
+          setProjectionError(
+            "Game projection is currently unavailable."
+          );
+        } finally {
+          setProjectionLoading(false);
+        }
       } catch (err) {
         console.error(err);
-        setError("Unable to load this opportunity.");
+
+        setError(
+          "Unable to load this opportunity."
+        );
       } finally {
         setLoading(false);
       }
     }
 
     if (params.id) {
-      loadOpportunity();
+      loadData();
     }
   }, [params.id]);
 
@@ -184,6 +274,8 @@ export default function OpportunityAnalysisPage() {
   return (
     <main className="min-h-screen bg-[#070A0F] text-white">
       <div className="mx-auto max-w-6xl px-6 py-10 lg:px-10">
+
+        {/* TOP NAV */}
         <div className="flex flex-wrap items-center justify-between gap-4">
           <Link
             href="/opportunities"
@@ -206,6 +298,7 @@ export default function OpportunityAnalysisPage() {
           </div>
         </div>
 
+        {/* HERO */}
         <section className="mt-12">
           <p className="text-xs font-medium uppercase tracking-[0.2em] text-zinc-600">
             {opportunity.matchup}
@@ -259,13 +352,15 @@ export default function OpportunityAnalysisPage() {
                 </p>
 
                 <p className="mt-1 text-3xl font-semibold">
-                  +${opportunity.evPerDollar.toFixed(3)}
+                  +$
+                  {opportunity.evPerDollar.toFixed(3)}
                 </p>
               </div>
             </div>
           </div>
         </section>
 
+        {/* EXECUTIVE RECOMMENDATION */}
         <section className="mt-10 rounded-3xl border border-emerald-400/15 bg-[linear-gradient(135deg,#111A18_0%,#0C121A_100%)] p-8 lg:p-10">
           <p className="text-xs font-medium uppercase tracking-[0.18em] text-emerald-400">
             Executive Recommendation
@@ -273,17 +368,22 @@ export default function OpportunityAnalysisPage() {
 
           <h2 className="mt-3 max-w-4xl text-3xl font-semibold tracking-tight">
             The model sees a{" "}
-            {probabilityGap.toFixed(1)} percentage-point
-            probability advantage over the market.
+            {probabilityGap.toFixed(1)}
+            -point probability advantage over the
+            market.
           </h2>
 
           <p className="mt-5 max-w-3xl text-base leading-8 text-zinc-400">
-            NFL Analytics OS estimates this position at{" "}
+            NFL Analytics OS estimates this position
+            at{" "}
             {opportunity.modelProbability.toFixed(1)}%
             versus a market-implied probability of{" "}
-            {opportunity.impliedProbability.toFixed(1)}%.
-            The current best available price is{" "}
-            {opportunity.pick} at {opportunity.book} for{" "}
+            {opportunity.impliedProbability.toFixed(
+              1
+            )}
+            %. The current best available price is{" "}
+            {opportunity.pick} at{" "}
+            {opportunity.book} for{" "}
             {formatOdds(opportunity.price)}.
           </p>
 
@@ -313,16 +413,303 @@ export default function OpportunityAnalysisPage() {
           </div>
         </section>
 
+        {/* MATCHUP PROJECTION */}
         <section className="mt-8">
-          <div>
-            <p className="text-xs font-medium uppercase tracking-[0.18em] text-zinc-700">
-              Market Intelligence
-            </p>
+          <p className="text-xs font-medium uppercase tracking-[0.18em] text-sky-400">
+            Matchup Projection
+          </p>
 
-            <h2 className="mt-2 text-2xl font-semibold">
-              Best available line across sportsbooks.
-            </h2>
+          <div className="mt-2 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+            <div>
+              <h2 className="text-3xl font-semibold">
+                Model view of the game itself.
+              </h2>
+
+              <p className="mt-3 max-w-2xl text-sm leading-7 text-zinc-500">
+                This section comes from the
+                matchup-level game projection model,
+                separate from the sportsbook-specific
+                opportunity calculation.
+              </p>
+            </div>
+
+            {projection && (
+              <Badge
+                variant="outline"
+                className="border-sky-400/20 bg-sky-400/[0.05] text-sky-400"
+              >
+                Game Model Live
+              </Badge>
+            )}
           </div>
+
+          {projectionLoading && (
+            <div className="mt-5 rounded-3xl border border-white/[0.08] bg-[#0D131C] p-8">
+              <p className="text-sm text-zinc-500">
+                Loading matchup projection...
+              </p>
+            </div>
+          )}
+
+          {projectionError && (
+            <div className="mt-5 rounded-3xl border border-amber-400/15 bg-amber-400/[0.03] p-8">
+              <p className="text-sm text-amber-400">
+                {projectionError}
+              </p>
+            </div>
+          )}
+
+          {projection && (
+            <>
+              {/* PROJECTED SCORE */}
+              <div className="mt-5 rounded-3xl border border-white/[0.08] bg-[linear-gradient(135deg,#101722_0%,#0B1017_100%)] p-8">
+                <p className="text-[11px] uppercase tracking-[0.18em] text-zinc-700">
+                  Projected Score
+                </p>
+
+                <div className="mt-7 grid grid-cols-[1fr_auto_1fr] items-center gap-5">
+                  <div>
+                    <p className="text-sm text-zinc-500">
+                      {projection.awayTeam}
+                    </p>
+
+                    <p className="mt-2 text-5xl font-semibold tracking-tight">
+                      {projection.model.projectedScore.away.toFixed(
+                        1
+                      )}
+                    </p>
+                  </div>
+
+                  <div className="text-center text-sm text-zinc-700">
+                    @
+                  </div>
+
+                  <div className="text-right">
+                    <p className="text-sm text-zinc-500">
+                      {projection.homeTeam}
+                    </p>
+
+                    <p className="mt-2 text-5xl font-semibold tracking-tight">
+                      {projection.model.projectedScore.home.toFixed(
+                        1
+                      )}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-8 grid gap-3 border-t border-white/[0.07] pt-6 md:grid-cols-3">
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wider text-zinc-700">
+                      Model Total
+                    </p>
+
+                    <p className="mt-2 text-xl font-semibold">
+                      {projection.model.total.toFixed(
+                        1
+                      )}
+                    </p>
+                  </div>
+
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wider text-zinc-700">
+                      Market Total
+                    </p>
+
+                    <p className="mt-2 text-xl font-semibold">
+                      {projection.market.total.toFixed(
+                        1
+                      )}
+                    </p>
+                  </div>
+
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wider text-zinc-700">
+                      Total Difference
+                    </p>
+
+                    <p className="mt-2 text-xl font-semibold">
+                      {formatSignedNumber(
+                        Number(
+                          (
+                            projection.model.total -
+                            projection.market.total
+                          ).toFixed(1)
+                        )
+                      )}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* MODEL VS MARKET */}
+              <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                <article className="rounded-3xl border border-white/[0.08] bg-[#0D131C] p-7">
+                  <p className="text-xs font-medium uppercase tracking-[0.18em] text-zinc-700">
+                    Model vs Market
+                  </p>
+
+                  <h3 className="mt-3 text-2xl font-semibold">
+                    Where the matchup model disagrees.
+                  </h3>
+
+                  <div className="mt-6 space-y-5">
+                    <div className="flex items-end justify-between border-b border-white/[0.07] pb-4">
+                      <span className="text-sm text-zinc-500">
+                        Model margin — home
+                      </span>
+
+                      <span className="text-xl font-semibold">
+                        {formatSignedNumber(
+                          projection.model.marginHome
+                        )}
+                      </span>
+                    </div>
+
+                    <div className="flex items-end justify-between border-b border-white/[0.07] pb-4">
+                      <span className="text-sm text-zinc-500">
+                        Market margin — home
+                      </span>
+
+                      <span className="text-xl font-semibold">
+                        {formatSignedNumber(
+                          projection.market.marginHome
+                        )}
+                      </span>
+                    </div>
+
+                    <div className="flex items-end justify-between">
+                      <span className="text-sm text-zinc-500">
+                        Spread edge
+                      </span>
+
+                      <span
+                        className={`text-xl font-semibold ${
+                          projection.spreadAnalysis
+                            .edgePoints < 0
+                            ? "text-emerald-400"
+                            : "text-sky-400"
+                        }`}
+                      >
+                        {formatSignedNumber(
+                          projection.spreadAnalysis
+                            .edgePoints
+                        )}{" "}
+                        pts
+                      </span>
+                    </div>
+                  </div>
+                </article>
+
+                {/* POWER RATINGS */}
+                <article className="rounded-3xl border border-white/[0.08] bg-[#0D131C] p-7">
+                  <p className="text-xs font-medium uppercase tracking-[0.18em] text-zinc-700">
+                    Team Power
+                  </p>
+
+                  <h3 className="mt-3 text-2xl font-semibold">
+                    Relative team-strength signal.
+                  </h3>
+
+                  <div className="mt-6 grid grid-cols-2 gap-3">
+                    <div className="rounded-2xl border border-white/[0.07] bg-black/10 p-5">
+                      <p className="text-sm text-zinc-500">
+                        {projection.awayTeam}
+                      </p>
+
+                      <p className="mt-2 text-3xl font-semibold">
+                        {projection.teamPower.away.toFixed(
+                          2
+                        )}
+                      </p>
+                    </div>
+
+                    <div className="rounded-2xl border border-white/[0.07] bg-black/10 p-5">
+                      <p className="text-sm text-zinc-500">
+                        {projection.homeTeam}
+                      </p>
+
+                      <p className="mt-2 text-3xl font-semibold">
+                        {projection.teamPower.home.toFixed(
+                          2
+                        )}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 rounded-2xl border border-white/[0.07] bg-black/10 p-5">
+                    <p className="text-[10px] uppercase tracking-wider text-zinc-700">
+                      Home minus away power
+                    </p>
+
+                    <p className="mt-2 text-2xl font-semibold">
+                      {formatSignedNumber(
+                        projection.teamPower
+                          .differenceHomeMinusAway
+                      )}
+                    </p>
+                  </div>
+                </article>
+              </div>
+
+              {/* COVER ANALYSIS */}
+              <div className="mt-4 rounded-3xl border border-white/[0.08] bg-[#0D131C] p-7">
+                <p className="text-xs font-medium uppercase tracking-[0.18em] text-zinc-700">
+                  Spread Projection
+                </p>
+
+                <div className="mt-5 grid gap-4 md:grid-cols-3">
+                  <div className="rounded-2xl border border-white/[0.07] bg-black/10 p-5">
+                    <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-700">
+                      Market Home Spread
+                    </p>
+
+                    <p className="mt-3 text-2xl font-semibold">
+                      {formatSignedNumber(
+                        projection.market.homeSpread
+                      )}
+                    </p>
+                  </div>
+
+                  <div className="rounded-2xl border border-white/[0.07] bg-black/10 p-5">
+                    <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-700">
+                      Home Cover Probability
+                    </p>
+
+                    <p className="mt-3 text-2xl font-semibold">
+                      {projection.spreadAnalysis.homeCoverProbability.toFixed(
+                        1
+                      )}
+                      %
+                    </p>
+                  </div>
+
+                  <div className="rounded-2xl border border-white/[0.07] bg-black/10 p-5">
+                    <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-700">
+                      Home Cover Fair Odds
+                    </p>
+
+                    <p className="mt-3 text-2xl font-semibold">
+                      {formatOdds(
+                        projection.spreadAnalysis
+                          .homeCoverFairOdds
+                      )}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
+        </section>
+
+        {/* MARKET INTELLIGENCE */}
+        <section className="mt-10">
+          <p className="text-xs font-medium uppercase tracking-[0.18em] text-zinc-700">
+            Market Intelligence
+          </p>
+
+          <h2 className="mt-2 text-2xl font-semibold">
+            Best available line across sportsbooks.
+          </h2>
 
           <div className="mt-5 overflow-hidden rounded-3xl border border-white/[0.08] bg-[#0D131C]">
             <div className="grid grid-cols-[1.4fr_0.8fr_0.8fr_0.8fr] gap-3 border-b border-white/[0.07] px-6 py-4 text-[11px] uppercase tracking-[0.14em] text-zinc-700">
@@ -356,7 +743,8 @@ export default function OpportunityAnalysisPage() {
               </span>
 
               <span className="font-medium text-emerald-400">
-                +${opportunity.evPerDollar.toFixed(3)}
+                +$
+                {opportunity.evPerDollar.toFixed(3)}
               </span>
             </div>
 
@@ -390,14 +778,16 @@ export default function OpportunityAnalysisPage() {
             {alternateBooks.length === 0 && (
               <div className="border-t border-white/[0.06] px-6 py-6">
                 <p className="text-sm text-zinc-600">
-                  No alternate sportsbook prices are currently
-                  available for this position.
+                  No alternate sportsbook prices are
+                  currently available for this
+                  position.
                 </p>
               </div>
             )}
           </div>
         </section>
 
+        {/* BETTING METRICS */}
         <section className="mt-8 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
           <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-6">
             <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
@@ -405,7 +795,8 @@ export default function OpportunityAnalysisPage() {
             </p>
 
             <p className="mt-3 text-2xl font-semibold">
-              {opportunity.modelProbability.toFixed(1)}%
+              {opportunity.modelProbability.toFixed(1)}
+              %
             </p>
           </div>
 
@@ -415,7 +806,10 @@ export default function OpportunityAnalysisPage() {
             </p>
 
             <p className="mt-3 text-2xl font-semibold">
-              {opportunity.impliedProbability.toFixed(1)}%
+              {opportunity.impliedProbability.toFixed(
+                1
+              )}
+              %
             </p>
           </div>
 
@@ -425,7 +819,10 @@ export default function OpportunityAnalysisPage() {
             </p>
 
             <p className="mt-3 text-2xl font-semibold">
-              {(opportunity.kelly20 * 100).toFixed(1)}%
+              {(opportunity.kelly20 * 100).toFixed(
+                1
+              )}
+              %
             </p>
           </div>
 
@@ -440,6 +837,7 @@ export default function OpportunityAnalysisPage() {
           </div>
         </section>
 
+        {/* SIGNAL QUALITY + SIZING */}
         <section className="mt-8 grid gap-4 lg:grid-cols-2">
           <article className="rounded-3xl border border-white/[0.08] bg-[#0D131C] p-7">
             <p className="text-xs font-medium uppercase tracking-[0.18em] text-zinc-700">
@@ -454,15 +852,18 @@ export default function OpportunityAnalysisPage() {
               {[
                 {
                   label: "Data completeness",
-                  value: opportunity.dataCompleteness,
+                  value:
+                    opportunity.dataCompleteness,
                 },
                 {
                   label: "Market confidence",
-                  value: opportunity.marketConfidence,
+                  value:
+                    opportunity.marketConfidence,
                 },
                 {
                   label: "Model confidence",
-                  value: opportunity.modelConfidence,
+                  value:
+                    opportunity.modelConfidence,
                 },
               ].map((metric) => (
                 <div key={metric.label}>
@@ -505,7 +906,10 @@ export default function OpportunityAnalysisPage() {
                 </span>
 
                 <span className="text-xl font-semibold">
-                  {(opportunity.kellyFull * 100).toFixed(1)}%
+                  {(
+                    opportunity.kellyFull * 100
+                  ).toFixed(1)}
+                  %
                 </span>
               </div>
 
@@ -515,7 +919,10 @@ export default function OpportunityAnalysisPage() {
                 </span>
 
                 <span className="text-xl font-semibold">
-                  {(opportunity.kelly20 * 100).toFixed(1)}%
+                  {(
+                    opportunity.kelly20 * 100
+                  ).toFixed(1)}
+                  %
                 </span>
               </div>
 
@@ -525,13 +932,17 @@ export default function OpportunityAnalysisPage() {
                 </span>
 
                 <span className="text-xl font-semibold text-emerald-400">
-                  +${opportunity.evPerDollar.toFixed(3)}
+                  +$
+                  {opportunity.evPerDollar.toFixed(
+                    3
+                  )}
                 </span>
               </div>
             </div>
           </article>
         </section>
 
+        {/* SUPPORTING CASE / RISKS */}
         <section className="mt-8 grid gap-4 lg:grid-cols-2">
           <article className="rounded-3xl border border-white/[0.08] bg-[#0D131C] p-7">
             <p className="text-xs font-medium uppercase tracking-[0.18em] text-zinc-700">
@@ -544,23 +955,41 @@ export default function OpportunityAnalysisPage() {
 
             <div className="mt-5 space-y-4 text-sm leading-7 text-zinc-500">
               <p>
-                The model probability exceeds the current
+                The model probability exceeds the
                 market-implied probability by{" "}
                 {probabilityGap.toFixed(1)} percentage
                 points.
               </p>
 
               <p>
-                The best available line currently produces
-                +{opportunity.edge.toFixed(1)}% model edge
-                and +${opportunity.evPerDollar.toFixed(3)}
-                expected value for every $1 risked.
+                The best available line produces +
+                {opportunity.edge.toFixed(1)}% model
+                edge and +$
+                {opportunity.evPerDollar.toFixed(3)}
+                expected value per $1 risked.
               </p>
 
+              {projection && (
+                <p>
+                  At the matchup level, the model
+                  projects{" "}
+                  {projection.awayTeam}{" "}
+                  {projection.model.projectedScore.away.toFixed(
+                    1
+                  )}{" "}
+                  and {projection.homeTeam}{" "}
+                  {projection.model.projectedScore.home.toFixed(
+                    1
+                  )}
+                  .
+                </p>
+              )}
+
               <p>
-                Line shopping matters because alternate
-                sportsbooks may offer different points,
-                prices, and expected value.
+                Line shopping matters because
+                alternate sportsbooks may offer
+                different points, prices, and expected
+                value.
               </p>
             </div>
           </article>
@@ -576,25 +1005,27 @@ export default function OpportunityAnalysisPage() {
 
             <div className="mt-5 space-y-4 text-sm leading-7 text-zinc-500">
               <p>
-                The recommendation can weaken if the market
-                moves away from the current best available
-                number.
+                The recommendation can weaken if the
+                market moves away from the current best
+                available number.
               </p>
 
               <p>
-                Injury, weather, and other contextual data
-                are not yet surfaced on this page as live
-                feeds.
+                Injury, weather, and real-time line
+                movement are not yet surfaced here as
+                live contextual feeds.
               </p>
 
               <p>
-                Kelly sizing is model-derived and should not
-                be interpreted as guaranteed-return sizing.
+                Kelly sizing is model-derived and
+                should not be interpreted as a
+                guaranteed-return allocation.
               </p>
             </div>
           </article>
         </section>
 
+        {/* BOTTOM LINE */}
         <section className="mt-8 rounded-3xl border border-emerald-400/15 bg-emerald-400/[0.035] p-8">
           <p className="text-xs font-medium uppercase tracking-[0.18em] text-emerald-400">
             Bottom Line
@@ -606,13 +1037,13 @@ export default function OpportunityAnalysisPage() {
           </h2>
 
           <p className="mt-4 max-w-3xl text-sm leading-7 text-zinc-400">
-            The current best line is available at{" "}
+            The best available line is currently at{" "}
             {opportunity.book}. The model sees a +
             {opportunity.edge.toFixed(1)}% edge with{" "}
-            {opportunity.confidence} confidence. Continue
-            monitoring the market because a change in line
-            or price can materially alter the value of this
-            position.
+            {opportunity.confidence} confidence.
+            Continue monitoring the market because
+            changes in line, price, injuries, or other
+            inputs can materially alter the value.
           </p>
 
           <div className="mt-7 flex flex-wrap gap-3">
