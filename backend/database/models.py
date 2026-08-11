@@ -13,8 +13,14 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    username: Mapped[str | None] = mapped_column(String(100), nullable=True, unique=True, index=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    bankroll: Mapped[float] = mapped_column(Float, default=10000.0, nullable=False)
+    favorite_sportsbooks: Mapped[str | None] = mapped_column(Text, nullable=True)
+    favorite_teams: Mapped[str | None] = mapped_column(Text, nullable=True)
+    subscription_tier: Mapped[str] = mapped_column(String(50), default="free", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

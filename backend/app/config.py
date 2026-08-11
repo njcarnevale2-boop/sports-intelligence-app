@@ -10,6 +10,7 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 class Settings:
     PROJECT_NAME: str = "Sports Intelligence API"
     API_V1_STR: str = "/api"
+    SECRET_KEY: str = os.getenv("SECRET_KEY", "dev-secret-key")
     DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./sports_intelligence.db")
     DB_ECHO: bool = os.getenv("DB_ECHO", "0").lower() in {"1", "true", "yes"}
 

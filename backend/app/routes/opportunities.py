@@ -12,6 +12,7 @@ from app.services.sports_intelligence_score import (
 )
 from app.services.injury_matchup import InjuryMatchupContext
 from app.services.executive_analyst import generate_executive_analysis
+from app.services.explainability import generate_explainability
 from app.services.weather import WeatherAnalyzer
 
 
@@ -825,6 +826,11 @@ def get_opportunity_analysis(
         "opportunity": opportunity,
         "executiveAnalysis": (
             generate_executive_analysis(
+                opportunity
+            )
+        ),
+        "explainability": (
+            generate_explainability(
                 opportunity
             )
         ),

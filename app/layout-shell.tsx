@@ -1,3 +1,5 @@
+"use client";
+
 import Link from "next/link";
 import {
   ChartNoAxesCombined,
@@ -5,11 +7,15 @@ import {
   ClipboardList,
   CreditCard,
   Gamepad2,
+  LogIn,
+  LogOut,
   Settings,
   Sparkles,
   Trophy,
   TrendingUp,
+  UserCircle2,
 } from "lucide-react";
+import { useAuth } from "./auth-context";
 
 const primaryNav = [
   { label: "Home", href: "/", icon: CircleGauge },
@@ -30,6 +36,8 @@ export default function LayoutShell({
 }: {
   children: React.ReactNode;
 }) {
+  const { user, logout } = useAuth();
+
   return (
     <div className="min-h-screen bg-[#070A0F] text-white">
       <div className="flex min-h-screen">
@@ -124,14 +132,28 @@ export default function LayoutShell({
                 <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_12px_rgba(52,211,153,0.7)]" />
               </div>
 
-              <div className="mt-4 border-t border-white/[0.06] pt-4">
-                <Link
-                  href="/settings"
-                  className="flex items-center gap-2 text-xs text-zinc-600 transition hover:text-zinc-300"
-                >
+              <div className="mt-4 border-t border-white/[0.06] pt-4 space-y-2">
+                <Link href="/settings" className="flex items-center gap-2 text-xs text-zinc-600 transition hover:text-zinc-300">
                   <Settings size={14} />
                   Settings
                 </Link>
+                {user ? (
+                  <>
+                    <Link href="/settings" className="flex items-center gap-2 text-xs text-zinc-600 transition hover:text-zinc-300">
+                      <UserCircle2 size={14} />
+                      Profile
+                    </Link>
+                    <button onClick={logout} className="flex items-center gap-2 text-xs text-zinc-600 transition hover:text-zinc-300">
+                      <LogOut size={14} />
+                      Logout
+                    </button>
+                  </>
+                ) : (
+                  <Link href="/login" className="flex items-center gap-2 text-xs text-zinc-600 transition hover:text-zinc-300">
+                    <LogIn size={14} />
+                    Login
+                  </Link>
+                )}
               </div>
             </div>
           </div>

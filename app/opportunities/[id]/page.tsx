@@ -278,6 +278,19 @@ export default function OpportunityAnalysisPage() {
       bestPriceSummary: string;
     } | null>(null);
 
+  const [explainability, setExplainability] = useState<{
+    overallSummary: string;
+    strengths: string[];
+    weaknesses: string[];
+    confidenceExplanation: string;
+    marketExplanation: string;
+    injuryExplanation: string;
+    weatherExplanation: string;
+    keyReasons: string[];
+    whatCouldImprove: string[];
+    riskFactors: string[];
+  } | null>(null);
+
   const [added, setAdded] =
     useState(false);
 
@@ -339,6 +352,9 @@ export default function OpportunityAnalysisPage() {
             await analysisResponse.json();
           setExecutiveAnalysis(
             analysisData.executiveAnalysis
+          );
+          setExplainability(
+            analysisData.explainability
           );
         }
 
@@ -654,6 +670,88 @@ export default function OpportunityAnalysisPage() {
           <SportsIntelligenceScoreCard
             score={sportsScore}
           />
+
+          {explainability && (
+            <div className="mt-6 rounded-3xl border border-white/[0.08] bg-[#0B1119] p-8">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">Explainability Engine</p>
+                  <h3 className="mt-2 text-2xl font-semibold tracking-tight">How the score is built</h3>
+                </div>
+                <div className="rounded-full border border-emerald-400/20 bg-emerald-400/[0.05] px-3 py-1 text-sm text-emerald-400">
+                  Deterministic rules-based explanation
+                </div>
+              </div>
+
+              <p className="mt-5 max-w-3xl text-sm leading-7 text-zinc-400">{explainability.overallSummary}</p>
+
+              <div className="mt-8 grid gap-6 lg:grid-cols-2">
+                <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">Strengths</p>
+                  <ul className="mt-4 space-y-2 text-sm text-zinc-400">
+                    {explainability.strengths.map((item) => (
+                      <li key={item}>• {item}</li>
+                    ))}
+                  </ul>
+                </div>
+
+                <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">Weaknesses</p>
+                  <ul className="mt-4 space-y-2 text-sm text-zinc-400">
+                    {explainability.weaknesses.map((item) => (
+                      <li key={item}>• {item}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+
+              <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">Confidence</p>
+                  <p className="mt-3 text-sm leading-7 text-zinc-400">{explainability.confidenceExplanation}</p>
+                </div>
+                <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">Market</p>
+                  <p className="mt-3 text-sm leading-7 text-zinc-400">{explainability.marketExplanation}</p>
+                </div>
+                <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">Injury</p>
+                  <p className="mt-3 text-sm leading-7 text-zinc-400">{explainability.injuryExplanation}</p>
+                </div>
+                <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">Weather</p>
+                  <p className="mt-3 text-sm leading-7 text-zinc-400">{explainability.weatherExplanation}</p>
+                </div>
+              </div>
+
+              <div className="mt-6 grid gap-4 lg:grid-cols-3">
+                <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">Key reasons</p>
+                  <ul className="mt-4 space-y-2 text-sm text-zinc-400">
+                    {explainability.keyReasons.map((item) => (
+                      <li key={item}>• {item}</li>
+                    ))}
+                  </ul>
+                </div>
+                <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">What could improve</p>
+                  <ul className="mt-4 space-y-2 text-sm text-zinc-400">
+                    {explainability.whatCouldImprove.map((item) => (
+                      <li key={item}>• {item}</li>
+                    ))}
+                  </ul>
+                </div>
+                <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">Risk factors</p>
+                  <ul className="mt-4 space-y-2 text-sm text-zinc-400">
+                    {explainability.riskFactors.map((item) => (
+                      <li key={item}>• {item}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="mt-4 grid gap-3 md:grid-cols-5">
 
