@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import SportsIntelligenceScoreCard from "@/components/sports-intelligence-score-card";
 import { fetchJson } from "../lib/api";
+import { trackAnalyticsEvent } from "../lib/analytics";
 
 type AlternateBook = {
   book: string;
@@ -180,6 +181,8 @@ export default function OpportunitiesPage() {
       try {
         setLoading(true);
         setError("");
+
+        await trackAnalyticsEvent("OpportunitiesViewed", { page: "opportunities" });
 
         const data = await fetchJson<OpportunitiesResponse>(
           "/api/opportunities?limit=100"

@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import ExecutiveSummary from "@/components/executive-summary";
 import SportsIntelligenceScoreCard from "@/components/sports-intelligence-score-card";
 import { fetchJson } from "../../lib/api";
+import { trackAnalyticsEvent } from "../../lib/analytics";
 
 type AlternateBook = {
   book: string;
@@ -325,6 +326,11 @@ export default function OpportunityAnalysisPage() {
       try {
         setLoading(true);
         setError("");
+
+        await trackAnalyticsEvent("OpportunityViewed", {
+          page: "opportunity-detail",
+          opportunityId: params.id,
+        });
 
         const opportunityData = await fetchJson<Opportunity>(
           `/api/opportunities/${params.id}`

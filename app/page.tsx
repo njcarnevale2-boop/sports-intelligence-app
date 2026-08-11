@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { fetchJson } from "./lib/api";
+import { trackAnalyticsEvent } from "./lib/analytics";
 
 type MarketIntelligence = {
   score: number;
@@ -128,6 +129,8 @@ export default function Home() {
       try {
         setLoading(true);
         setError("");
+
+        await trackAnalyticsEvent("HomeViewed", { page: "home" });
 
         const data = await fetchJson<ApiResponse>(
           "/api/opportunities?limit=100"
