@@ -12,7 +12,7 @@ from app.services.sports_intelligence_score import (
 )
 from app.services.injury_matchup import InjuryMatchupContext
 from app.services.executive_analyst import generate_executive_analysis
-from app.services.executive_analyst import generate_executive_analysis
+from app.services.weather import WeatherAnalyzer
 
 
 router = APIRouter(
@@ -962,6 +962,58 @@ def get_game_injury_context(
         "awayTeam": away_team,
         "homeTeam": home_team,
         "injuryContext": context,
+    }
+
+
+@router.get(
+    "/games/{event_id}/weather"
+)
+def get_game_weather(
+    event_id: str,
+):
+    if (
+        not GAME_PROJECTIONS.exists()
+    ):
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Game projections "
+                "file not found"
+            ),
+        )
+
+    df = pd.read_csv(
+        GAME_PROJECTIONS
+    )
+
+    match = df[
+        df[
+            "api_event_id"
+        ]
+        == event_id
+    ]
+
+    if match.empty:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Game projection "
+                "not found"
+            ),
+        )
+
+    row = match.iloc[0]
+    weather = WeatherAnalyzer().analyze()
+
+    return {
+        "eventId": event_id,
+        "awayTeam": str(
+            row["away_team"]
+        ),
+        "homeTeam": str(
+            row["home_team"]
+        ),
+        "weather": weather,
     }
 
 
