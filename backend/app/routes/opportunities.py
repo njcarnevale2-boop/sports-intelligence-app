@@ -10,6 +10,7 @@ from app.services.market_intelligence import (
 from app.services.sports_intelligence_score import (
     calculate_sports_intelligence_score,
 )
+from app.services.injury_matchup import InjuryMatchupContext
 
 
 router = APIRouter(
@@ -766,6 +767,66 @@ def get_opportunity(
 # ---------------------------------------------------------
 # GAME PROJECTION
 # ---------------------------------------------------------
+
+
+@router.get(
+    "/games/{event_id}/injuries"
+)
+def get_game_injury_context(
+    event_id: str,
+):
+    if (
+        not GAME_PROJECTIONS.exists()
+    ):
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Game projections "
+                "file not found"
+            ),
+        )
+
+    df = pd.read_csv(
+        GAME_PROJECTIONS
+    )
+
+    match = df[
+        df[
+            "api_event_id"
+        ]
+        == event_id
+    ]
+
+    if match.empty:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Game projection "
+                "not found"
+            ),
+        )
+
+    row = match.iloc[0]
+    away_team = str(
+        row["away_team"]
+    )
+    home_team = str(
+        row["home_team"]
+    )
+
+    context = (
+        InjuryMatchupContext().build_context(
+            away_team,
+            home_team,
+        )
+    )
+
+    return {
+        "eventId": event_id,
+        "awayTeam": away_team,
+        "homeTeam": home_team,
+        "injuryContext": context,
+    }
 
 
 @router.get(
