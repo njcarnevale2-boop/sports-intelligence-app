@@ -11,6 +11,8 @@ from app.services.sports_intelligence_score import (
     calculate_sports_intelligence_score,
 )
 from app.services.injury_matchup import InjuryMatchupContext
+from app.services.executive_analyst import generate_executive_analysis
+from app.services.executive_analyst import generate_executive_analysis
 
 
 router = APIRouter(
@@ -709,6 +711,124 @@ def get_opportunities(
 # ---------------------------------------------------------
 # INDIVIDUAL OPPORTUNITY
 # ---------------------------------------------------------
+
+
+@router.get(
+    "/opportunities/{opportunity_id}/analysis"
+)
+def get_opportunity_analysis(
+    opportunity_id: str,
+):
+    if (
+        not RANKED_BET_BOARD.exists()
+    ):
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Ranked bet board "
+                "not found"
+            ),
+        )
+
+    df = pd.read_csv(
+        RANKED_BET_BOARD
+    )
+
+    df[
+        "generated_id"
+    ] = df.apply(
+        lambda row: (
+            build_id(row)
+        ),
+        axis=1,
+    )
+
+    match = df[
+        df[
+            "generated_id"
+        ]
+        == opportunity_id
+    ]
+
+    if match.empty:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Opportunity "
+                "not found"
+            ),
+        )
+
+    selected = (
+        best_line_for_group(
+            match
+        )
+    )
+
+    alternates = (
+        make_alternate_books(
+            match,
+            selected,
+        )
+    )
+
+    opportunity = (
+        row_to_opportunity(
+            selected,
+            include_alternates=(
+                alternates
+            ),
+        )
+    )
+
+    market_intelligence = (
+        get_market_intelligence(
+            event_id=(
+                opportunity["eventId"]
+            ),
+            market=opportunity[
+                "market"
+            ],
+            side=opportunity[
+                "side"
+            ],
+        )
+    )
+
+    injury_context = (
+        InjuryMatchupContext().build_context(
+            away_team=opportunity[
+                "awayTeam"
+            ],
+            home_team=opportunity[
+                "homeTeam"
+            ],
+        )
+    )
+
+    opportunity[
+        "marketIntelligence"
+    ] = market_intelligence
+    opportunity[
+        "injuryContext"
+    ] = injury_context
+    opportunity[
+        "sportsIntelligenceScore"
+    ] = calculate_sports_intelligence_score(
+        opportunity=opportunity,
+        market_intelligence=(
+            market_intelligence
+        ),
+    )
+
+    return {
+        "opportunity": opportunity,
+        "executiveAnalysis": (
+            generate_executive_analysis(
+                opportunity
+            )
+        ),
+    }
 
 
 @router.get(

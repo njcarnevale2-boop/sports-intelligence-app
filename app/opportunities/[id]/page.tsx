@@ -266,6 +266,18 @@ export default function OpportunityAnalysisPage() {
   const [error, setError] =
     useState("");
 
+  const [executiveAnalysis, setExecutiveAnalysis] =
+    useState<{
+      headline: string;
+      recommendation: string;
+      summary: string;
+      strengths: string[];
+      risks: string[];
+      watchItems: string[];
+      stakeRecommendation: string;
+      bestPriceSummary: string;
+    } | null>(null);
+
   const [added, setAdded] =
     useState(false);
 
@@ -315,6 +327,19 @@ export default function OpportunityAnalysisPage() {
           } catch {
             setAdded(false);
           }
+        }
+
+        const analysisResponse =
+          await fetch(
+            `http://localhost:8000/api/opportunities/${opportunityData.id}/analysis`
+          );
+
+        if (analysisResponse.ok) {
+          const analysisData =
+            await analysisResponse.json();
+          setExecutiveAnalysis(
+            analysisData.executiveAnalysis
+          );
         }
 
         const [
@@ -713,6 +738,79 @@ export default function OpportunityAnalysisPage() {
             </div>
           </div>
         </section>
+
+        {/* EXECUTIVE ANALYST */}
+
+        {executiveAnalysis && (
+          <section className="mt-8 rounded-3xl border border-white/[0.08] bg-[#0B1119] p-8 lg:p-10">
+            <p className="text-xs font-medium uppercase tracking-[0.18em] text-zinc-700">
+              Executive Analyst
+            </p>
+
+            <h2 className="mt-3 text-3xl font-semibold tracking-tight">
+              {executiveAnalysis.headline}
+            </h2>
+
+            <p className="mt-5 max-w-3xl text-base leading-8 text-zinc-400">
+              {executiveAnalysis.summary}
+            </p>
+
+            <div className="mt-8 grid gap-6 lg:grid-cols-3">
+              <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
+                <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
+                  Strengths
+                </p>
+                <ul className="mt-4 space-y-3 text-sm text-zinc-400">
+                  {executiveAnalysis.strengths.map((item) => (
+                    <li key={item}>• {item}</li>
+                  ))}
+                </ul>
+              </div>
+
+              <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
+                <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
+                  Risks
+                </p>
+                <ul className="mt-4 space-y-3 text-sm text-zinc-400">
+                  {executiveAnalysis.risks.map((item) => (
+                    <li key={item}>• {item}</li>
+                  ))}
+                </ul>
+              </div>
+
+              <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
+                <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
+                  Watch Items
+                </p>
+                <ul className="mt-4 space-y-3 text-sm text-zinc-400">
+                  {executiveAnalysis.watchItems.map((item) => (
+                    <li key={item}>• {item}</li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+
+            <div className="mt-8 grid gap-4 rounded-2xl border border-white/[0.07] bg-black/10 p-5 md:grid-cols-2">
+              <div>
+                <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
+                  Stake Recommendation
+                </p>
+                <p className="mt-3 text-sm leading-7 text-zinc-400">
+                  {executiveAnalysis.stakeRecommendation}
+                </p>
+              </div>
+
+              <div>
+                <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
+                  Best Price Summary
+                </p>
+                <p className="mt-3 text-sm leading-7 text-zinc-400">
+                  {executiveAnalysis.bestPriceSummary}
+                </p>
+              </div>
+            </div>
+          </section>
+        )}
 
         {/* EXECUTIVE RECOMMENDATION */}
 
