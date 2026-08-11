@@ -2,26 +2,60 @@ from pathlib import Path
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
-from app.services.market_intelligence import get_market_intelligence
-router = APIRouter(prefix="/api", tags=["sports-intelligence"])
 
-MODEL_ROOT = Path.home() / "Downloads" / "NFL_Analytics_OS_v1_9"
+from app.services.market_intelligence import (
+    get_market_intelligence,
+)
+
+from app.services.sports_intelligence_score import (
+    calculate_sports_intelligence_score,
+)
+
+
+router = APIRouter(
+    prefix="/api",
+    tags=["sports-intelligence"],
+)
+
+
+MODEL_ROOT = (
+    Path.home()
+    / "Downloads"
+    / "NFL_Analytics_OS_v1_9"
+)
+
 
 RANKED_BET_BOARD = (
-    MODEL_ROOT / "outputs" / "ranked_bet_board.csv"
+    MODEL_ROOT
+    / "outputs"
+    / "ranked_bet_board.csv"
 )
+
 
 PORTFOLIO_RECOMMENDATIONS = (
-    MODEL_ROOT / "outputs" / "portfolio_recommendations.csv"
+    MODEL_ROOT
+    / "outputs"
+    / "portfolio_recommendations.csv"
 )
+
 
 GAME_PROJECTIONS = (
-    MODEL_ROOT / "outputs" / "current_game_projections.csv"
+    MODEL_ROOT
+    / "outputs"
+    / "current_game_projections.csv"
 )
 
+
 LINE_MOVEMENT_BOARD = (
-    MODEL_ROOT / "outputs" / "line_movement_board.csv"
+    MODEL_ROOT
+    / "outputs"
+    / "line_movement_board.csv"
 )
+
+
+# ---------------------------------------------------------
+# HELPERS
+# ---------------------------------------------------------
 
 
 def safe_float(value):
@@ -39,25 +73,55 @@ def safe_int(value):
 
 
 def format_pick(row):
-    away_team = str(row["away_team"])
-    home_team = str(row["home_team"])
-    side = str(row["side"])
-    market = str(row["market"])
-    point = float(row["point"])
+    away_team = str(
+        row["away_team"]
+    )
+
+    home_team = str(
+        row["home_team"]
+    )
+
+    side = str(
+        row["side"]
+    )
+
+    market = str(
+        row["market"]
+    )
+
+    point = float(
+        row["point"]
+    )
 
     if market == "spread":
-        team = home_team if side == "home" else away_team
-        point_text = f"+{point:g}" if point > 0 else f"{point:g}"
+        team = (
+            home_team
+            if side == "home"
+            else away_team
+        )
+
+        point_text = (
+            f"+{point:g}"
+            if point > 0
+            else f"{point:g}"
+        )
 
         return f"{team} {point_text}"
 
     if market == "total":
-        return f"{side.title()} {point:g}"
+        return (
+            f"{side.title()} {point:g}"
+        )
 
-    return f"{side.title()} {point:g}"
+    return (
+        f"{side.title()} {point:g}"
+    )
 
 
-def build_id(row, suffix=None):
+def build_id(
+    row,
+    suffix=None,
+):
     base = (
         f'{row["api_event_id"]}-'
         f'{row["market"]}-'
@@ -65,9 +129,16 @@ def build_id(row, suffix=None):
     )
 
     if suffix:
-        return f"{base}-{suffix}"
+        return (
+            f"{base}-{suffix}"
+        )
 
     return base
+
+
+# ---------------------------------------------------------
+# OPPORTUNITY NORMALIZATION
+# ---------------------------------------------------------
 
 
 def row_to_opportunity(
@@ -76,124 +147,301 @@ def row_to_opportunity(
 ):
     result = {
         "id": build_id(row),
-        "eventId": row["api_event_id"],
-        "commenceTime": row["commence_time"],
+
+        "eventId": (
+            row["api_event_id"]
+        ),
+
+        "commenceTime": (
+            row["commence_time"]
+        ),
+
         "matchup": (
-            f'{row["away_team"]} @ {row["home_team"]}'
+            f'{row["away_team"]} @ '
+            f'{row["home_team"]}'
         ),
-        "awayTeam": row["away_team"],
-        "homeTeam": row["home_team"],
+
+        "awayTeam": (
+            row["away_team"]
+        ),
+
+        "homeTeam": (
+            row["home_team"]
+        ),
+
         "pick": format_pick(row),
-        "book": row["sportsbook"],
-        "market": row["market"],
-        "side": row["side"],
-        "point": float(row["point"]),
-        "price": float(row["price"]),
+
+        "book": (
+            row["sportsbook"]
+        ),
+
+        "market": (
+            row["market"]
+        ),
+
+        "side": (
+            row["side"]
+        ),
+
+        "point": float(
+            row["point"]
+        ),
+
+        "price": float(
+            row["price"]
+        ),
+
         "modelProbability": round(
-            float(row["model_prob"]) * 100,
+            float(
+                row["model_prob"]
+            )
+            * 100,
             1,
         ),
+
         "impliedProbability": round(
-            float(row["implied_prob_raw"]) * 100,
+            float(
+                row["implied_prob_raw"]
+            )
+            * 100,
             1,
         ),
+
         "fairOdds": round(
-            float(row["fair_odds"])
+            float(
+                row["fair_odds"]
+            )
         ),
+
         "edge": round(
-            float(row["edge_pp"]) * 100,
+            float(
+                row["edge_pp"]
+            )
+            * 100,
             1,
         ),
+
         "evPerDollar": round(
-            float(row["ev_per_dollar"]),
+            float(
+                row["ev_per_dollar"]
+            ),
             3,
         ),
+
         "kellyFull": round(
-            float(row["kelly_full"]),
+            float(
+                row["kelly_full"]
+            ),
             3,
         ),
+
         "kelly20": round(
-            float(row["kelly_20pct"]),
+            float(
+                row["kelly_20pct"]
+            ),
             3,
         ),
-        "recommendation": row["recommendation"],
+
+        "recommendation": (
+            row["recommendation"]
+        ),
+
         "confidence": int(
-            round(float(row["confidence_score"]))
+            round(
+                float(
+                    row[
+                        "confidence_score"
+                    ]
+                )
+            )
         ),
+
         "dataCompleteness": round(
-            float(row["data_completeness"]) * 100,
+            float(
+                row[
+                    "data_completeness"
+                ]
+            )
+            * 100,
             1,
         ),
+
         "marketConfidence": round(
-            float(row["market_confidence"]) * 100,
+            float(
+                row[
+                    "market_confidence"
+                ]
+            )
+            * 100,
             1,
         ),
+
         "modelConfidence": round(
-            float(row["model_confidence"]) * 100,
-            1,
-        ),
-          "modelConfidence": round(
-            float(row["model_confidence"]) * 100,
+            float(
+                row[
+                    "model_confidence"
+                ]
+            )
+            * 100,
             1,
         ),
 
-        "rank": int(row["rank"]),
-
-        "marketIntelligence": get_market_intelligence(
-            event_id=row["api_event_id"],
-            market=row["market"],
-            side=row["side"],
+        "rank": int(
+            row["rank"]
         ),
     }
 
-    if include_alternates is not None:
-        result["alternateBooks"] = include_alternates
+    # -----------------------------------------------------
+    # MARKET INTELLIGENCE
+    # -----------------------------------------------------
+
+    market_intelligence = (
+        get_market_intelligence(
+            event_id=(
+                row["api_event_id"]
+            ),
+            market=row["market"],
+            side=row["side"],
+        )
+    )
+
+    result[
+        "marketIntelligence"
+    ] = market_intelligence
+
+    # -----------------------------------------------------
+    # SPORTS INTELLIGENCE SCORE
+    # -----------------------------------------------------
+
+    result[
+        "sportsIntelligenceScore"
+    ] = (
+        calculate_sports_intelligence_score(
+            opportunity=result,
+            market_intelligence=(
+                market_intelligence
+            ),
+        )
+    )
+
+    if (
+        include_alternates
+        is not None
+    ):
+        result[
+            "alternateBooks"
+        ] = include_alternates
 
     return result
 
 
-def best_line_for_group(group):
-    market = str(group.iloc[0]["market"])
-    side = str(group.iloc[0]["side"])
+# ---------------------------------------------------------
+# BEST LINE LOGIC
+# ---------------------------------------------------------
+
+
+def best_line_for_group(
+    group,
+):
+    market = str(
+        group.iloc[0][
+            "market"
+        ]
+    )
+
+    side = str(
+        group.iloc[0][
+            "side"
+        ]
+    )
 
     if market == "spread":
-        best_point = group["point"].max()
+        best_point = (
+            group[
+                "point"
+            ].max()
+        )
 
         candidates = group[
-            group["point"] == best_point
+            group[
+                "point"
+            ]
+            == best_point
         ]
 
-        best_price = candidates["price"].max()
+        best_price = (
+            candidates[
+                "price"
+            ].max()
+        )
 
         return candidates[
-            candidates["price"] == best_price
+            candidates[
+                "price"
+            ]
+            == best_price
         ].iloc[0]
 
     if market == "total":
-        if side.lower() == "over":
-            best_point = group["point"].min()
+
+        if (
+            side.lower()
+            == "over"
+        ):
+            best_point = (
+                group[
+                    "point"
+                ].min()
+            )
 
             candidates = group[
-                group["point"] == best_point
+                group[
+                    "point"
+                ]
+                == best_point
             ]
 
-            best_price = candidates["price"].max()
+            best_price = (
+                candidates[
+                    "price"
+                ].max()
+            )
 
             return candidates[
-                candidates["price"] == best_price
+                candidates[
+                    "price"
+                ]
+                == best_price
             ].iloc[0]
 
-        if side.lower() == "under":
-            best_point = group["point"].max()
+        if (
+            side.lower()
+            == "under"
+        ):
+            best_point = (
+                group[
+                    "point"
+                ].max()
+            )
 
             candidates = group[
-                group["point"] == best_point
+                group[
+                    "point"
+                ]
+                == best_point
             ]
 
-            best_price = candidates["price"].max()
+            best_price = (
+                candidates[
+                    "price"
+                ].max()
+            )
 
             return candidates[
-                candidates["price"] == best_price
+                candidates[
+                    "price"
+                ]
+                == best_price
             ].iloc[0]
 
     return group.sort_values(
@@ -210,34 +458,82 @@ def best_line_for_group(group):
     ).iloc[0]
 
 
+# ---------------------------------------------------------
+# ALTERNATE SPORTSBOOKS
+# ---------------------------------------------------------
+
+
 def make_alternate_books(
     group,
     selected_row,
 ):
     alternates = []
 
-    for _, row in group.iterrows():
+    for _, row in (
+        group.iterrows()
+    ):
         if (
-            str(row["sportsbook"])
-            == str(selected_row["sportsbook"])
-            and float(row["point"])
-            == float(selected_row["point"])
-            and float(row["price"])
-            == float(selected_row["price"])
+            str(
+                row[
+                    "sportsbook"
+                ]
+            )
+            == str(
+                selected_row[
+                    "sportsbook"
+                ]
+            )
+            and float(
+                row["point"]
+            )
+            == float(
+                selected_row[
+                    "point"
+                ]
+            )
+            and float(
+                row["price"]
+            )
+            == float(
+                selected_row[
+                    "price"
+                ]
+            )
         ):
             continue
 
         alternates.append(
             {
-                "book": row["sportsbook"],
-                "point": float(row["point"]),
-                "price": float(row["price"]),
+                "book": (
+                    row[
+                        "sportsbook"
+                    ]
+                ),
+
+                "point": float(
+                    row["point"]
+                ),
+
+                "price": float(
+                    row["price"]
+                ),
+
                 "edge": round(
-                    float(row["edge_pp"]) * 100,
+                    float(
+                        row[
+                            "edge_pp"
+                        ]
+                    )
+                    * 100,
                     1,
                 ),
+
                 "evPerDollar": round(
-                    float(row["ev_per_dollar"]),
+                    float(
+                        row[
+                            "ev_per_dollar"
+                        ]
+                    ),
                     3,
                 ),
             }
@@ -247,7 +543,9 @@ def make_alternate_books(
         key=lambda item: (
             item["point"],
             item["price"],
-            item["evPerDollar"],
+            item[
+                "evPerDollar"
+            ],
         ),
         reverse=True,
     )
@@ -255,7 +553,14 @@ def make_alternate_books(
     return alternates[:5]
 
 
-@router.get("/opportunities")
+# ---------------------------------------------------------
+# OPPORTUNITIES
+# ---------------------------------------------------------
+
+
+@router.get(
+    "/opportunities"
+)
 def get_opportunities(
     limit: int = Query(
         default=100,
@@ -264,24 +569,54 @@ def get_opportunities(
     ),
     best_lines_only: bool = True,
 ):
-    df = pd.read_csv(RANKED_BET_BOARD)
+    if (
+        not RANKED_BET_BOARD.exists()
+    ):
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Ranked bet board "
+                "not found"
+            ),
+        )
+
+    df = pd.read_csv(
+        RANKED_BET_BOARD
+    )
 
     if not best_lines_only:
         df = (
-            df.sort_values("rank")
+            df
+            .sort_values(
+                "rank"
+            )
             .head(limit)
         )
 
         opportunities = [
-            row_to_opportunity(row)
-            for _, row in df.iterrows()
+            row_to_opportunity(
+                row
+            )
+            for _, row
+            in df.iterrows()
         ]
 
         return {
-            "count": len(opportunities),
-            "source": str(RANKED_BET_BOARD),
-            "bestLinesOnly": False,
-            "opportunities": opportunities,
+            "count": len(
+                opportunities
+            ),
+
+            "source": str(
+                RANKED_BET_BOARD
+            ),
+
+            "bestLinesOnly": (
+                False
+            ),
+
+            "opportunities": (
+                opportunities
+            ),
         }
 
     grouped = df.groupby(
@@ -297,128 +632,259 @@ def get_opportunities(
     best_rows = []
 
     for _, group in grouped:
-        selected = best_line_for_group(group)
-
-        alternates = make_alternate_books(
-            group,
-            selected,
+        selected = (
+            best_line_for_group(
+                group
+            )
         )
 
-        item = row_to_opportunity(
-            selected,
-            include_alternates=alternates,
+        alternates = (
+            make_alternate_books(
+                group,
+                selected,
+            )
         )
 
-        best_rows.append(item)
+        item = (
+            row_to_opportunity(
+                selected,
+                include_alternates=(
+                    alternates
+                ),
+            )
+        )
+
+        best_rows.append(
+            item
+        )
 
     best_rows.sort(
         key=lambda item: (
             item["rank"],
             -item["edge"],
-            -item["evPerDollar"],
+            -item[
+                "evPerDollar"
+            ],
         )
     )
 
-    opportunities = best_rows[:limit]
+    opportunities = (
+        best_rows[:limit]
+    )
 
     return {
-        "count": len(opportunities),
-        "source": str(RANKED_BET_BOARD),
+        "count": len(
+            opportunities
+        ),
+
+        "source": str(
+            RANKED_BET_BOARD
+        ),
+
         "bestLinesOnly": True,
-        "opportunities": opportunities,
+
+        "opportunities": (
+            opportunities
+        ),
     }
 
 
-@router.get("/opportunities/{opportunity_id}")
+# ---------------------------------------------------------
+# INDIVIDUAL OPPORTUNITY
+# ---------------------------------------------------------
+
+
+@router.get(
+    "/opportunities/{opportunity_id}"
+)
 def get_opportunity(
     opportunity_id: str,
 ):
-    df = pd.read_csv(RANKED_BET_BOARD)
+    if (
+        not RANKED_BET_BOARD.exists()
+    ):
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Ranked bet board "
+                "not found"
+            ),
+        )
 
-    df["generated_id"] = df.apply(
-        lambda row: build_id(row),
+    df = pd.read_csv(
+        RANKED_BET_BOARD
+    )
+
+    df[
+        "generated_id"
+    ] = df.apply(
+        lambda row: (
+            build_id(row)
+        ),
         axis=1,
     )
 
     match = df[
-        df["generated_id"] == opportunity_id
+        df[
+            "generated_id"
+        ]
+        == opportunity_id
     ]
 
     if match.empty:
         raise HTTPException(
             status_code=404,
-            detail="Opportunity not found",
+            detail=(
+                "Opportunity "
+                "not found"
+            ),
         )
 
-    selected = best_line_for_group(match)
-
-    alternates = make_alternate_books(
-        match,
-        selected,
+    selected = (
+        best_line_for_group(
+            match
+        )
     )
 
-    return row_to_opportunity(
-        selected,
-        include_alternates=alternates,
+    alternates = (
+        make_alternate_books(
+            match,
+            selected,
+        )
+    )
+
+    return (
+        row_to_opportunity(
+            selected,
+            include_alternates=(
+                alternates
+            ),
+        )
     )
 
 
-@router.get("/games/{event_id}")
+# ---------------------------------------------------------
+# GAME PROJECTION
+# ---------------------------------------------------------
+
+
+@router.get(
+    "/games/{event_id}"
+)
 def get_game_projection(
     event_id: str,
 ):
-    df = pd.read_csv(GAME_PROJECTIONS)
+    if (
+        not GAME_PROJECTIONS.exists()
+    ):
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Game projections "
+                "file not found"
+            ),
+        )
+
+    df = pd.read_csv(
+        GAME_PROJECTIONS
+    )
 
     match = df[
-        df["api_event_id"] == event_id
+        df[
+            "api_event_id"
+        ]
+        == event_id
     ]
 
     if match.empty:
         raise HTTPException(
             status_code=404,
-            detail="Game projection not found",
+            detail=(
+                "Game projection "
+                "not found"
+            ),
         )
 
     row = match.iloc[0]
 
     model_margin_home = float(
-        row["model_margin_home"]
+        row[
+            "model_margin_home"
+        ]
     )
 
     model_total = float(
-        row["model_total_baseline"]
+        row[
+            "model_total_baseline"
+        ]
     )
 
     projected_home_score = (
-        model_total + model_margin_home
+        model_total
+        + model_margin_home
     ) / 2
 
     projected_away_score = (
-        model_total - model_margin_home
+        model_total
+        - model_margin_home
     ) / 2
 
     return {
-        "eventId": row["api_event_id"],
-        "commenceTime": row["commence_time"],
+        "eventId": (
+            row[
+                "api_event_id"
+            ]
+        ),
+
+        "commenceTime": (
+            row[
+                "commence_time"
+            ]
+        ),
+
         "matchup": (
             f'{row["away_team"]} @ '
             f'{row["home_team"]}'
         ),
-        "awayTeam": row["away_team"],
-        "homeTeam": row["home_team"],
+
+        "awayTeam": (
+            row["away_team"]
+        ),
+
+        "homeTeam": (
+            row["home_team"]
+        ),
 
         "teamPower": {
             "away": round(
-                float(row["away_power"]),
+                float(
+                    row[
+                        "away_power"
+                    ]
+                ),
                 2,
             ),
+
             "home": round(
-                float(row["home_power"]),
+                float(
+                    row[
+                        "home_power"
+                    ]
+                ),
                 2,
             ),
+
             "differenceHomeMinusAway": round(
-                float(row["home_power"])
-                - float(row["away_power"]),
+                float(
+                    row[
+                        "home_power"
+                    ]
+                )
+                - float(
+                    row[
+                        "away_power"
+                    ]
+                ),
                 2,
             ),
         },
@@ -428,15 +894,18 @@ def get_game_projection(
                 model_margin_home,
                 2,
             ),
+
             "total": round(
                 model_total,
                 1,
             ),
+
             "projectedScore": {
                 "away": round(
                     projected_away_score,
                     1,
                 ),
+
                 "home": round(
                     projected_home_score,
                     1,
@@ -447,25 +916,36 @@ def get_game_projection(
         "market": {
             "marginHome": round(
                 float(
-                    row["market_margin_home"]
+                    row[
+                        "market_margin_home"
+                    ]
                 ),
                 2,
             ),
+
             "homeSpread": float(
-                row["market_home_spread"]
+                row[
+                    "market_home_spread"
+                ]
             ),
+
             "total": float(
-                row["market_total"]
+                row[
+                    "market_total"
+                ]
             ),
         },
 
         "spreadAnalysis": {
             "edgePoints": round(
                 float(
-                    row["spread_edge_points"]
+                    row[
+                        "spread_edge_points"
+                    ]
                 ),
                 2,
             ),
+
             "homeCoverProbability": round(
                 float(
                     row[
@@ -475,6 +955,7 @@ def get_game_projection(
                 * 100,
                 1,
             ),
+
             "homeCoverFairOdds": round(
                 float(
                     row[
@@ -484,11 +965,20 @@ def get_game_projection(
             ),
         },
 
-        "source": str(GAME_PROJECTIONS),
+        "source": str(
+            GAME_PROJECTIONS
+        ),
     }
 
 
-@router.get("/line-movement")
+# ---------------------------------------------------------
+# LINE MOVEMENT
+# ---------------------------------------------------------
+
+
+@router.get(
+    "/line-movement"
+)
 def get_line_movement(
     limit: int = Query(
         default=100,
@@ -497,11 +987,25 @@ def get_line_movement(
     ),
     steam_only: bool = False,
 ):
-    if not LINE_MOVEMENT_BOARD.exists():
+    if (
+        not LINE_MOVEMENT_BOARD.exists()
+    ):
         return {
             "count": 0,
-            "source": str(LINE_MOVEMENT_BOARD),
-            "steamOnly": steam_only,
+
+            "source": str(
+                LINE_MOVEMENT_BOARD
+            ),
+
+            "steamOnly": (
+                steam_only
+            ),
+
+            "summary": {
+                "steamMoves": 0,
+                "biggestPointMove": 0,
+            },
+
             "movements": [],
         }
 
@@ -509,54 +1013,110 @@ def get_line_movement(
         df = pd.read_csv(
             LINE_MOVEMENT_BOARD
         )
-    except pd.errors.EmptyDataError:
+
+    except (
+        pd.errors.EmptyDataError
+    ):
         return {
             "count": 0,
-            "source": str(LINE_MOVEMENT_BOARD),
-            "steamOnly": steam_only,
+
+            "source": str(
+                LINE_MOVEMENT_BOARD
+            ),
+
+            "steamOnly": (
+                steam_only
+            ),
+
+            "summary": {
+                "steamMoves": 0,
+                "biggestPointMove": 0,
+            },
+
             "movements": [],
         }
 
     if df.empty:
         return {
             "count": 0,
-            "source": str(LINE_MOVEMENT_BOARD),
-            "steamOnly": steam_only,
+
+            "source": str(
+                LINE_MOVEMENT_BOARD
+            ),
+
+            "steamOnly": (
+                steam_only
+            ),
+
+            "summary": {
+                "steamMoves": 0,
+                "biggestPointMove": 0,
+            },
+
             "movements": [],
         }
 
     if steam_only:
         df = df[
-            df["steam_flag"] == True
+            df[
+                "steam_flag"
+            ]
+            == True
         ]
 
-    df = df.head(limit)
+    df = df.head(
+        limit
+    )
 
     movements = []
 
-    for index, row in df.iterrows():
+    for (
+        index,
+        row,
+    ) in df.iterrows():
+
         point_move = safe_float(
-            row["point_move"]
+            row[
+                "point_move"
+            ]
         )
 
         price_move = safe_float(
-            row["price_move"]
+            row[
+                "price_move"
+            ]
         )
 
-        opening_point = safe_float(
-            row["opening_point_observed"]
+        opening_point = (
+            safe_float(
+                row[
+                    "opening_point_observed"
+                ]
+            )
         )
 
-        latest_point = safe_float(
-            row["latest_point"]
+        latest_point = (
+            safe_float(
+                row[
+                    "latest_point"
+                ]
+            )
         )
 
-        opening_price = safe_float(
-            row["opening_price_observed"]
+        opening_price = (
+            safe_float(
+                row[
+                    "opening_price_observed"
+                ]
+            )
         )
 
-        latest_price = safe_float(
-            row["latest_price"]
+        latest_price = (
+            safe_float(
+                row[
+                    "latest_price"
+                ]
+            )
         )
 
         movement = {
@@ -568,10 +1128,16 @@ def get_line_movement(
                 f'{index}'
             ),
 
-            "eventId": row["api_event_id"],
+            "eventId": (
+                row[
+                    "api_event_id"
+                ]
+            ),
 
             "commenceTime": (
-                row["commence_time"]
+                row[
+                    "commence_time"
+                ]
             ),
 
             "matchup": (
@@ -579,96 +1145,212 @@ def get_line_movement(
                 f'{row["home_team"]}'
             ),
 
-            "awayTeam": row["away_team"],
-            "homeTeam": row["home_team"],
-
-            "sportsbook": row["sportsbook"],
-            "market": row["market"],
-            "side": row["side"],
-
-            "firstSeen": row["first_seen"],
-            "lastSeen": row["last_seen"],
-
-            "openingPoint": opening_point,
-            "latestPoint": latest_point,
-            "pointMove": point_move,
-
-            "openingPrice": opening_price,
-            "latestPrice": latest_price,
-            "priceMove": price_move,
-
-            "steamFlag": bool(
-                row["steam_flag"]
+            "awayTeam": (
+                row[
+                    "away_team"
+                ]
             ),
 
-            "snapshots": safe_int(
-                row["snapshots"]
+            "homeTeam": (
+                row[
+                    "home_team"
+                ]
+            ),
+
+            "sportsbook": (
+                row[
+                    "sportsbook"
+                ]
+            ),
+
+            "market": (
+                row[
+                    "market"
+                ]
+            ),
+
+            "side": (
+                row[
+                    "side"
+                ]
+            ),
+
+            "firstSeen": (
+                row[
+                    "first_seen"
+                ]
+            ),
+
+            "lastSeen": (
+                row[
+                    "last_seen"
+                ]
+            ),
+
+            "openingPoint": (
+                opening_point
+            ),
+
+            "latestPoint": (
+                latest_point
+            ),
+
+            "pointMove": (
+                point_move
+            ),
+
+            "openingPrice": (
+                opening_price
+            ),
+
+            "latestPrice": (
+                latest_price
+            ),
+
+            "priceMove": (
+                price_move
+            ),
+
+            "steamFlag": bool(
+                row[
+                    "steam_flag"
+                ]
+            ),
+
+            "snapshots": (
+                safe_int(
+                    row[
+                        "snapshots"
+                    ]
+                )
             ),
         }
 
-        movements.append(movement)
+        movements.append(
+            movement
+        )
 
     steam_count = sum(
         1
-        for item in movements
-        if item["steamFlag"]
+        for item
+        in movements
+        if item[
+            "steamFlag"
+        ]
     )
 
     point_moves = [
-        abs(item["pointMove"])
-        for item in movements
-        if item["pointMove"] is not None
+        abs(
+            item[
+                "pointMove"
+            ]
+        )
+        for item
+        in movements
+        if item[
+            "pointMove"
+        ]
+        is not None
     ]
 
     biggest_point_move = (
-        max(point_moves)
+        max(
+            point_moves
+        )
         if point_moves
         else 0
     )
 
     return {
-        "count": len(movements),
+        "count": len(
+            movements
+        ),
+
         "source": str(
             LINE_MOVEMENT_BOARD
         ),
-        "steamOnly": steam_only,
+
+        "steamOnly": (
+            steam_only
+        ),
 
         "summary": {
-            "steamMoves": steam_count,
+            "steamMoves": (
+                steam_count
+            ),
+
             "biggestPointMove": round(
                 biggest_point_move,
                 1,
             ),
         },
 
-        "movements": movements,
+        "movements": (
+            movements
+        ),
     }
 
 
-@router.get("/portfolio")
+# ---------------------------------------------------------
+# PORTFOLIO
+# ---------------------------------------------------------
+
+
+@router.get(
+    "/portfolio"
+)
 def get_portfolio():
+    if (
+        not PORTFOLIO_RECOMMENDATIONS.exists()
+    ):
+        return {
+            "count": 0,
+
+            "source": str(
+                PORTFOLIO_RECOMMENDATIONS
+            ),
+
+            "summary": {
+                "totalRecommendedUnits": 0,
+                "averageEdge": 0,
+                "averageModelProbability": 0,
+                "expectedValueUnits": 0,
+            },
+
+            "portfolio": [],
+        }
+
     df = pd.read_csv(
         PORTFOLIO_RECOMMENDATIONS
     )
 
     portfolio = []
 
-    for index, row in df.iterrows():
+    for (
+        index,
+        row,
+    ) in df.iterrows():
+
         portfolio.append(
             {
                 "id": build_id(
                     row,
                     suffix=(
-                        f"portfolio-{index + 1}"
+                        f"portfolio-"
+                        f"{index + 1}"
                     ),
                 ),
 
                 "eventId": (
-                    row["api_event_id"]
+                    row[
+                        "api_event_id"
+                    ]
                 ),
 
                 "commenceTime": (
-                    row["commence_time"]
+                    row[
+                        "commence_time"
+                    ]
                 ),
 
                 "matchup": (
@@ -677,38 +1359,58 @@ def get_portfolio():
                 ),
 
                 "awayTeam": (
-                    row["away_team"]
+                    row[
+                        "away_team"
+                    ]
                 ),
 
                 "homeTeam": (
-                    row["home_team"]
+                    row[
+                        "home_team"
+                    ]
                 ),
 
-                "pick": format_pick(row),
+                "pick": (
+                    format_pick(
+                        row
+                    )
+                ),
 
                 "book": (
-                    row["sportsbook"]
+                    row[
+                        "sportsbook"
+                    ]
                 ),
 
                 "market": (
-                    row["market"]
+                    row[
+                        "market"
+                    ]
                 ),
 
                 "side": (
-                    row["side"]
+                    row[
+                        "side"
+                    ]
                 ),
 
                 "point": float(
-                    row["point"]
+                    row[
+                        "point"
+                    ]
                 ),
 
                 "price": float(
-                    row["price"]
+                    row[
+                        "price"
+                    ]
                 ),
 
                 "modelProbability": round(
                     float(
-                        row["model_prob"]
+                        row[
+                            "model_prob"
+                        ]
                     )
                     * 100,
                     1,
@@ -726,13 +1428,17 @@ def get_portfolio():
 
                 "fairOdds": round(
                     float(
-                        row["fair_odds"]
+                        row[
+                            "fair_odds"
+                        ]
                     )
                 ),
 
                 "edge": round(
                     float(
-                        row["edge_pp"]
+                        row[
+                            "edge_pp"
+                        ]
                     )
                     * 100,
                     1,
@@ -749,24 +1455,32 @@ def get_portfolio():
 
                 "kellyFull": round(
                     float(
-                        row["kelly_full"]
+                        row[
+                            "kelly_full"
+                        ]
                     ),
                     3,
                 ),
 
                 "kelly20": round(
                     float(
-                        row["kelly_20pct"]
+                        row[
+                            "kelly_20pct"
+                        ]
                     ),
                     3,
                 ),
 
                 "recommendation": (
-                    row["recommendation"]
+                    row[
+                        "recommendation"
+                    ]
                 ),
 
                 "rawUnits": float(
-                    row["raw_units"]
+                    row[
+                        "raw_units"
+                    ]
                 ),
 
                 "recommendedUnits": float(
@@ -778,38 +1492,56 @@ def get_portfolio():
         )
 
     total_units = sum(
-        item["recommendedUnits"]
-        for item in portfolio
+        item[
+            "recommendedUnits"
+        ]
+        for item
+        in portfolio
     )
 
     average_edge = (
         sum(
             item["edge"]
-            for item in portfolio
+            for item
+            in portfolio
         )
-        / len(portfolio)
+        / len(
+            portfolio
+        )
         if portfolio
         else 0
     )
 
     average_model_probability = (
         sum(
-            item["modelProbability"]
-            for item in portfolio
+            item[
+                "modelProbability"
+            ]
+            for item
+            in portfolio
         )
-        / len(portfolio)
+        / len(
+            portfolio
+        )
         if portfolio
         else 0
     )
 
     expected_value_units = sum(
-        item["recommendedUnits"]
-        * item["evPerDollar"]
-        for item in portfolio
+        item[
+            "recommendedUnits"
+        ]
+        * item[
+            "evPerDollar"
+        ]
+        for item
+        in portfolio
     )
 
     return {
-        "count": len(portfolio),
+        "count": len(
+            portfolio
+        ),
 
         "source": str(
             PORTFOLIO_RECOMMENDATIONS
@@ -837,5 +1569,7 @@ def get_portfolio():
             ),
         },
 
-        "portfolio": portfolio,
-    } 
+        "portfolio": (
+            portfolio
+        ),
+    }

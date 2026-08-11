@@ -16,6 +16,10 @@ LINE_MOVEMENT_BOARD = (
 )
 
 
+_cached_modified_time = None
+_cached_lookup = {}
+
+
 def safe_float(value):
     if pd.isna(value):
         return None
@@ -58,101 +62,22 @@ def normalize_market(market):
     )
 
 
-def movement_supports_side(row):
-    market = normalize_market(
-        row["market"]
-    )
-
-    side = str(
-        row["side"]
-    ).lower()
-
-    point_move = safe_float(
-        row["point_move"]
-    )
-
-    opening_price = safe_float(
-        row["opening_price_observed"]
-    )
-
-    latest_price = safe_float(
-        row["latest_price"]
-    )
-
-    # SPREADS
-    #
-    # If a team's spread becomes less favorable
-    # to bettors, the market is moving toward
-    # that team.
-    #
-    # Example:
-    # HOU +1.5 -> HOU -1.5
-    #
-    # point_move = -3
-    # Market support = HOU
-    if market == "spreads":
-        if (
-            point_move is None
-            or point_move == 0
-        ):
-            return None
-
-        return point_move < 0
-
-    # TOTALS
-    #
-    # Over support pushes total upward.
-    # Under support pushes total downward.
-    if market == "totals":
-        if (
-            point_move is None
-            or point_move == 0
-        ):
-            return None
-
-        if side == "over":
-            return point_move > 0
-
-        if side == "under":
-            return point_move < 0
-
-        return None
-
-    # MONEYLINE
-    #
-    # Convert American odds to implied
-    # probability so +100 -> -120 is handled
-    # correctly.
-    if market == "h2h":
-        opening_probability = (
-            american_implied_probability(
-                opening_price
-            )
-        )
-
-        latest_probability = (
-            american_implied_probability(
-                latest_price
-            )
-        )
-
-        if (
-            opening_probability is None
-            or latest_probability is None
-        ):
-            return None
-
-        difference = (
-            latest_probability
-            - opening_probability
-        )
-
-        if abs(difference) < 0.001:
-            return None
-
-        return difference > 0
-
-    return None
+def empty_intelligence():
+    return {
+        "score": 0.0,
+        "grade": "N/A",
+        "signal": "Insufficient Market History",
+        "booksTracked": 0,
+        "booksMoving": 0,
+        "steamBooks": 0,
+        "supportingBooks": 0,
+        "opposingBooks": 0,
+        "consensus": 0.0,
+        "largestPointMove": 0.0,
+        "largestPriceMove": 0.0,
+        "marketSupport": False,
+        "snapshots": 0,
+    }
 
 
 def grade_score(score):
@@ -199,91 +124,103 @@ def signal_label(
     return "Mixed Market"
 
 
-def empty_intelligence():
-    return {
-        "score": 0.0,
-        "grade": "N/A",
-        "signal": "Insufficient Market History",
-        "booksTracked": 0,
-        "booksMoving": 0,
-        "steamBooks": 0,
-        "supportingBooks": 0,
-        "opposingBooks": 0,
-        "consensus": 0.0,
-        "largestPointMove": 0.0,
-        "largestPriceMove": 0.0,
-        "marketSupport": False,
-        "snapshots": 0,
-    }
-
-
-def get_market_intelligence(
-    event_id,
-    market,
-    side,
-):
-    if not LINE_MOVEMENT_BOARD.exists():
-        return empty_intelligence()
-
-    try:
-        df = pd.read_csv(
-            LINE_MOVEMENT_BOARD
-        )
-    except (
-        pd.errors.EmptyDataError,
-        OSError,
-    ):
-        return empty_intelligence()
-
-    if df.empty:
-        return empty_intelligence()
-
-    normalized_market = (
-        normalize_market(market)
+def movement_supports_side(row):
+    market = normalize_market(
+        row["market"]
     )
 
-    match = df[
-        (
-            df["api_event_id"].astype(str)
-            == str(event_id)
-        )
-        & (
-            df["market"]
-            .astype(str)
-            .str.lower()
-            == normalized_market
-        )
-        & (
-            df["side"]
-            .astype(str)
-            .str.lower()
-            == str(side).lower()
-        )
-    ].copy()
+    side = str(
+        row["side"]
+    ).lower()
 
-    if match.empty:
-        return empty_intelligence()
-
-    match["supports_side"] = (
-        match.apply(
-            movement_supports_side,
-            axis=1,
-        )
+    point_move = safe_float(
+        row["point_move"]
     )
 
+    opening_price = safe_float(
+        row["opening_price_observed"]
+    )
+
+    latest_price = safe_float(
+        row["latest_price"]
+    )
+
+    if market == "spreads":
+        if (
+            point_move is None
+            or point_move == 0
+        ):
+            return None
+
+        return point_move < 0
+
+    if market == "totals":
+        if (
+            point_move is None
+            or point_move == 0
+        ):
+            return None
+
+        if side == "over":
+            return point_move > 0
+
+        if side == "under":
+            return point_move < 0
+
+        return None
+
+    if market == "h2h":
+        opening_probability = (
+            american_implied_probability(
+                opening_price
+            )
+        )
+
+        latest_probability = (
+            american_implied_probability(
+                latest_price
+            )
+        )
+
+        if (
+            opening_probability is None
+            or latest_probability is None
+        ):
+            return None
+
+        difference = (
+            latest_probability
+            - opening_probability
+        )
+
+        if abs(difference) < 0.001:
+            return None
+
+        return difference > 0
+
+    return None
+
+
+def calculate_group_intelligence(group):
     books_tracked = int(
-        match["sportsbook"].nunique()
+        group[
+            "sportsbook"
+        ].nunique()
     )
 
-    moving_rows = match[
+    moving_rows = group[
         (
-            match["point_move"]
+            group[
+                "point_move"
+            ]
             .fillna(0)
             .abs()
             > 0
         )
         | (
-            match["price_move"]
+            group[
+                "price_move"
+            ]
             .fillna(0)
             .abs()
             > 0
@@ -296,8 +233,11 @@ def get_market_intelligence(
         ].nunique()
     )
 
-    steam_rows = match[
-        match["steam_flag"] == True
+    steam_rows = group[
+        group[
+            "steam_flag"
+        ]
+        == True
     ]
 
     steam_books = int(
@@ -306,12 +246,18 @@ def get_market_intelligence(
         ].nunique()
     )
 
-    supporting_rows = match[
-        match["supports_side"] == True
+    supporting_rows = group[
+        group[
+            "supports_side"
+        ]
+        == True
     ]
 
-    opposing_rows = match[
-        match["supports_side"] == False
+    opposing_rows = group[
+        group[
+            "supports_side"
+        ]
+        == False
     ]
 
     supporting_books = int(
@@ -342,7 +288,9 @@ def get_market_intelligence(
     )
 
     point_moves = (
-        match["point_move"]
+        group[
+            "point_move"
+        ]
         .dropna()
         .abs()
         .tolist()
@@ -355,7 +303,9 @@ def get_market_intelligence(
     )
 
     price_moves = (
-        match["price_move"]
+        group[
+            "price_move"
+        ]
         .dropna()
         .abs()
         .tolist()
@@ -368,33 +318,29 @@ def get_market_intelligence(
     )
 
     snapshots = int(
-        match["snapshots"]
+        group[
+            "snapshots"
+        ]
         .fillna(0)
         .max()
     )
 
-    #
-    # MARKET INTELLIGENCE SCORE
-    #
-    # 0-10 scale.
-    #
-    # This measures strength and agreement
-    # of observed sportsbook movement.
-    #
-
     score = 0.0
 
-    # 1. Consensus — max 3 points
+    # Consensus — max 3
     if consensus >= 90:
         score += 3.0
+
     elif consensus >= 75:
         score += 2.5
+
     elif consensus >= 65:
         score += 2.0
+
     elif consensus >= 55:
         score += 1.0
 
-    # 2. Steam participation — max 2.5
+    # Steam participation — max 2.5
     if books_tracked > 0:
         steam_ratio = (
             steam_books
@@ -406,7 +352,7 @@ def get_market_intelligence(
             2.5,
         )
 
-    # 3. Number of books moving — max 2
+    # Books moving — max 2
     if books_tracked > 0:
         movement_ratio = (
             books_moving
@@ -418,18 +364,19 @@ def get_market_intelligence(
             2.0,
         )
 
-    # 4. Point movement — max 1.5
+    # Largest point move — max 1.5
     score += min(
-        largest_point_move
-        / 2.0,
+        largest_point_move / 2.0,
         1.5,
     )
 
-    # 5. Snapshot depth — max 1
+    # Snapshot depth — max 1
     if snapshots >= 5:
         score += 1.0
+
     elif snapshots >= 3:
         score += 0.7
+
     elif snapshots >= 2:
         score += 0.4
 
@@ -445,34 +392,196 @@ def get_market_intelligence(
 
     return {
         "score": score,
-        "grade": grade_score(score),
+
+        "grade": grade_score(
+            score
+        ),
+
         "signal": signal_label(
             score,
             consensus,
         ),
+
         "booksTracked": books_tracked,
+
         "booksMoving": books_moving,
+
         "steamBooks": steam_books,
+
         "supportingBooks": (
             supporting_books
         ),
+
         "opposingBooks": (
             opposing_books
         ),
+
         "consensus": round(
             consensus,
             1,
         ),
+
         "largestPointMove": round(
             largest_point_move,
             1,
         ),
+
         "largestPriceMove": round(
             largest_price_move,
             1,
         ),
+
         "marketSupport": (
             market_support
         ),
+
         "snapshots": snapshots,
     }
+
+
+def build_market_intelligence_lookup():
+    global _cached_lookup
+    global _cached_modified_time
+
+    if not LINE_MOVEMENT_BOARD.exists():
+        _cached_lookup = {}
+        _cached_modified_time = None
+        return _cached_lookup
+
+    try:
+        modified_time = (
+            LINE_MOVEMENT_BOARD
+            .stat()
+            .st_mtime
+        )
+    except OSError:
+        return {}
+
+    if (
+        _cached_lookup
+        and _cached_modified_time
+        == modified_time
+    ):
+        return _cached_lookup
+
+    try:
+        df = pd.read_csv(
+            LINE_MOVEMENT_BOARD
+        )
+
+    except (
+        pd.errors.EmptyDataError,
+        OSError,
+    ):
+        _cached_lookup = {}
+        _cached_modified_time = (
+            modified_time
+        )
+
+        return _cached_lookup
+
+    if df.empty:
+        _cached_lookup = {}
+        _cached_modified_time = (
+            modified_time
+        )
+
+        return _cached_lookup
+
+    df = df.copy()
+
+    df[
+        "api_event_id"
+    ] = (
+        df[
+            "api_event_id"
+        ]
+        .astype(str)
+    )
+
+    df[
+        "normalized_market"
+    ] = (
+        df[
+            "market"
+        ]
+        .apply(
+            normalize_market
+        )
+    )
+
+    df[
+        "normalized_side"
+    ] = (
+        df[
+            "side"
+        ]
+        .astype(str)
+        .str.lower()
+    )
+
+    df[
+        "supports_side"
+    ] = df.apply(
+        movement_supports_side,
+        axis=1,
+    )
+
+    lookup = {}
+
+    grouped = df.groupby(
+        [
+            "api_event_id",
+            "normalized_market",
+            "normalized_side",
+        ],
+        dropna=False,
+        sort=False,
+    )
+
+    for (
+        event_id,
+        market,
+        side,
+    ), group in grouped:
+
+        key = (
+            str(event_id),
+            str(market),
+            str(side).lower(),
+        )
+
+        lookup[key] = (
+            calculate_group_intelligence(
+                group
+            )
+        )
+
+    _cached_lookup = lookup
+
+    _cached_modified_time = (
+        modified_time
+    )
+
+    return _cached_lookup
+
+
+def get_market_intelligence(
+    event_id,
+    market,
+    side,
+):
+    lookup = (
+        build_market_intelligence_lookup()
+    )
+
+    key = (
+        str(event_id),
+        normalize_market(market),
+        str(side).lower(),
+    )
+
+    return lookup.get(
+        key,
+        empty_intelligence(),
+    )

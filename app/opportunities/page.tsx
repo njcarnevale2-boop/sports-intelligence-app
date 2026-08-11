@@ -5,6 +5,7 @@ import Link from "next/link";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import SportsIntelligenceScoreCard from "@/components/sports-intelligence-score-card";
 
 type AlternateBook = {
   book: string;
@@ -30,33 +31,73 @@ type MarketIntelligence = {
   snapshots: number;
 };
 
+type SportsIntelligenceScore = {
+  score: number;
+  grade: string;
+  stars: number;
+  recommendation: string;
+
+  components: {
+    modelEdge: number;
+    expectedValue: number;
+    confidence: number;
+    marketIntelligence: number;
+    dataCompleteness: number;
+  };
+
+  weights: {
+    modelEdge: number;
+    expectedValue: number;
+    confidence: number;
+    marketIntelligence: number;
+    dataCompleteness: number;
+  };
+
+  reasons: string[];
+};
+
 type Opportunity = {
   id: string;
   eventId: string;
   commenceTime: string;
+
   matchup: string;
   awayTeam: string;
   homeTeam: string;
+
   pick: string;
   book: string;
+
   market: string;
   side: string;
+
   point: number;
   price: number;
+
   modelProbability: number;
   impliedProbability: number;
+
   fairOdds: number;
   edge: number;
+
   evPerDollar: number;
+
   kellyFull: number;
   kelly20: number;
+
   recommendation: string;
   confidence: number;
+
   dataCompleteness: number;
   marketConfidence: number;
   modelConfidence: number;
+
   rank: number;
+
   marketIntelligence: MarketIntelligence;
+
+  sportsIntelligenceScore: SportsIntelligenceScore;
+
   alternateBooks?: AlternateBook[];
 };
 
@@ -69,6 +110,7 @@ type OpportunitiesResponse = {
 
 type SortOption =
   | "rank"
+  | "sportsScore"
   | "edge"
   | "ev"
   | "confidence"
@@ -110,19 +152,27 @@ export default function OpportunitiesPage() {
   const [opportunities, setOpportunities] =
     useState<Opportunity[]>([]);
 
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [loading, setLoading] =
+    useState(true);
+
+  const [error, setError] =
+    useState("");
 
   const [sortBy, setSortBy] =
     useState<SortOption>("rank");
 
-  const [sportsbookFilter, setSportsbookFilter] =
-    useState("all");
+  const [
+    sportsbookFilter,
+    setSportsbookFilter,
+  ] = useState("all");
 
-  const [marketFilter, setMarketFilter] =
-    useState("all");
+  const [
+    marketFilter,
+    setMarketFilter,
+  ] = useState("all");
 
-  const [added, setAdded] = useState<string[]>([]);
+  const [added, setAdded] =
+    useState<string[]>([]);
 
   useEffect(() => {
     async function loadOpportunities() {
@@ -143,11 +193,14 @@ export default function OpportunitiesPage() {
         const data: OpportunitiesResponse =
           await response.json();
 
-        setOpportunities(data.opportunities);
-
-        const saved = localStorage.getItem(
-          "sports-intelligence-card"
+        setOpportunities(
+          data.opportunities
         );
+
+        const saved =
+          localStorage.getItem(
+            "sports-intelligence-card"
+          );
 
         if (saved) {
           try {
@@ -155,7 +208,9 @@ export default function OpportunitiesPage() {
               JSON.parse(saved);
 
             setAdded(
-              savedCard.map((item) => item.id)
+              savedCard.map(
+                (item) => item.id
+              )
             );
           } catch {
             setAdded([]);
@@ -175,105 +230,174 @@ export default function OpportunitiesPage() {
     loadOpportunities();
   }, []);
 
-  function addToCard(opportunity: Opportunity) {
-    const existing = localStorage.getItem(
-      "sports-intelligence-card"
-    );
+  function addToCard(
+    opportunity: Opportunity
+  ) {
+    const existing =
+      localStorage.getItem(
+        "sports-intelligence-card"
+      );
 
-    let currentCard: Opportunity[] = [];
+    let currentCard: Opportunity[] =
+      [];
 
     if (existing) {
       try {
-        currentCard = JSON.parse(existing);
+        currentCard =
+          JSON.parse(existing);
       } catch {
         currentCard = [];
       }
     }
 
-    const alreadyExists = currentCard.some(
-      (item) => item.id === opportunity.id
-    );
+    const alreadyExists =
+      currentCard.some(
+        (item) =>
+          item.id === opportunity.id
+      );
 
     if (!alreadyExists) {
-      currentCard.push(opportunity);
+      currentCard.push(
+        opportunity
+      );
 
       localStorage.setItem(
         "sports-intelligence-card",
-        JSON.stringify(currentCard)
+        JSON.stringify(
+          currentCard
+        )
       );
     }
 
     setAdded((current) =>
-      current.includes(opportunity.id)
+      current.includes(
+        opportunity.id
+      )
         ? current
-        : [...current, opportunity.id]
+        : [
+            ...current,
+            opportunity.id,
+          ]
     );
   }
 
-  const sportsbooks = useMemo(() => {
-    return Array.from(
-      new Set(
-        opportunities.map((item) => item.book)
-      )
-    ).sort();
-  }, [opportunities]);
+  const sportsbooks =
+    useMemo(() => {
+      return Array.from(
+        new Set(
+          opportunities.map(
+            (item) => item.book
+          )
+        )
+      ).sort();
+    }, [opportunities]);
 
-  const markets = useMemo(() => {
-    return Array.from(
-      new Set(
-        opportunities.map((item) => item.market)
-      )
-    ).sort();
-  }, [opportunities]);
+  const markets =
+    useMemo(() => {
+      return Array.from(
+        new Set(
+          opportunities.map(
+            (item) => item.market
+          )
+        )
+      ).sort();
+    }, [opportunities]);
 
-  const filteredOpportunities = useMemo(() => {
-    const filtered = opportunities.filter(
-      (item) => {
-        const sportsbookMatch =
-          sportsbookFilter === "all" ||
-          item.book === sportsbookFilter;
+  const filteredOpportunities =
+    useMemo(() => {
+      const filtered =
+        opportunities.filter(
+          (item) => {
+            const sportsbookMatch =
+              sportsbookFilter ===
+                "all" ||
+              item.book ===
+                sportsbookFilter;
 
-        const marketMatch =
-          marketFilter === "all" ||
-          item.market === marketFilter;
+            const marketMatch =
+              marketFilter === "all" ||
+              item.market ===
+                marketFilter;
 
-        return sportsbookMatch && marketMatch;
-      }
-    );
-
-    return [...filtered].sort((a, b) => {
-      if (sortBy === "edge") {
-        return b.edge - a.edge;
-      }
-
-      if (sortBy === "ev") {
-        return (
-          b.evPerDollar - a.evPerDollar
+            return (
+              sportsbookMatch &&
+              marketMatch
+            );
+          }
         );
-      }
 
-      if (sortBy === "confidence") {
-        return b.confidence - a.confidence;
-      }
+      return [...filtered].sort(
+        (a, b) => {
+          if (
+            sortBy ===
+            "sportsScore"
+          ) {
+            return (
+              b
+                .sportsIntelligenceScore
+                .score -
+              a
+                .sportsIntelligenceScore
+                .score
+            );
+          }
 
-      if (sortBy === "marketScore") {
-        return (
-          b.marketIntelligence.score -
-          a.marketIntelligence.score
-        );
-      }
+          if (
+            sortBy === "edge"
+          ) {
+            return (
+              b.edge - a.edge
+            );
+          }
 
-      return a.rank - b.rank;
-    });
-  }, [
-    opportunities,
-    sportsbookFilter,
-    marketFilter,
-    sortBy,
-  ]);
+          if (
+            sortBy === "ev"
+          ) {
+            return (
+              b.evPerDollar -
+              a.evPerDollar
+            );
+          }
+
+          if (
+            sortBy ===
+            "confidence"
+          ) {
+            return (
+              b.confidence -
+              a.confidence
+            );
+          }
+
+          if (
+            sortBy ===
+            "marketScore"
+          ) {
+            return (
+              b
+                .marketIntelligence
+                .score -
+              a
+                .marketIntelligence
+                .score
+            );
+          }
+
+          return (
+            a.rank - b.rank
+          );
+        }
+      );
+    }, [
+      opportunities,
+      sportsbookFilter,
+      marketFilter,
+      sortBy,
+    ]);
 
   const strongestEdge =
-    filteredOpportunities.length > 0
+    filteredOpportunities.length >
+    0
       ? Math.max(
           ...filteredOpportunities.map(
             (item) => item.edge
@@ -282,20 +406,38 @@ export default function OpportunitiesPage() {
       : 0;
 
   const highestConfidence =
-    filteredOpportunities.length > 0
+    filteredOpportunities.length >
+    0
       ? Math.max(
           ...filteredOpportunities.map(
-            (item) => item.confidence
+            (item) =>
+              item.confidence
           )
         )
       : 0;
 
   const highestMarketScore =
-    filteredOpportunities.length > 0
+    filteredOpportunities.length >
+    0
       ? Math.max(
           ...filteredOpportunities.map(
             (item) =>
-              item.marketIntelligence.score
+              item
+                .marketIntelligence
+                .score
+          )
+        )
+      : 0;
+
+  const highestSportsScore =
+    filteredOpportunities.length >
+    0
+      ? Math.max(
+          ...filteredOpportunities.map(
+            (item) =>
+              item
+                .sportsIntelligenceScore
+                .score
           )
         )
       : 0;
@@ -305,7 +447,8 @@ export default function OpportunitiesPage() {
       <main className="min-h-screen bg-[#070A0F] text-white">
         <div className="mx-auto max-w-6xl px-6 py-16 lg:px-10">
           <p className="text-sm text-zinc-500">
-            Loading model opportunities...
+            Loading model
+            opportunities...
           </p>
         </div>
       </main>
@@ -333,18 +476,21 @@ export default function OpportunitiesPage() {
         <div className="flex flex-col gap-6 md:flex-row md:items-end md:justify-between">
           <div>
             <p className="text-xs font-medium uppercase tracking-[0.2em] text-zinc-600">
-              Live Model Opportunities
+              Sports Intelligence
+              Opportunities
             </p>
 
             <h1 className="mt-3 text-4xl font-semibold tracking-[-0.03em] md:text-6xl">
-              Today&apos;s best opportunities.
+              Today&apos;s best
+              opportunities.
             </h1>
 
             <p className="mt-5 max-w-2xl text-base leading-7 text-zinc-500">
-              Rank the live model board by edge,
-              expected value, confidence, and
-              observed sportsbook market
-              intelligence.
+              Model edge, expected
+              value, confidence, and
+              live market behavior
+              combined into one
+              decision framework.
             </p>
           </div>
 
@@ -368,7 +514,9 @@ export default function OpportunitiesPage() {
 
               <select
                 value={sortBy}
-                onChange={(event) =>
+                onChange={(
+                  event
+                ) =>
                   setSortBy(
                     event.target
                       .value as SortOption
@@ -378,6 +526,11 @@ export default function OpportunitiesPage() {
               >
                 <option value="rank">
                   Model Rank
+                </option>
+
+                <option value="sportsScore">
+                  Sports Intelligence
+                  Score
                 </option>
 
                 <option value="edge">
@@ -404,10 +557,15 @@ export default function OpportunitiesPage() {
               </label>
 
               <select
-                value={sportsbookFilter}
-                onChange={(event) =>
+                value={
+                  sportsbookFilter
+                }
+                onChange={(
+                  event
+                ) =>
                   setSportsbookFilter(
-                    event.target.value
+                    event.target
+                      .value
                   )
                 }
                 className="mt-2 h-11 w-full rounded-xl border border-white/[0.08] bg-[#0D131C] px-4 text-sm text-white outline-none"
@@ -416,14 +574,16 @@ export default function OpportunitiesPage() {
                   All Sportsbooks
                 </option>
 
-                {sportsbooks.map((book) => (
-                  <option
-                    key={book}
-                    value={book}
-                  >
-                    {book}
-                  </option>
-                ))}
+                {sportsbooks.map(
+                  (book) => (
+                    <option
+                      key={book}
+                      value={book}
+                    >
+                      {book}
+                    </option>
+                  )
+                )}
               </select>
             </div>
 
@@ -433,10 +593,15 @@ export default function OpportunitiesPage() {
               </label>
 
               <select
-                value={marketFilter}
-                onChange={(event) =>
+                value={
+                  marketFilter
+                }
+                onChange={(
+                  event
+                ) =>
                   setMarketFilter(
-                    event.target.value
+                    event.target
+                      .value
                   )
                 }
                 className="mt-2 h-11 w-full rounded-xl border border-white/[0.08] bg-[#0D131C] px-4 text-sm capitalize text-white outline-none"
@@ -445,14 +610,20 @@ export default function OpportunitiesPage() {
                   All Markets
                 </option>
 
-                {markets.map((market) => (
-                  <option
-                    key={market}
-                    value={market}
-                  >
-                    {market}
-                  </option>
-                ))}
+                {markets.map(
+                  (market) => (
+                    <option
+                      key={
+                        market
+                      }
+                      value={
+                        market
+                      }
+                    >
+                      {market}
+                    </option>
+                  )
+                )}
               </select>
             </div>
           </div>
@@ -461,19 +632,36 @@ export default function OpportunitiesPage() {
             <p className="text-sm text-zinc-500">
               Showing{" "}
               <span className="font-medium text-zinc-200">
-                {filteredOpportunities.length}
+                {
+                  filteredOpportunities.length
+                }
               </span>{" "}
-              of {opportunities.length} opportunities
+              of{" "}
+              {
+                opportunities.length
+              }{" "}
+              opportunities
             </p>
 
-            {(sportsbookFilter !== "all" ||
-              marketFilter !== "all" ||
-              sortBy !== "rank") && (
+            {(sportsbookFilter !==
+              "all" ||
+              marketFilter !==
+                "all" ||
+              sortBy !==
+                "rank") && (
               <button
                 onClick={() => {
-                  setSortBy("rank");
-                  setSportsbookFilter("all");
-                  setMarketFilter("all");
+                  setSortBy(
+                    "rank"
+                  );
+
+                  setSportsbookFilter(
+                    "all"
+                  );
+
+                  setMarketFilter(
+                    "all"
+                  );
                 }}
                 className="text-sm text-zinc-600 transition hover:text-white"
               >
@@ -485,7 +673,7 @@ export default function OpportunitiesPage() {
 
         {/* BOARD SUMMARY */}
 
-        <div className="mt-8 flex flex-wrap items-center gap-8 border-y border-white/[0.07] py-5">
+        <div className="mt-8 grid gap-5 border-y border-white/[0.07] py-5 sm:grid-cols-2 lg:grid-cols-5">
 
           <div>
             <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
@@ -493,7 +681,24 @@ export default function OpportunitiesPage() {
             </p>
 
             <p className="mt-1 text-xl font-semibold">
-              {filteredOpportunities.length}
+              {
+                filteredOpportunities.length
+              }
+            </p>
+          </div>
+
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
+              Best SI Score
+            </p>
+
+            <p className="mt-1 text-xl font-semibold text-emerald-400">
+              {highestSportsScore.toFixed(
+                1
+              )}
+              <span className="text-sm text-zinc-600">
+                /100
+              </span>
             </p>
           </div>
 
@@ -502,8 +707,12 @@ export default function OpportunitiesPage() {
               Strongest Edge
             </p>
 
-            <p className="mt-1 text-xl font-semibold text-emerald-400">
-              +{strongestEdge.toFixed(1)}%
+            <p className="mt-1 text-xl font-semibold">
+              +
+              {strongestEdge.toFixed(
+                1
+              )}
+              %
             </p>
           </div>
 
@@ -513,7 +722,9 @@ export default function OpportunitiesPage() {
             </p>
 
             <p className="mt-1 text-xl font-semibold">
-              {highestConfidence}
+              {
+                highestConfidence
+              }
             </p>
           </div>
 
@@ -523,7 +734,9 @@ export default function OpportunitiesPage() {
             </p>
 
             <p className="mt-1 text-xl font-semibold">
-              {highestMarketScore.toFixed(1)}
+              {highestMarketScore.toFixed(
+                1
+              )}
               <span className="text-sm text-zinc-600">
                 /10
               </span>
@@ -536,19 +749,29 @@ export default function OpportunitiesPage() {
         <section className="mt-8 space-y-5">
           {filteredOpportunities.map(
             (opportunity) => {
-              const isAdded = added.includes(
-                opportunity.id
-              );
+              const isAdded =
+                added.includes(
+                  opportunity.id
+                );
 
               const market =
-                opportunity.marketIntelligence;
+                opportunity
+                  .marketIntelligence;
+
+              const sportsScore =
+                opportunity
+                  .sportsIntelligenceScore;
 
               const appearance =
-                marketAppearance(market.score);
+                marketAppearance(
+                  market.score
+                );
 
               return (
                 <article
-                  key={opportunity.id}
+                  key={
+                    opportunity.id
+                  }
                   className="rounded-3xl border border-white/[0.08] bg-[#0D131C] p-7 md:p-8"
                 >
                   <div className="flex flex-col gap-8 lg:flex-row lg:items-start lg:justify-between">
@@ -556,9 +779,14 @@ export default function OpportunitiesPage() {
                     {/* LEFT */}
 
                     <div className="max-w-2xl flex-1">
+
                       <div className="flex flex-wrap items-center gap-3">
+
                         <span className="text-xs text-zinc-700">
-                          #{opportunity.rank}
+                          #
+                          {
+                            opportunity.rank
+                          }
                         </span>
 
                         <Badge
@@ -572,34 +800,69 @@ export default function OpportunitiesPage() {
 
                         <Badge
                           variant="outline"
+                          className="border-white/[0.08] bg-white/[0.03] text-zinc-300"
+                        >
+                          SI{" "}
+                          {
+                            sportsScore.grade
+                          }
+                        </Badge>
+
+                        <Badge
+                          variant="outline"
                           className={`${appearance.border} ${appearance.text}`}
                         >
-                          Market {market.grade}
+                          Market{" "}
+                          {
+                            market.grade
+                          }
                         </Badge>
                       </div>
 
                       <p className="mt-5 text-sm text-zinc-500">
-                        {opportunity.matchup}
+                        {
+                          opportunity.matchup
+                        }
                       </p>
 
                       <h2 className="mt-1 text-3xl font-semibold tracking-tight">
-                        {opportunity.pick}
+                        {
+                          opportunity.pick
+                        }
                       </h2>
 
                       <p className="mt-1 text-sm text-zinc-600">
-                        {opportunity.book} •{" "}
-                        {opportunity.price > 0
+                        {
+                          opportunity.book
+                        }{" "}
+                        •{" "}
+                        {opportunity.price >
+                        0
                           ? "+"
                           : ""}
-                        {opportunity.price}
+                        {
+                          opportunity.price
+                        }
                       </p>
+
+                      {/* SPORTS INTELLIGENCE */}
+
+                      <div className="mt-5">
+                        <SportsIntelligenceScoreCard
+                          score={
+                            sportsScore
+                          }
+                        />
+                      </div>
 
                       {/* MODEL */}
 
-                      <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                      <div className="mt-4 grid gap-3 sm:grid-cols-3">
+
                         <div className="rounded-xl border border-white/[0.07] bg-black/10 p-4">
                           <p className="text-[10px] uppercase tracking-wider text-zinc-700">
-                            Model Prob
+                            Model
+                            Probability
                           </p>
 
                           <p className="mt-2 font-semibold">
@@ -612,7 +875,8 @@ export default function OpportunitiesPage() {
 
                         <div className="rounded-xl border border-white/[0.07] bg-black/10 p-4">
                           <p className="text-[10px] uppercase tracking-wider text-zinc-700">
-                            Market Implied
+                            Market
+                            Implied
                           </p>
 
                           <p className="mt-2 font-semibold">
@@ -643,15 +907,19 @@ export default function OpportunitiesPage() {
                         className={`mt-4 rounded-2xl border p-5 ${appearance.border}`}
                       >
                         <div className="flex flex-wrap items-center justify-between gap-4">
+
                           <div>
                             <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-zinc-600">
-                              Market Intelligence
+                              Market
+                              Intelligence
                             </p>
 
                             <p
                               className={`mt-2 text-lg font-semibold ${appearance.text}`}
                             >
-                              {market.signal}
+                              {
+                                market.signal
+                              }
                             </p>
                           </div>
 
@@ -661,6 +929,7 @@ export default function OpportunitiesPage() {
                             </p>
 
                             <div className="mt-1 flex items-baseline justify-end gap-1">
+
                               <span
                                 className={`text-3xl font-semibold ${appearance.text}`}
                               >
@@ -680,22 +949,28 @@ export default function OpportunitiesPage() {
 
                           <div className="rounded-xl border border-white/[0.06] bg-black/10 p-3">
                             <p className="text-[9px] uppercase tracking-wider text-zinc-700">
-                              Books Moving
+                              Books
+                              Moving
                             </p>
 
                             <p className="mt-2 font-semibold">
-                              {market.booksMoving}
+                              {
+                                market.booksMoving
+                              }
                               <span className="text-zinc-600">
                                 {" "}
                                 /{" "}
-                                {market.booksTracked}
+                                {
+                                  market.booksTracked
+                                }
                               </span>
                             </p>
                           </div>
 
                           <div className="rounded-xl border border-white/[0.06] bg-black/10 p-3">
                             <p className="text-[9px] uppercase tracking-wider text-zinc-700">
-                              Steam Books
+                              Steam
+                              Books
                             </p>
 
                             <p
@@ -706,7 +981,9 @@ export default function OpportunitiesPage() {
                                   : ""
                               }`}
                             >
-                              {market.steamBooks}
+                              {
+                                market.steamBooks
+                              }
                             </p>
                           </div>
 
@@ -729,7 +1006,9 @@ export default function OpportunitiesPage() {
                             </p>
 
                             <p className="mt-2 font-semibold">
-                              {market.snapshots}
+                              {
+                                market.snapshots
+                              }
                             </p>
                           </div>
                         </div>
@@ -748,12 +1027,15 @@ export default function OpportunitiesPage() {
                           <span className="text-zinc-600">
                             Opposing{" "}
                             <span className="font-medium text-zinc-300">
-                              {market.opposingBooks}
+                              {
+                                market.opposingBooks
+                              }
                             </span>
                           </span>
 
                           <span className="text-zinc-600">
-                            Largest Point Move{" "}
+                            Largest
+                            Point Move{" "}
                             <span className="font-medium text-zinc-300">
                               {market.largestPointMove.toFixed(
                                 1
@@ -763,7 +1045,8 @@ export default function OpportunitiesPage() {
                           </span>
 
                           <span className="text-zinc-600">
-                            Largest Price Move{" "}
+                            Largest
+                            Price Move{" "}
                             <span className="font-medium text-zinc-300">
                               {market.largestPriceMove.toFixed(
                                 0
@@ -777,6 +1060,7 @@ export default function OpportunitiesPage() {
                     {/* RIGHT */}
 
                     <div className="min-w-[300px]">
+
                       <div className="grid grid-cols-2 gap-3">
 
                         <div className="rounded-2xl border border-white/[0.07] bg-black/10 p-5">
@@ -785,7 +1069,9 @@ export default function OpportunitiesPage() {
                           </p>
 
                           <p className="mt-2 text-2xl font-semibold">
-                            {opportunity.confidence}
+                            {
+                              opportunity.confidence
+                            }
                           </p>
                         </div>
 
@@ -812,7 +1098,9 @@ export default function OpportunitiesPage() {
                             {(
                               opportunity.kelly20 *
                               100
-                            ).toFixed(1)}
+                            ).toFixed(
+                              1
+                            )}
                             %
                           </p>
                         </div>
@@ -831,11 +1119,13 @@ export default function OpportunitiesPage() {
                       </div>
 
                       <div className="mt-3 grid gap-3">
+
                         <Link
                           href={`/opportunities/${opportunity.id}`}
                           className="flex h-11 w-full items-center justify-center rounded-lg border border-white/10 bg-transparent px-5 text-sm font-medium text-white transition hover:bg-white/[0.05]"
                         >
-                          View Full Analysis →
+                          View Full
+                          Analysis →
                         </Link>
 
                         <Button
@@ -844,7 +1134,9 @@ export default function OpportunitiesPage() {
                               opportunity
                             )
                           }
-                          disabled={isAdded}
+                          disabled={
+                            isAdded
+                          }
                           className={
                             isAdded
                               ? "h-11 w-full bg-emerald-400/10 text-emerald-300"
@@ -861,7 +1153,8 @@ export default function OpportunitiesPage() {
                             href="/my-card"
                             className="flex h-11 w-full items-center justify-center rounded-lg border border-white/10 bg-transparent px-5 text-sm font-medium text-white transition hover:bg-white/[0.05]"
                           >
-                            View My Card →
+                            View My
+                            Card →
                           </Link>
                         )}
                       </div>
@@ -875,23 +1168,32 @@ export default function OpportunitiesPage() {
 
         {/* EMPTY STATE */}
 
-        {filteredOpportunities.length === 0 && (
+        {filteredOpportunities.length ===
+          0 && (
           <section className="mt-8 rounded-3xl border border-white/[0.08] bg-[#0D131C] p-8">
+
             <h2 className="text-2xl font-semibold">
-              No opportunities match those
-              filters.
+              No opportunities
+              match those filters.
             </h2>
 
             <p className="mt-3 text-sm text-zinc-500">
-              Reset the filters to return to the
-              full model board.
+              Reset the filters to
+              return to the full
+              model board.
             </p>
 
             <Button
               onClick={() => {
                 setSortBy("rank");
-                setSportsbookFilter("all");
-                setMarketFilter("all");
+
+                setSportsbookFilter(
+                  "all"
+                );
+
+                setMarketFilter(
+                  "all"
+                );
               }}
               className="mt-6 bg-white text-black hover:bg-zinc-200"
             >
