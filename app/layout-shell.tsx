@@ -8,6 +8,7 @@ import {
   Settings,
   Sparkles,
   Trophy,
+  TrendingUp,
 } from "lucide-react";
 
 const primaryNav = [
@@ -19,6 +20,7 @@ const primaryNav = [
 
 const researchNav = [
   { label: "Games", href: "/games", icon: Gamepad2 },
+  { label: "Line Movement", href: "/line-movement", icon: TrendingUp },
   { label: "Fantasy", href: "/fantasy", icon: ClipboardList },
   { label: "Performance", href: "/performance", icon: ChartNoAxesCombined },
 ];
@@ -31,9 +33,7 @@ export default function LayoutShell({
   return (
     <div className="min-h-screen bg-[#070A0F] text-white">
       <div className="flex min-h-screen">
-
         <aside className="hidden w-[248px] shrink-0 border-r border-white/[0.06] bg-[#090D13] lg:flex lg:flex-col">
-
           <div className="px-5 pt-6">
             <div className="flex items-center gap-3">
               <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.04] font-semibold">
@@ -44,6 +44,7 @@ export default function LayoutShell({
                 <p className="text-sm font-semibold tracking-tight">
                   Sports Intelligence
                 </p>
+
                 <p className="mt-0.5 text-[11px] text-zinc-600">
                   NFL Decision Platform
                 </p>
@@ -114,6 +115,7 @@ export default function LayoutShell({
                   <p className="text-xs font-medium text-zinc-300">
                     Intelligence Engine
                   </p>
+
                   <p className="mt-1 text-[11px] text-zinc-600">
                     Monitoring today&apos;s slate
                   </p>
@@ -133,13 +135,11 @@ export default function LayoutShell({
               </div>
             </div>
           </div>
-
         </aside>
 
         <section className="min-w-0 flex-1">
           {children}
         </section>
-
       </div>
     </div>
   );
