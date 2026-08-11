@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.routes.opportunities import router as opportunities_router
 from app.routes.context import router as context_router
+from app.routes.injuries import router as injuries_router
 
 app = FastAPI(
     title="Sports Intelligence API",
@@ -17,9 +18,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Register API routes
 app.include_router(opportunities_router)
 app.include_router(context_router)
+app.include_router(injuries_router)
 
 
 @app.get("/health")
