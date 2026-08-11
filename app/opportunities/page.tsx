@@ -6,11 +6,37 @@ import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
+type AlternateBook = {
+  book: string;
+  point: number;
+  price: number;
+  edge: number;
+  evPerDollar: number;
+};
+
+type MarketIntelligence = {
+  score: number;
+  grade: string;
+  signal: string;
+  booksTracked: number;
+  booksMoving: number;
+  steamBooks: number;
+  supportingBooks: number;
+  opposingBooks: number;
+  consensus: number;
+  largestPointMove: number;
+  largestPriceMove: number;
+  marketSupport: boolean;
+  snapshots: number;
+};
+
 type Opportunity = {
   id: string;
   eventId: string;
   commenceTime: string;
   matchup: string;
+  awayTeam: string;
+  homeTeam: string;
   pick: string;
   book: string;
   market: string;
@@ -26,43 +52,121 @@ type Opportunity = {
   kelly20: number;
   recommendation: string;
   confidence: number;
+  dataCompleteness: number;
+  marketConfidence: number;
+  modelConfidence: number;
   rank: number;
+  marketIntelligence: MarketIntelligence;
+  alternateBooks?: AlternateBook[];
 };
 
-type ApiResponse = {
+type OpportunitiesResponse = {
   count: number;
   source: string;
+  bestLinesOnly: boolean;
   opportunities: Opportunity[];
 };
 
-type SortOption = "rank" | "edge" | "ev" | "confidence";
+type SortOption =
+  | "rank"
+  | "edge"
+  | "ev"
+  | "confidence"
+  | "marketScore";
+
+function marketAppearance(score: number) {
+  if (score >= 8) {
+    return {
+      text: "text-emerald-400",
+      border:
+        "border-emerald-400/20 bg-emerald-400/[0.04]",
+    };
+  }
+
+  if (score >= 6) {
+    return {
+      text: "text-sky-400",
+      border:
+        "border-sky-400/20 bg-sky-400/[0.04]",
+    };
+  }
+
+  if (score >= 4) {
+    return {
+      text: "text-amber-400",
+      border:
+        "border-amber-400/20 bg-amber-400/[0.04]",
+    };
+  }
+
+  return {
+    text: "text-zinc-500",
+    border:
+      "border-white/[0.07] bg-black/10",
+  };
+}
 
 export default function OpportunitiesPage() {
-  const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
-  const [added, setAdded] = useState<string[]>([]);
+  const [opportunities, setOpportunities] =
+    useState<Opportunity[]>([]);
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  const [sortBy, setSortBy] = useState<SortOption>("rank");
-  const [sportsbookFilter, setSportsbookFilter] = useState("all");
-  const [marketFilter, setMarketFilter] = useState("all");
+  const [sortBy, setSortBy] =
+    useState<SortOption>("rank");
+
+  const [sportsbookFilter, setSportsbookFilter] =
+    useState("all");
+
+  const [marketFilter, setMarketFilter] =
+    useState("all");
+
+  const [added, setAdded] = useState<string[]>([]);
 
   useEffect(() => {
     async function loadOpportunities() {
       try {
+        setLoading(true);
+        setError("");
+
         const response = await fetch(
           "http://localhost:8000/api/opportunities?limit=100"
         );
 
         if (!response.ok) {
-          throw new Error("Failed to load opportunities");
+          throw new Error(
+            "Failed to load model opportunities"
+          );
         }
 
-        const data: ApiResponse = await response.json();
+        const data: OpportunitiesResponse =
+          await response.json();
+
         setOpportunities(data.opportunities);
+
+        const saved = localStorage.getItem(
+          "sports-intelligence-card"
+        );
+
+        if (saved) {
+          try {
+            const savedCard: Opportunity[] =
+              JSON.parse(saved);
+
+            setAdded(
+              savedCard.map((item) => item.id)
+            );
+          } catch {
+            setAdded([]);
+          }
+        }
       } catch (err) {
         console.error(err);
-        setError("Unable to load model opportunities.");
+
+        setError(
+          "Unable to load model opportunities."
+        );
       } finally {
         setLoading(false);
       }
@@ -71,21 +175,10 @@ export default function OpportunitiesPage() {
     loadOpportunities();
   }, []);
 
-  useEffect(() => {
-    const saved = localStorage.getItem("sports-intelligence-card");
-
-    if (!saved) return;
-
-    try {
-      const card: Opportunity[] = JSON.parse(saved);
-      setAdded(card.map((item) => item.id));
-    } catch (err) {
-      console.error("Unable to read saved card:", err);
-    }
-  }, []);
-
   function addToCard(opportunity: Opportunity) {
-    const existing = localStorage.getItem("sports-intelligence-card");
+    const existing = localStorage.getItem(
+      "sports-intelligence-card"
+    );
 
     let currentCard: Opportunity[] = [];
 
@@ -98,15 +191,15 @@ export default function OpportunitiesPage() {
     }
 
     const alreadyExists = currentCard.some(
-      (bet) => bet.id === opportunity.id
+      (item) => item.id === opportunity.id
     );
 
     if (!alreadyExists) {
-      const updatedCard = [...currentCard, opportunity];
+      currentCard.push(opportunity);
 
       localStorage.setItem(
         "sports-intelligence-card",
-        JSON.stringify(updatedCard)
+        JSON.stringify(currentCard)
       );
     }
 
@@ -119,28 +212,34 @@ export default function OpportunitiesPage() {
 
   const sportsbooks = useMemo(() => {
     return Array.from(
-      new Set(opportunities.map((item) => item.book))
+      new Set(
+        opportunities.map((item) => item.book)
+      )
     ).sort();
   }, [opportunities]);
 
   const markets = useMemo(() => {
     return Array.from(
-      new Set(opportunities.map((item) => item.market))
+      new Set(
+        opportunities.map((item) => item.market)
+      )
     ).sort();
   }, [opportunities]);
 
   const filteredOpportunities = useMemo(() => {
-    const filtered = opportunities.filter((item) => {
-      const sportsbookMatch =
-        sportsbookFilter === "all" ||
-        item.book === sportsbookFilter;
+    const filtered = opportunities.filter(
+      (item) => {
+        const sportsbookMatch =
+          sportsbookFilter === "all" ||
+          item.book === sportsbookFilter;
 
-      const marketMatch =
-        marketFilter === "all" ||
-        item.market === marketFilter;
+        const marketMatch =
+          marketFilter === "all" ||
+          item.market === marketFilter;
 
-      return sportsbookMatch && marketMatch;
-    });
+        return sportsbookMatch && marketMatch;
+      }
+    );
 
     return [...filtered].sort((a, b) => {
       if (sortBy === "edge") {
@@ -148,11 +247,20 @@ export default function OpportunitiesPage() {
       }
 
       if (sortBy === "ev") {
-        return b.evPerDollar - a.evPerDollar;
+        return (
+          b.evPerDollar - a.evPerDollar
+        );
       }
 
       if (sortBy === "confidence") {
         return b.confidence - a.confidence;
+      }
+
+      if (sortBy === "marketScore") {
+        return (
+          b.marketIntelligence.score -
+          a.marketIntelligence.score
+        );
       }
 
       return a.rank - b.rank;
@@ -166,7 +274,11 @@ export default function OpportunitiesPage() {
 
   const strongestEdge =
     filteredOpportunities.length > 0
-      ? Math.max(...filteredOpportunities.map((item) => item.edge))
+      ? Math.max(
+          ...filteredOpportunities.map(
+            (item) => item.edge
+          )
+        )
       : 0;
 
   const highestConfidence =
@@ -174,6 +286,16 @@ export default function OpportunitiesPage() {
       ? Math.max(
           ...filteredOpportunities.map(
             (item) => item.confidence
+          )
+        )
+      : 0;
+
+  const highestMarketScore =
+    filteredOpportunities.length > 0
+      ? Math.max(
+          ...filteredOpportunities.map(
+            (item) =>
+              item.marketIntelligence.score
           )
         )
       : 0;
@@ -194,7 +316,9 @@ export default function OpportunitiesPage() {
     return (
       <main className="min-h-screen bg-[#070A0F] text-white">
         <div className="mx-auto max-w-6xl px-6 py-16 lg:px-10">
-          <p className="text-red-400">{error}</p>
+          <p className="text-red-400">
+            {error}
+          </p>
         </div>
       </main>
     );
@@ -203,6 +327,9 @@ export default function OpportunitiesPage() {
   return (
     <main className="min-h-screen bg-[#070A0F] text-white">
       <div className="mx-auto max-w-6xl px-6 py-10 lg:px-10">
+
+        {/* HEADER */}
+
         <div className="flex flex-col gap-6 md:flex-row md:items-end md:justify-between">
           <div>
             <p className="text-xs font-medium uppercase tracking-[0.2em] text-zinc-600">
@@ -214,8 +341,10 @@ export default function OpportunitiesPage() {
             </h1>
 
             <p className="mt-5 max-w-2xl text-base leading-7 text-zinc-500">
-              Filter and rank the live model board by edge, EV,
-              confidence, sportsbook, and market.
+              Rank the live model board by edge,
+              expected value, confidence, and
+              observed sportsbook market
+              intelligence.
             </p>
           </div>
 
@@ -227,8 +356,11 @@ export default function OpportunitiesPage() {
           </Link>
         </div>
 
+        {/* FILTERS */}
+
         <section className="mt-8 rounded-3xl border border-white/[0.07] bg-[#0B1119] p-5">
           <div className="grid gap-4 md:grid-cols-3">
+
             <div>
               <label className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
                 Sort By
@@ -237,15 +369,31 @@ export default function OpportunitiesPage() {
               <select
                 value={sortBy}
                 onChange={(event) =>
-                  setSortBy(event.target.value as SortOption)
+                  setSortBy(
+                    event.target
+                      .value as SortOption
+                  )
                 }
                 className="mt-2 h-11 w-full rounded-xl border border-white/[0.08] bg-[#0D131C] px-4 text-sm text-white outline-none"
               >
-                <option value="rank">Model Rank</option>
-                <option value="edge">Highest Edge</option>
-                <option value="ev">Highest EV</option>
+                <option value="rank">
+                  Model Rank
+                </option>
+
+                <option value="edge">
+                  Highest Edge
+                </option>
+
+                <option value="ev">
+                  Highest EV
+                </option>
+
                 <option value="confidence">
                   Highest Confidence
+                </option>
+
+                <option value="marketScore">
+                  Market Intelligence
                 </option>
               </select>
             </div>
@@ -258,14 +406,21 @@ export default function OpportunitiesPage() {
               <select
                 value={sportsbookFilter}
                 onChange={(event) =>
-                  setSportsbookFilter(event.target.value)
+                  setSportsbookFilter(
+                    event.target.value
+                  )
                 }
                 className="mt-2 h-11 w-full rounded-xl border border-white/[0.08] bg-[#0D131C] px-4 text-sm text-white outline-none"
               >
-                <option value="all">All Sportsbooks</option>
+                <option value="all">
+                  All Sportsbooks
+                </option>
 
                 {sportsbooks.map((book) => (
-                  <option key={book} value={book}>
+                  <option
+                    key={book}
+                    value={book}
+                  >
                     {book}
                   </option>
                 ))}
@@ -280,14 +435,21 @@ export default function OpportunitiesPage() {
               <select
                 value={marketFilter}
                 onChange={(event) =>
-                  setMarketFilter(event.target.value)
+                  setMarketFilter(
+                    event.target.value
+                  )
                 }
                 className="mt-2 h-11 w-full rounded-xl border border-white/[0.08] bg-[#0D131C] px-4 text-sm capitalize text-white outline-none"
               >
-                <option value="all">All Markets</option>
+                <option value="all">
+                  All Markets
+                </option>
 
                 {markets.map((market) => (
-                  <option key={market} value={market}>
+                  <option
+                    key={market}
+                    value={market}
+                  >
                     {market}
                   </option>
                 ))}
@@ -321,7 +483,10 @@ export default function OpportunitiesPage() {
           </div>
         </section>
 
+        {/* BOARD SUMMARY */}
+
         <div className="mt-8 flex flex-wrap items-center gap-8 border-y border-white/[0.07] py-5">
+
           <div>
             <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
               Results
@@ -351,159 +516,375 @@ export default function OpportunitiesPage() {
               {highestConfidence}
             </p>
           </div>
+
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
+              Best Market Score
+            </p>
+
+            <p className="mt-1 text-xl font-semibold">
+              {highestMarketScore.toFixed(1)}
+              <span className="text-sm text-zinc-600">
+                /10
+              </span>
+            </p>
+          </div>
         </div>
 
+        {/* OPPORTUNITY CARDS */}
+
         <section className="mt-8 space-y-5">
-          {filteredOpportunities.map((opportunity) => {
-            const isAdded = added.includes(opportunity.id);
+          {filteredOpportunities.map(
+            (opportunity) => {
+              const isAdded = added.includes(
+                opportunity.id
+              );
 
-            return (
-              <article
-                key={opportunity.id}
-                className="rounded-3xl border border-white/[0.08] bg-[#0D131C] p-7 md:p-8"
-              >
-                <div className="flex flex-col gap-8 lg:flex-row lg:items-center lg:justify-between">
-                  <div className="max-w-2xl">
-                    <div className="flex items-center gap-3">
-                      <span className="text-xs text-zinc-700">
-                        #{opportunity.rank}
-                      </span>
+              const market =
+                opportunity.marketIntelligence;
 
-                      <Badge
-                        variant="outline"
-                        className="border-emerald-400/20 bg-emerald-400/[0.05] text-emerald-400"
+              const appearance =
+                marketAppearance(market.score);
+
+              return (
+                <article
+                  key={opportunity.id}
+                  className="rounded-3xl border border-white/[0.08] bg-[#0D131C] p-7 md:p-8"
+                >
+                  <div className="flex flex-col gap-8 lg:flex-row lg:items-start lg:justify-between">
+
+                    {/* LEFT */}
+
+                    <div className="max-w-2xl flex-1">
+                      <div className="flex flex-wrap items-center gap-3">
+                        <span className="text-xs text-zinc-700">
+                          #{opportunity.rank}
+                        </span>
+
+                        <Badge
+                          variant="outline"
+                          className="border-emerald-400/20 bg-emerald-400/[0.05] text-emerald-400"
+                        >
+                          {
+                            opportunity.recommendation
+                          }
+                        </Badge>
+
+                        <Badge
+                          variant="outline"
+                          className={`${appearance.border} ${appearance.text}`}
+                        >
+                          Market {market.grade}
+                        </Badge>
+                      </div>
+
+                      <p className="mt-5 text-sm text-zinc-500">
+                        {opportunity.matchup}
+                      </p>
+
+                      <h2 className="mt-1 text-3xl font-semibold tracking-tight">
+                        {opportunity.pick}
+                      </h2>
+
+                      <p className="mt-1 text-sm text-zinc-600">
+                        {opportunity.book} •{" "}
+                        {opportunity.price > 0
+                          ? "+"
+                          : ""}
+                        {opportunity.price}
+                      </p>
+
+                      {/* MODEL */}
+
+                      <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                        <div className="rounded-xl border border-white/[0.07] bg-black/10 p-4">
+                          <p className="text-[10px] uppercase tracking-wider text-zinc-700">
+                            Model Prob
+                          </p>
+
+                          <p className="mt-2 font-semibold">
+                            {opportunity.modelProbability.toFixed(
+                              1
+                            )}
+                            %
+                          </p>
+                        </div>
+
+                        <div className="rounded-xl border border-white/[0.07] bg-black/10 p-4">
+                          <p className="text-[10px] uppercase tracking-wider text-zinc-700">
+                            Market Implied
+                          </p>
+
+                          <p className="mt-2 font-semibold">
+                            {opportunity.impliedProbability.toFixed(
+                              1
+                            )}
+                            %
+                          </p>
+                        </div>
+
+                        <div className="rounded-xl border border-white/[0.07] bg-black/10 p-4">
+                          <p className="text-[10px] uppercase tracking-wider text-zinc-700">
+                            EV / $1
+                          </p>
+
+                          <p className="mt-2 font-semibold text-emerald-400">
+                            +$
+                            {opportunity.evPerDollar.toFixed(
+                              3
+                            )}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* MARKET INTELLIGENCE */}
+
+                      <div
+                        className={`mt-4 rounded-2xl border p-5 ${appearance.border}`}
                       >
-                        {opportunity.recommendation}
-                      </Badge>
+                        <div className="flex flex-wrap items-center justify-between gap-4">
+                          <div>
+                            <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-zinc-600">
+                              Market Intelligence
+                            </p>
+
+                            <p
+                              className={`mt-2 text-lg font-semibold ${appearance.text}`}
+                            >
+                              {market.signal}
+                            </p>
+                          </div>
+
+                          <div className="text-right">
+                            <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-700">
+                              Score
+                            </p>
+
+                            <div className="mt-1 flex items-baseline justify-end gap-1">
+                              <span
+                                className={`text-3xl font-semibold ${appearance.text}`}
+                              >
+                                {market.score.toFixed(
+                                  1
+                                )}
+                              </span>
+
+                              <span className="text-sm text-zinc-600">
+                                /10
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+
+                          <div className="rounded-xl border border-white/[0.06] bg-black/10 p-3">
+                            <p className="text-[9px] uppercase tracking-wider text-zinc-700">
+                              Books Moving
+                            </p>
+
+                            <p className="mt-2 font-semibold">
+                              {market.booksMoving}
+                              <span className="text-zinc-600">
+                                {" "}
+                                /{" "}
+                                {market.booksTracked}
+                              </span>
+                            </p>
+                          </div>
+
+                          <div className="rounded-xl border border-white/[0.06] bg-black/10 p-3">
+                            <p className="text-[9px] uppercase tracking-wider text-zinc-700">
+                              Steam Books
+                            </p>
+
+                            <p
+                              className={`mt-2 font-semibold ${
+                                market.steamBooks >
+                                0
+                                  ? "text-emerald-400"
+                                  : ""
+                              }`}
+                            >
+                              {market.steamBooks}
+                            </p>
+                          </div>
+
+                          <div className="rounded-xl border border-white/[0.06] bg-black/10 p-3">
+                            <p className="text-[9px] uppercase tracking-wider text-zinc-700">
+                              Consensus
+                            </p>
+
+                            <p className="mt-2 font-semibold">
+                              {market.consensus.toFixed(
+                                0
+                              )}
+                              %
+                            </p>
+                          </div>
+
+                          <div className="rounded-xl border border-white/[0.06] bg-black/10 p-3">
+                            <p className="text-[9px] uppercase tracking-wider text-zinc-700">
+                              Snapshots
+                            </p>
+
+                            <p className="mt-2 font-semibold">
+                              {market.snapshots}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-2 border-t border-white/[0.06] pt-4 text-xs">
+
+                          <span className="text-zinc-600">
+                            Supporting{" "}
+                            <span className="font-medium text-zinc-300">
+                              {
+                                market.supportingBooks
+                              }
+                            </span>
+                          </span>
+
+                          <span className="text-zinc-600">
+                            Opposing{" "}
+                            <span className="font-medium text-zinc-300">
+                              {market.opposingBooks}
+                            </span>
+                          </span>
+
+                          <span className="text-zinc-600">
+                            Largest Point Move{" "}
+                            <span className="font-medium text-zinc-300">
+                              {market.largestPointMove.toFixed(
+                                1
+                              )}{" "}
+                              pts
+                            </span>
+                          </span>
+
+                          <span className="text-zinc-600">
+                            Largest Price Move{" "}
+                            <span className="font-medium text-zinc-300">
+                              {market.largestPriceMove.toFixed(
+                                0
+                              )}
+                            </span>
+                          </span>
+                        </div>
+                      </div>
                     </div>
 
-                    <p className="mt-5 text-sm text-zinc-500">
-                      {opportunity.matchup}
-                    </p>
+                    {/* RIGHT */}
 
-                    <h2 className="mt-1 text-3xl font-semibold tracking-tight">
-                      {opportunity.pick}
-                    </h2>
+                    <div className="min-w-[300px]">
+                      <div className="grid grid-cols-2 gap-3">
 
-                    <p className="mt-1 text-sm text-zinc-600">
-                      {opportunity.book} •{" "}
-                      {opportunity.price > 0 ? "+" : ""}
-                      {opportunity.price}
-                    </p>
+                        <div className="rounded-2xl border border-white/[0.07] bg-black/10 p-5">
+                          <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
+                            Confidence
+                          </p>
 
-                    <div className="mt-5 grid gap-3 sm:grid-cols-3">
-                      <div className="rounded-xl border border-white/[0.07] bg-black/10 p-4">
-                        <p className="text-[10px] uppercase tracking-wider text-zinc-700">
-                          Model Prob
-                        </p>
-                        <p className="mt-2 font-semibold">
-                          {opportunity.modelProbability.toFixed(1)}%
-                        </p>
+                          <p className="mt-2 text-2xl font-semibold">
+                            {opportunity.confidence}
+                          </p>
+                        </div>
+
+                        <div className="rounded-2xl border border-white/[0.07] bg-black/10 p-5">
+                          <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
+                            Model Edge
+                          </p>
+
+                          <p className="mt-2 text-2xl font-semibold text-emerald-400">
+                            +
+                            {opportunity.edge.toFixed(
+                              1
+                            )}
+                            %
+                          </p>
+                        </div>
+
+                        <div className="rounded-2xl border border-white/[0.07] bg-black/10 p-5">
+                          <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
+                            Kelly 20%
+                          </p>
+
+                          <p className="mt-2 text-xl font-semibold">
+                            {(
+                              opportunity.kelly20 *
+                              100
+                            ).toFixed(1)}
+                            %
+                          </p>
+                        </div>
+
+                        <div className="rounded-2xl border border-white/[0.07] bg-black/10 p-5">
+                          <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
+                            Fair Odds
+                          </p>
+
+                          <p className="mt-2 text-xl font-semibold">
+                            {
+                              opportunity.fairOdds
+                            }
+                          </p>
+                        </div>
                       </div>
 
-                      <div className="rounded-xl border border-white/[0.07] bg-black/10 p-4">
-                        <p className="text-[10px] uppercase tracking-wider text-zinc-700">
-                          Market Implied
-                        </p>
-                        <p className="mt-2 font-semibold">
-                          {opportunity.impliedProbability.toFixed(1)}%
-                        </p>
-                      </div>
-
-                      <div className="rounded-xl border border-white/[0.07] bg-black/10 p-4">
-                        <p className="text-[10px] uppercase tracking-wider text-zinc-700">
-                          EV / $1
-                        </p>
-                        <p className="mt-2 font-semibold">
-                          +${opportunity.evPerDollar.toFixed(3)}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="min-w-[300px]">
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="rounded-2xl border border-white/[0.07] bg-black/10 p-5">
-                        <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
-                          Confidence
-                        </p>
-                        <p className="mt-2 text-2xl font-semibold">
-                          {opportunity.confidence}
-                        </p>
-                      </div>
-
-                      <div className="rounded-2xl border border-white/[0.07] bg-black/10 p-5">
-                        <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
-                          Model Edge
-                        </p>
-                        <p className="mt-2 text-2xl font-semibold text-emerald-400">
-                          +{opportunity.edge.toFixed(1)}%
-                        </p>
-                      </div>
-
-                      <div className="rounded-2xl border border-white/[0.07] bg-black/10 p-5">
-                        <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
-                          Kelly 20%
-                        </p>
-                        <p className="mt-2 text-xl font-semibold">
-                          {(opportunity.kelly20 * 100).toFixed(1)}%
-                        </p>
-                      </div>
-
-                      <div className="rounded-2xl border border-white/[0.07] bg-black/10 p-5">
-                        <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
-                          Fair Odds
-                        </p>
-                        <p className="mt-2 text-xl font-semibold">
-                          {opportunity.fairOdds}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="mt-3 grid gap-3">
-                      <a
-                        href={`/opportunities/${opportunity.id}`}
-                        className="flex h-11 w-full items-center justify-center rounded-lg border border-white/10 bg-transparent px-5 text-sm font-medium text-white transition hover:bg-white/[0.05]"
-                      >
-                        View Full Analysis →
-                      </a>
-
-                      <Button
-                        onClick={() => addToCard(opportunity)}
-                        disabled={isAdded}
-                        className={
-                          isAdded
-                            ? "h-11 w-full bg-emerald-400/10 text-emerald-300"
-                            : "h-11 w-full bg-white text-black hover:bg-zinc-200"
-                        }
-                      >
-                        {isAdded ? "Added ✓" : "Add to My Card"}
-                      </Button>
-
-                      {isAdded && (
+                      <div className="mt-3 grid gap-3">
                         <Link
-                          href="/my-card"
+                          href={`/opportunities/${opportunity.id}`}
                           className="flex h-11 w-full items-center justify-center rounded-lg border border-white/10 bg-transparent px-5 text-sm font-medium text-white transition hover:bg-white/[0.05]"
                         >
-                          View My Card →
+                          View Full Analysis →
                         </Link>
-                      )}
+
+                        <Button
+                          onClick={() =>
+                            addToCard(
+                              opportunity
+                            )
+                          }
+                          disabled={isAdded}
+                          className={
+                            isAdded
+                              ? "h-11 w-full bg-emerald-400/10 text-emerald-300"
+                              : "h-11 w-full bg-white text-black hover:bg-zinc-200"
+                          }
+                        >
+                          {isAdded
+                            ? "Added ✓"
+                            : "Add to My Card"}
+                        </Button>
+
+                        {isAdded && (
+                          <Link
+                            href="/my-card"
+                            className="flex h-11 w-full items-center justify-center rounded-lg border border-white/10 bg-transparent px-5 text-sm font-medium text-white transition hover:bg-white/[0.05]"
+                          >
+                            View My Card →
+                          </Link>
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
-              </article>
-            );
-          })}
+                </article>
+              );
+            }
+          )}
         </section>
+
+        {/* EMPTY STATE */}
 
         {filteredOpportunities.length === 0 && (
           <section className="mt-8 rounded-3xl border border-white/[0.08] bg-[#0D131C] p-8">
             <h2 className="text-2xl font-semibold">
-              No opportunities match those filters.
+              No opportunities match those
+              filters.
             </h2>
 
             <p className="mt-3 text-sm text-zinc-500">
-              Reset the filters to return to the full model board.
+              Reset the filters to return to the
+              full model board.
             </p>
 
             <Button

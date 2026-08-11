@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
-
+from app.services.market_intelligence import get_market_intelligence
 router = APIRouter(prefix="/api", tags=["sports-intelligence"])
 
 MODEL_ROOT = Path.home() / "Downloads" / "NFL_Analytics_OS_v1_9"
@@ -132,7 +132,18 @@ def row_to_opportunity(
             float(row["model_confidence"]) * 100,
             1,
         ),
+          "modelConfidence": round(
+            float(row["model_confidence"]) * 100,
+            1,
+        ),
+
         "rank": int(row["rank"]),
+
+        "marketIntelligence": get_market_intelligence(
+            event_id=row["api_event_id"],
+            market=row["market"],
+            side=row["side"],
+        ),
     }
 
     if include_alternates is not None:
