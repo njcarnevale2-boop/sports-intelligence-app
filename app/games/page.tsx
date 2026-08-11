@@ -11,53 +11,89 @@ type GameCard = {
   eventId: string;
   season: number;
   week: number;
-  date: string;
-  kickoff: string;
+  gameDate: string;
+  commenceTime: string;
   awayTeam: string;
   homeTeam: string;
+  awayAbbreviation?: string | null;
+  homeAbbreviation?: string | null;
   awayLogo?: string;
   homeLogo?: string;
-  marketSpread: number;
-  marketTotal: number;
-  projectedAwayScore: number;
-  projectedHomeScore: number;
-  sportsIntelligenceScore: number;
-  marketGrade: string;
-  bestBet: string;
-  confidence: number;
-  weatherSummary: string;
-  injurySummary: string;
-  lineMovementSummary: string;
+  status: string;
+  spread?: number | null;
+  total?: number | null;
+  moneyline?: { home?: number; away?: number } | null;
+  bestOpportunity?: string | null;
+  sportsIntelligenceScore?: number | null;
+  marketIntelligence?: { grade?: string; signal?: string; booksTracked?: number } | null;
+  injuryContext?: unknown | null;
+  weatherContext?: unknown | null;
 };
 
 type GamesResponse = {
   count: number;
   week?: number;
   date?: string;
+  source?: string;
+  availableWeeks: number[];
+  availableDates: string[];
+  dataStatus?: {
+    schedule?: string;
+    opportunities?: string;
+    marketIntelligence?: string;
+    injury?: string;
+    weather?: string;
+  };
   games: GameCard[];
 };
 
-const weekOptions = [1, 2, 3];
-const dayOptions = ["Thu", "Fri", "Sat", "Sun", "Mon"];
-
-function scoreTone(score: number) {
+function scoreTone(score?: number | null) {
+  if (score == null) return "text-zinc-400";
   if (score >= 85) return "text-emerald-400";
   if (score >= 75) return "text-sky-400";
   return "text-amber-400";
 }
 
-function recommendationBadge(grade: string) {
+function recommendationBadge(grade?: string | null) {
   if (grade === "Elite Opportunity") return "border-emerald-400/20 bg-emerald-400/[0.06] text-emerald-300";
   if (grade === "Lean") return "border-sky-400/20 bg-sky-400/[0.06] text-sky-300";
   return "border-amber-400/20 bg-amber-400/[0.06] text-amber-300";
 }
 
+function formatKickoff(commenceTime: string) {
+  const kickoff = new Date(commenceTime);
+  if (Number.isNaN(kickoff.getTime())) return "Unavailable";
+  return kickoff.toLocaleString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "2-digit",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
+}
+
+function formatDateHeading(gameDate: string) {
+  const date = new Date(`${gameDate}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return gameDate;
+  return date.toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
 export default function GamesPage() {
   const [games, setGames] = useState<GameCard[]>([]);
+  const [availableWeeks, setAvailableWeeks] = useState<number[]>([]);
+  const [availableDates, setAvailableDates] = useState<string[]>([]);
+  const [dataStatus, setDataStatus] = useState<GamesResponse["dataStatus"] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [week, setWeek] = useState(1);
-  const [day, setDay] = useState("All");
+  const [week, setWeek] = useState<number | null>(null);
+  const [selectedDate, setSelectedDate] = useState<string>("All");
 
   useEffect(() => {
     async function loadGames() {
@@ -65,11 +101,22 @@ export default function GamesPage() {
         setLoading(true);
         setError("");
         const query = new URLSearchParams();
-        query.set("week", String(week));
-        if (day !== "All") query.set("date", day);
+        if (week !== null) query.set("week", String(week));
+        if (selectedDate !== "All") query.set("date", selectedDate);
 
         const data = await fetchJson<GamesResponse>(`/api/games?${query.toString()}`);
         setGames(data.games ?? []);
+        setAvailableWeeks(data.availableWeeks ?? []);
+        setAvailableDates(data.availableDates ?? []);
+        setDataStatus(data.dataStatus ?? null);
+
+        if (week === null && data.availableWeeks?.length) {
+          setWeek(data.availableWeeks[0]);
+        }
+
+        if (selectedDate !== "All" && data.availableDates && !data.availableDates.includes(selectedDate)) {
+          setSelectedDate("All");
+        }
       } catch (err) {
         console.error(err);
         setError("Unable to load the full NFL slate right now.");
@@ -79,12 +126,33 @@ export default function GamesPage() {
     }
 
     loadGames();
-  }, [day, week]);
+  }, [selectedDate, week]);
 
   const summaryLabel = useMemo(() => {
     if (games.length === 0) return "No games available";
-    return `${games.length} games in focus`;
+    return `${games.length} games in slate`;
   }, [games.length]);
+
+  const groupedGames = useMemo(() => {
+    const grouped = new Map<string, GameCard[]>();
+    for (const game of games) {
+      const key = game.gameDate;
+      const existing = grouped.get(key) ?? [];
+      existing.push(game);
+      grouped.set(key, existing);
+    }
+    return Array.from(grouped.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  }, [games]);
+
+  const statusLabel = useMemo(() => {
+    if (!dataStatus) return "UNAVAILABLE";
+    return [
+      `Schedule ${dataStatus.schedule ?? "UNAVAILABLE"}`,
+      `Market ${dataStatus.marketIntelligence ?? "UNAVAILABLE"}`,
+      `Injury ${dataStatus.injury ?? "UNAVAILABLE"}`,
+      `Weather ${dataStatus.weather ?? "UNAVAILABLE"}`,
+    ].join(" • ");
+  }, [dataStatus]);
 
   return (
     <main className="min-h-screen bg-[#05070B] text-white">
@@ -95,7 +163,7 @@ export default function GamesPage() {
               <p className="text-[11px] uppercase tracking-[0.32em] text-zinc-500">Game Intelligence Hub</p>
               <h1 className="mt-3 text-4xl font-semibold tracking-tight">NFL Game Intelligence</h1>
               <p className="mt-3 max-w-3xl text-sm leading-7 text-zinc-400">
-                Every scheduled game is presented as a premium intelligence card, layered with projection, market context, weather, injury, and line movement.
+                Complete NFL schedule coverage by week and date, with optional intelligence overlays when available.
               </p>
             </div>
             <Badge variant="outline" className="border-white/10 bg-black/20 text-zinc-200">
@@ -105,7 +173,7 @@ export default function GamesPage() {
 
           <div className="mt-8 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex flex-wrap gap-2">
-              {weekOptions.map((weekOption) => (
+              {availableWeeks.map((weekOption) => (
                 <button
                   key={weekOption}
                   onClick={() => setWeek(weekOption)}
@@ -118,22 +186,24 @@ export default function GamesPage() {
 
             <div className="flex flex-wrap gap-2">
               <button
-                onClick={() => setDay("All")}
-                className={`rounded-full border px-3 py-2 text-sm transition ${day === "All" ? "border-white/20 bg-white/[0.1] text-white" : "border-white/10 bg-transparent text-zinc-400 hover:text-white"}`}
+                onClick={() => setSelectedDate("All")}
+                className={`rounded-full border px-3 py-2 text-sm transition ${selectedDate === "All" ? "border-white/20 bg-white/[0.1] text-white" : "border-white/10 bg-transparent text-zinc-400 hover:text-white"}`}
               >
-                All Days
+                All Dates
               </button>
-              {dayOptions.map((dayOption) => (
+              {availableDates.map((dateOption) => (
                 <button
-                  key={dayOption}
-                  onClick={() => setDay(dayOption)}
-                  className={`rounded-full border px-3 py-2 text-sm transition ${day === dayOption ? "border-white/20 bg-white/[0.1] text-white" : "border-white/10 bg-transparent text-zinc-400 hover:text-white"}`}
+                  key={dateOption}
+                  onClick={() => setSelectedDate(dateOption)}
+                  className={`rounded-full border px-3 py-2 text-sm transition ${selectedDate === dateOption ? "border-white/20 bg-white/[0.1] text-white" : "border-white/10 bg-transparent text-zinc-400 hover:text-white"}`}
                 >
-                  {dayOption}
+                  {dateOption}
                 </button>
               ))}
             </div>
           </div>
+
+          <p className="mt-6 text-xs uppercase tracking-[0.18em] text-zinc-500">{statusLabel}</p>
         </header>
 
         {error ? (
@@ -145,85 +215,88 @@ export default function GamesPage() {
             Loading the full slate...
           </div>
         ) : (
-          <div className="grid gap-4 xl:grid-cols-2">
-            {games.map((game) => (
-              <article key={game.eventId} className="rounded-[28px] border border-white/10 bg-[#0B1119] p-6 shadow-2xl shadow-black/20">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <p className="text-[10px] uppercase tracking-[0.26em] text-zinc-600">{game.date}</p>
-                    <p className="mt-2 text-sm text-zinc-400">{game.kickoff}</p>
-                  </div>
-                  <Badge variant="outline" className={recommendationBadge(game.marketGrade)}>
-                    {game.marketGrade}
-                  </Badge>
+          <div className="space-y-8">
+            {groupedGames.map(([date, items]) => (
+              <section key={date}>
+                <h2 className="mb-4 text-lg font-semibold text-zinc-200">{formatDateHeading(date)}</h2>
+                <div className="grid gap-4 xl:grid-cols-2">
+                  {items.map((game) => (
+                    <article key={game.eventId} className="rounded-[28px] border border-white/10 bg-[#0B1119] p-6 shadow-2xl shadow-black/20">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <p className="text-[10px] uppercase tracking-[0.26em] text-zinc-600">{game.gameDate}</p>
+                          <p className="mt-2 text-sm text-zinc-400">{formatKickoff(game.commenceTime)}</p>
+                        </div>
+                        <Badge variant="outline" className={recommendationBadge(game.bestOpportunity || undefined)}>
+                          {game.status}
+                        </Badge>
+                      </div>
+
+                      <div className="mt-6 flex items-center justify-between gap-4">
+                        <div className="flex flex-1 items-center gap-3">
+                          <TeamLogo src={game.awayLogo} alt={game.awayTeam} size={56} />
+                          <div>
+                            <p className="text-[10px] uppercase tracking-[0.24em] text-zinc-500">Away</p>
+                            <p className="text-lg font-semibold">{game.awayTeam}</p>
+                          </div>
+                        </div>
+
+                        <div className="px-3 text-center text-sm font-medium text-zinc-500">@</div>
+
+                        <div className="flex flex-1 items-center justify-end gap-3">
+                          <div className="text-right">
+                            <p className="text-[10px] uppercase tracking-[0.24em] text-zinc-500">Home</p>
+                            <p className="text-lg font-semibold">{game.homeTeam}</p>
+                          </div>
+                          <TeamLogo src={game.homeLogo} alt={game.homeTeam} size={56} />
+                        </div>
+                      </div>
+
+                      <div className="mt-6 grid gap-3 md:grid-cols-3">
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                          <p className="text-[10px] uppercase tracking-[0.24em] text-zinc-600">Spread / Total</p>
+                          <p className="mt-2 text-xl font-semibold text-white">
+                            {game.spread == null ? "Unavailable" : game.spread > 0 ? `+${game.spread}` : game.spread} / {game.total ?? "Unavailable"}
+                          </p>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                          <p className="text-[10px] uppercase tracking-[0.24em] text-zinc-600">Moneyline</p>
+                          <p className="mt-2 text-xl font-semibold text-white">
+                            {game.moneyline ? `H ${game.moneyline.home ?? "N/A"} • A ${game.moneyline.away ?? "N/A"}` : "Unavailable"}
+                          </p>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                          <p className="text-[10px] uppercase tracking-[0.24em] text-zinc-600">SI Score</p>
+                          <p className={`mt-2 text-xl font-semibold ${scoreTone(game.sportsIntelligenceScore)}`}>
+                            {game.sportsIntelligenceScore ?? "Unavailable"}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="mt-6 rounded-[24px] border border-white/10 bg-black/20 p-5">
+                        <div className="space-y-2 text-sm leading-7 text-zinc-400">
+                          <p><span className="font-medium text-zinc-200">Best opportunity:</span> {game.bestOpportunity ?? "Unavailable"}</p>
+                          <p><span className="font-medium text-zinc-200">Market signal:</span> {game.marketIntelligence?.signal ?? "Unavailable"}</p>
+                          <p><span className="font-medium text-zinc-200">Injury context:</span> Unavailable</p>
+                          <p><span className="font-medium text-zinc-200">Weather context:</span> Unavailable</p>
+                        </div>
+                      </div>
+
+                      <div className="mt-6 flex flex-wrap gap-3">
+                        <Link href={`/opportunities/${game.eventId}`} className="rounded-full border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white">
+                          View Intelligence
+                        </Link>
+                        <Link href="/line-movement" className="rounded-full border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white">
+                          View Line Movement
+                        </Link>
+                        <Link href={`/opportunities?eventId=${game.eventId}`} className="rounded-full border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white">
+                          View Full Analysis
+                        </Link>
+                      </div>
+                    </article>
+                  ))}
                 </div>
-
-                <div className="mt-6 flex items-center justify-between gap-4">
-                  <div className="flex flex-1 items-center gap-3">
-                    <TeamLogo src={game.awayLogo} alt={game.awayTeam} size={56} />
-                    <div>
-                      <p className="text-[10px] uppercase tracking-[0.24em] text-zinc-500">Away</p>
-                      <p className="text-lg font-semibold">{game.awayTeam}</p>
-                    </div>
-                  </div>
-
-                  <div className="px-3 text-center text-sm font-medium text-zinc-500">@</div>
-
-                  <div className="flex flex-1 items-center justify-end gap-3">
-                    <div className="text-right">
-                      <p className="text-[10px] uppercase tracking-[0.24em] text-zinc-500">Home</p>
-                      <p className="text-lg font-semibold">{game.homeTeam}</p>
-                    </div>
-                    <TeamLogo src={game.homeLogo} alt={game.homeTeam} size={56} />
-                  </div>
-                </div>
-
-                <div className="mt-6 grid gap-3 md:grid-cols-3">
-                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                    <p className="text-[10px] uppercase tracking-[0.24em] text-zinc-600">Projected</p>
-                    <p className="mt-2 text-xl font-semibold text-white">{game.projectedAwayScore} • {game.projectedHomeScore}</p>
-                  </div>
-                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                    <p className="text-[10px] uppercase tracking-[0.24em] text-zinc-600">Spread / Total</p>
-                    <p className="mt-2 text-xl font-semibold text-white">{game.marketSpread > 0 ? `+${game.marketSpread}` : game.marketSpread} / {game.marketTotal}</p>
-                  </div>
-                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                    <p className="text-[10px] uppercase tracking-[0.24em] text-zinc-600">SI Score</p>
-                    <p className={`mt-2 text-xl font-semibold ${scoreTone(game.sportsIntelligenceScore)}`}>{game.sportsIntelligenceScore}</p>
-                  </div>
-                </div>
-
-                <div className="mt-6 rounded-[24px] border border-white/10 bg-black/20 p-5">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                      <p className="text-[10px] uppercase tracking-[0.24em] text-zinc-600">Recommendation</p>
-                      <p className="mt-2 text-lg font-semibold text-white">{game.bestBet}</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-[10px] uppercase tracking-[0.24em] text-zinc-600">Confidence</p>
-                      <p className="mt-2 text-lg font-semibold text-white">{game.confidence}%</p>
-                    </div>
-                  </div>
-
-                  <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-sm leading-7 text-zinc-400">
-                    <p><span className="font-medium text-zinc-200">Weather:</span> {game.weatherSummary}</p>
-                    <p className="mt-2"><span className="font-medium text-zinc-200">Injury:</span> {game.injurySummary}</p>
-                    <p className="mt-2"><span className="font-medium text-zinc-200">Line movement:</span> {game.lineMovementSummary}</p>
-                  </div>
-                </div>
-
-                <div className="mt-6 flex flex-wrap gap-3">
-                  <Link href={`/opportunities/${game.eventId}`} className="rounded-full border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white">
-                    View Intelligence
-                  </Link>
-                  <Link href="/line-movement" className="rounded-full border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white">
-                    View Line Movement
-                  </Link>
-                  <Link href={`/opportunities?eventId=${game.eventId}`} className="rounded-full border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white">
-                    View Full Analysis
-                  </Link>
-                </div>
-              </article>
+              </section>
             ))}
           </div>
         )}

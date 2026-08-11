@@ -10,10 +10,7 @@ def list_games(
     week: int | None = Query(default=None),
     date: str | None = Query(default=None),
 ) -> dict:
-    games = service.list_games(week=week, date=date)
-    return {
-        "count": len(games),
-        "week": week,
-        "date": date,
-        "games": games,
-    }
+    payload = service.list_games(week=week, game_date=date)
+    payload["week"] = week
+    payload["date"] = date
+    return payload
