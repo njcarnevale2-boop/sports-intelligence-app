@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 
 import { Badge } from "@/components/ui/badge";
+import { fetchJson } from "../lib/api";
 
 type SportsIntelligenceScore = {
   score: number;
@@ -68,10 +69,7 @@ export default function GamesPage() {
   useEffect(() => {
     async function loadGames() {
       try {
-        const response = await fetch("http://localhost:8000/api/opportunities?limit=50");
-        if (!response.ok) throw new Error("Unable to load game intelligence");
-
-        const data: OpportunitiesResponse = await response.json();
+        const data: OpportunitiesResponse = await fetchJson<OpportunitiesResponse>("/api/opportunities?limit=50");
         const grouped = new Map<string, Opportunity[]>();
 
         for (const opportunity of data.opportunities) {

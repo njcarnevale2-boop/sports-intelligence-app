@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
+import { fetchJson } from "../lib/api";
 
 type ProfitPoint = {
   label: string;
@@ -32,10 +33,7 @@ export default function PerformancePage() {
   useEffect(() => {
     async function loadPerformance() {
       try {
-        const response = await fetch("http://localhost:8000/api/performance");
-        if (!response.ok) throw new Error("Unable to load performance data");
-
-        const data: PerformanceSummary = await response.json();
+        const data: PerformanceSummary = await fetchJson<PerformanceSummary>("/api/performance");
         setSummary(data);
       } catch (err) {
         console.error(err);

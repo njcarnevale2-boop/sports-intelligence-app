@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+
+import { fetchJson } from "../lib/api";
 import { Button } from "@/components/ui/button";
 
 type AdminStatus = {
