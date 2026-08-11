@@ -3,6 +3,8 @@ import json
 
 from fastapi import APIRouter, Query
 
+from app.services.injuries import InjuryAnalyzer
+
 router = APIRouter(
     prefix="/api/injuries",
     tags=["injuries"],
@@ -54,7 +56,25 @@ def get_injuries(
         description="Optional sportsbook/API event ID",
     ),
 ):
+    """
+    Return injury intelligence for the current game context.
+
+    When no provider-backed injury file exists, the endpoint falls back to the
+    mock injury analyzer so the UI and downstream services can still consume
+    a realistic payload immediately.
+    """
+
     injuries = load_injuries()
+
+    if not injuries:
+        injury_analysis = InjuryAnalyzer().analyze()
+
+        return {
+            "status": "mock",
+            "count": 5,
+            "source": "mock",
+            "injuryAnalysis": injury_analysis,
+        }
 
     filtered = injuries
 
