@@ -8,7 +8,10 @@ from app.providers.provider_manager import ProviderManager
 
 log = logging.getLogger("injuries")
 
-# Set ALLOW_MOCK_FALLBACK=true only in development
+# ALLOW_MOCK_FALLBACK only applies when INJURY_PROVIDER=mock.
+# When a live provider is active (ESPN, SportsRadar) this flag is ignored so
+# that a successful LIVE response with 0 records is never silently replaced
+# by mock data that could mislead users about real injury status.
 _ALLOW_MOCK = os.getenv("ALLOW_MOCK_FALLBACK", "true").lower() in {"1", "true", "yes"}
 
 
@@ -16,10 +19,20 @@ class InjuryAnalyzer:
     """
     Evaluate NFL injury data with realistic positional weighting.
 
-    Data priority:
-      1. Live provider fetch (ESPN public API by default)
-      2. Last cached snapshot from DuckDB
-      3. Mock data (only if ALLOW_MOCK_FALLBACK=true, never in prod silently)
+    Data priority
+    ─────────────
+    1. Live provider (INJURY_PROVIDER=espn / sportsradar)
+       • LIVE + N records  → return records, status=LIVE
+       • LIVE + 0 records  → return empty, status=LIVE   ← no mock fallthrough
+       • provider error    → fall to cache
+    2. DuckDB cached snapshot  → status=CACHED
+    3. Mock data  → only when INJURY_PROVIDER=mock (never silently in prod)
+    4. UNAVAILABLE  → no data, no mock allowed
+
+    DEVELOPMENT NOTE: The ESPN public injury endpoint
+    (site.api.espn.com) is an unofficial, undocumented API used for
+    development convenience. It must be reviewed and replaced with a
+    contracted data provider before any commercial or production launch.
     """
 
     def __init__(self, injuries: Optional[List[Dict[str, Any]]] = None):
@@ -30,81 +43,99 @@ class InjuryAnalyzer:
         self._last_updated: Optional[str] = None
 
         if injuries is not None:
-            # Explicitly supplied list (e.g. from tests)
+            # Explicitly supplied list — used in tests and direct callers
             self.injuries = injuries
             self._data_status = "MOCK"
         else:
             self.injuries = self._load_injuries()
 
-    def _load_injuries(self) -> List[Dict[str, Any]]:
-        """Fetch live injuries with cached / mock fallback."""
-        from app.providers.espn_injury_provider import ESPNInjuryProvider
-        from app.services.injury_history import get_cached_injuries, store_snapshot, detect_changes, store_changes
+    def _using_mock_provider(self) -> bool:
+        return self.provider_manager.injury_provider_name == "mock"
 
-        # Attempt live fetch if provider supports it
+    def _load_injuries(self) -> List[Dict[str, Any]]:
+        """Return injuries and set _data_status; never silently mixes sources."""
+        from app.services.injury_history import (
+            detect_changes, get_cached_injuries, store_changes, store_snapshot,
+        )
+
+        # ── live provider path ──────────────────────────────────────────────
         if hasattr(self.provider, "fetch_injuries"):
+            fetch_error: Optional[str] = None
             try:
                 result = self.provider.fetch_injuries()
-                provider_name = result.get("provider", "ESPN (Public)")
-                injuries = result.get("injuries", [])
-                is_live_response = result.get("dataStatus") == "LIVE"
+                provider_name = result.get("provider", self.provider.provider_name)
+                injuries     = result.get("injuries", [])
+                record_count = len(injuries)
+                is_live      = result.get("dataStatus") == "LIVE"
 
-                if injuries:
-                    changes = detect_changes(injuries, provider_name)
-                    if changes:
-                        store_changes(changes)
-                        log.info("Detected %d injury status changes", len(changes))
-                    store_snapshot(injuries, provider_name)
+                if is_live:
+                    # Successful live response — commit immediately regardless of count
+                    if injuries:
+                        changes = detect_changes(injuries, provider_name)
+                        if changes:
+                            store_changes(changes)
+                            log.info("Detected %d injury status changes", len(changes))
+                        store_snapshot(injuries, provider_name)
+
+                    log.info(
+                        "Live injury fetch: provider=%s records=%d", provider_name, record_count
+                    )
                     self.provider_metadata = {
                         **self.provider_metadata,
-                        "isLive": True,
-                        "dataStatus": "LIVE",
+                        "provider":    provider_name,
+                        "isLive":      True,
+                        "dataStatus":  "LIVE",
                         "lastUpdated": result.get("lastUpdated"),
+                        "recordCount": record_count,
                     }
-                    self._data_status = "LIVE"
+                    self._data_status  = "LIVE"
                     self._last_updated = result.get("lastUpdated")
-                    return injuries
+                    return injuries   # ← exit here; never fall through when LIVE
 
-                # Live response but 0 injuries (preseason / no reports yet)
-                if is_live_response:
-                    self.provider_metadata = {
-                        **self.provider_metadata,
-                        "isLive": True,
-                        "dataStatus": "LIVE",
-                        "lastUpdated": result.get("lastUpdated"),
-                    }
-                    self._data_status = "LIVE"
-                    self._last_updated = result.get("lastUpdated")
-                    # Fall through to cache/mock for display data, but keep LIVE status
-                    log.info("Live fetch returned 0 injuries (preseason / no current reports)")
+                # Provider returned a non-LIVE status (e.g. UNAVAILABLE from its own logic)
+                fetch_error = f"Provider returned dataStatus={result.get('dataStatus')}"
+                log.info("Live provider non-LIVE response: %s", fetch_error)
 
-                log.info("Live injury fetch returned empty, trying cache")
             except Exception as exc:
+                fetch_error = str(exc)
                 log.warning("Live injury fetch exception: %s", exc)
 
-        # Try DuckDB cache
+        # ── cached fallback (provider failure or non-live response) ─────────
         cached = get_cached_injuries()
         if cached and cached.get("injuries"):
+            record_count = len(cached["injuries"])
+            log.info("Using cached injury data (%d records)", record_count)
             self.provider_metadata = {
                 **self.provider_metadata,
-                "isLive": False,
-                "dataStatus": "CACHED",
+                "isLive":      False,
+                "dataStatus":  "CACHED",
                 "lastUpdated": cached.get("lastUpdated"),
+                "recordCount": record_count,
             }
-            self._data_status = "CACHED"
+            self._data_status  = "CACHED"
             self._last_updated = cached.get("lastUpdated")
-            log.info("Using cached injury data (%d records)", len(cached["injuries"]))
             return cached["injuries"]
 
-        # Fall back to mock only if explicitly allowed
-        if _ALLOW_MOCK:
-            log.info("Using mock injury data (ALLOW_MOCK_FALLBACK=true)")
-            self.provider_metadata = {**self.provider_metadata, "isLive": False, "dataStatus": "MOCK"}
+        # ── mock — only for explicit mock provider ──────────────────────────
+        if self._using_mock_provider() and _ALLOW_MOCK:
+            log.info("Using mock injury data (INJURY_PROVIDER=mock)")
+            self.provider_metadata = {
+                **self.provider_metadata,
+                "isLive":      False,
+                "dataStatus":  "MOCK",
+                "recordCount": 0,
+            }
             self._data_status = "MOCK"
             return self._mock_injuries()
 
-        log.warning("No injury data available and mock fallback disabled")
-        self.provider_metadata = {**self.provider_metadata, "isLive": False, "dataStatus": "UNAVAILABLE"}
+        # ── unavailable ─────────────────────────────────────────────────────
+        log.warning("Injury data unavailable (provider=%s)", self.provider_manager.injury_provider_name)
+        self.provider_metadata = {
+            **self.provider_metadata,
+            "isLive":      False,
+            "dataStatus":  "UNAVAILABLE",
+            "recordCount": 0,
+        }
         self._data_status = "UNAVAILABLE"
         return []
 
@@ -184,11 +215,12 @@ class InjuryAnalyzer:
             "teams": team_reports,
             "providerMetadata": self.provider_metadata,
             "dataMode": self._data_status.lower(),
-            # Explicit status fields required by the live/mock status spec
-            "provider": self.provider_metadata.get("provider", "Unknown"),
-            "isLive": self.provider_metadata.get("isLive", False),
+            "provider":    self.provider_metadata.get("provider", "Unknown"),
+            # isLive is authoritative from _data_status, not provider_metadata
+            "isLive":      self._data_status == "LIVE",
             "lastUpdated": self._last_updated or self.provider_metadata.get("lastUpdated"),
-            "dataStatus": self._data_status,
+            "dataStatus":  self._data_status,
+            "recordCount": self.provider_metadata.get("recordCount", len(self.injuries)),
         }
 
     def _analyze_team(self, team: str, injuries: List[Dict[str, Any]]) -> Dict[str, Any]:

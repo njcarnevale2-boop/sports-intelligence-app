@@ -5,7 +5,8 @@ from app.services.injuries import InjuryAnalyzer
 
 class InjuryAnalyzerTests(unittest.TestCase):
     def test_returns_expected_structure_and_prioritizes_key_players(self):
-        analyzer = InjuryAnalyzer()
+        # Supply a fixed injury list so the test is independent of the live provider
+        analyzer = InjuryAnalyzer(injuries=InjuryAnalyzer._mock_injuries(None))
         result = analyzer.analyze()
 
         self.assertIn("injuryScore", result)
