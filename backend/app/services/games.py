@@ -189,6 +189,11 @@ class GamesService:
                 }
             )
 
+        # Compute available weeks/dates from the full unfiltered slate so selectors
+        # always reflect the complete schedule regardless of the active filter.
+        available_weeks = sorted({int(item["week"]) for item in candidate_rows if item.get("week") is not None})
+        available_dates = sorted({item["gameDate"] for item in candidate_rows if item.get("gameDate")})
+
         if week is not None:
             candidate_rows = [item for item in candidate_rows if item.get("week") == week]
         if game_date:
@@ -198,8 +203,8 @@ class GamesService:
             return {
                 "count": 0,
                 "games": [],
-                "availableWeeks": sorted({int(item["week"]) for item in schedule_df.to_dict("records") if item.get("api_event_id")}),
-                "availableDates": sorted({parse_commence_time(item.get("commence_time")).date().isoformat() for item in schedule_df.to_dict("records") if parse_commence_time(item.get("commence_time")) is not None}),
+                "availableWeeks": available_weeks,
+                "availableDates": available_dates,
                 "source": str(GAME_PROJECTIONS),
                 "dataStatus": self._data_status(schedule_available=True, opportunities_available=RANKED_BET_BOARD.exists()),
                 "provider": market_meta["provider"],
@@ -275,8 +280,6 @@ class GamesService:
             )
 
         rows.sort(key=lambda row: row["commenceTime"])
-        available_weeks = sorted({int(item["week"]) for item in candidate_rows if item.get("week") is not None})
-        available_dates = sorted({item["gameDate"] for item in candidate_rows if item.get("gameDate")})
 
         return {
             "count": len(rows),

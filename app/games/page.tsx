@@ -128,7 +128,11 @@ export default function GamesPage() {
           GAMES_REQUEST_TIMEOUT_MS
         );
         setGames(data.games ?? []);
-        setAvailableWeeks(data.availableWeeks ?? []);
+        // Always use the longest list so a filtered response never shrinks the selector
+        setAvailableWeeks((prev) => {
+          const next = data.availableWeeks ?? [];
+          return next.length >= prev.length ? next : prev;
+        });
         setAvailableDates(data.availableDates ?? []);
         setDataStatus(data.dataStatus ?? null);
 
