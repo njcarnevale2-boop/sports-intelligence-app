@@ -21,6 +21,13 @@ type AdminStatus = {
     odds?: { provider?: string; lastUpdated?: string; isLive?: boolean; status?: string };
   };
   errorLog: Array<{ timestamp: string; message: string }>;
+  // Live odds fields
+  oddsProvider?: string;
+  oddsDataStatus?: string;
+  lastLiveOddsRefresh?: string | null;
+  oddsGamesUpdated?: number;
+  snapshotCount?: number;
+  apiUsageRemaining?: number | null;
 };
 
 const metricCard = (label: string, value: string | number, accent = "text-white") => (
@@ -162,6 +169,42 @@ export default function AdminPage() {
                       <p className="mt-1 text-zinc-300">{entry.message}</p>
                     </div>
                   ))}
+                </div>
+              </div>
+            </section>
+
+            <section className="mt-6 rounded-3xl border border-white/10 bg-[#0B1119] p-6">
+              <h2 className="text-lg font-semibold">Live Odds Status</h2>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Odds Provider</p>
+                  <p className="mt-1 font-medium text-white">{status.oddsProvider ?? "The Odds API"}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Odds Data Status</p>
+                  <p className={`mt-1 font-medium ${status.oddsDataStatus === "LIVE" ? "text-emerald-400" : status.oddsDataStatus === "STALE" ? "text-amber-400" : "text-zinc-400"}`}>
+                    {status.oddsDataStatus ?? "UNAVAILABLE"}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Last Live Odds Refresh</p>
+                  <p className="mt-1 font-medium text-white">
+                    {status.lastLiveOddsRefresh ? new Date(status.lastLiveOddsRefresh).toLocaleString() : "n/a"}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Games Updated</p>
+                  <p className="mt-1 font-medium text-white">{status.oddsGamesUpdated ?? 0}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Snapshot Count</p>
+                  <p className="mt-1 font-medium text-white">{status.snapshotCount?.toLocaleString() ?? 0}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">API Usage Remaining</p>
+                  <p className={`mt-1 font-medium ${(status.apiUsageRemaining ?? 0) > 100 ? "text-emerald-400" : (status.apiUsageRemaining ?? 0) > 20 ? "text-amber-400" : "text-red-400"}`}>
+                    {status.apiUsageRemaining != null ? status.apiUsageRemaining : "n/a"}
+                  </p>
                 </div>
               </div>
             </section>
