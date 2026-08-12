@@ -1,3 +1,5 @@
+import { buildApiUrl } from "./api";
+
 type AnalyticsEventPayload = {
   eventType: string;
   page?: string;
@@ -14,6 +16,8 @@ type AnalyticsEventOptions = {
 };
 
 type Fetcher = (input: string, init?: RequestInit) => Promise<Response>;
+
+const ANALYTICS_TIMEOUT_MS = 5000;
 
 export function buildAnalyticsEventPayload(
   eventType: string,
@@ -46,11 +50,22 @@ export async function trackAnalyticsEvent(
 ) {
   const payload = buildAnalyticsEventPayload(eventType, options);
 
-  await fetcher('/api/analytics/events', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), ANALYTICS_TIMEOUT_MS);
+
+  try {
+    await fetcher(buildApiUrl('/api/analytics/events'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    // Analytics should never break page behavior.
+    console.warn('Analytics event failed', error);
+  } finally {
+    window.clearTimeout(timeout);
+  }
 
   return payload;
 }

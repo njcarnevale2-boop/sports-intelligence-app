@@ -327,7 +327,7 @@ export default function OpportunityAnalysisPage() {
         setLoading(true);
         setError("");
 
-        await trackAnalyticsEvent("OpportunityViewed", {
+        void trackAnalyticsEvent("OpportunityViewed", {
           page: "opportunity-detail",
           opportunityId: params.id,
         });

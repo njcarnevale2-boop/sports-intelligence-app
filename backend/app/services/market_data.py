@@ -128,6 +128,10 @@ class BestLine:
 class MarketDataService:
     def __init__(self) -> None:
         self.provider_manager = ProviderManager()
+        self._normalized_rows_cache: Optional[List[Dict[str, Any]]] = None
+        self._normalized_rows_cache_mtime: Optional[float] = None
+        self._event_snapshots_cache: Optional[Dict[str, Dict[str, Any]]] = None
+        self._event_snapshots_cache_mtime: Optional[float] = None
 
     def metadata(self) -> Dict[str, Any]:
         odds_metadata = self.provider_manager.get_odds_provider().get_metadata()
@@ -167,15 +171,42 @@ class MarketDataService:
             return []
 
         try:
+            modified_time = LINE_MOVEMENT_BOARD.stat().st_mtime
+        except OSError:
+            modified_time = None
+
+        if (
+            self._normalized_rows_cache is not None
+            and self._normalized_rows_cache_mtime == modified_time
+        ):
+            return self._normalized_rows_cache
+
+        try:
             df = pd.read_csv(LINE_MOVEMENT_BOARD)
         except (OSError, pd.errors.EmptyDataError):
+            self._normalized_rows_cache = []
+            self._normalized_rows_cache_mtime = modified_time
             return []
 
         if df.empty:
+            self._normalized_rows_cache = []
+            self._normalized_rows_cache_mtime = modified_time
             return []
 
+        df = df.copy()
+        df["api_event_id"] = df["api_event_id"].fillna("").astype(str)
+        df["sportsbook"] = df["sportsbook"].fillna("").astype(str)
+        df["market"] = df["market"].apply(normalize_market)
+        df["side"] = df["side"].fillna("").astype(str).str.lower()
+        df["away_team"] = df["away_team"].fillna("").astype(str)
+        df["home_team"] = df["home_team"].fillna("").astype(str)
+
+        last_seen = pd.to_datetime(df["last_seen"], utc=True, errors="coerce")
+        first_seen = pd.to_datetime(df["first_seen"], utc=True, errors="coerce")
+        commence_time = pd.to_datetime(df["commence_time"], utc=True, errors="coerce")
+
         rows: List[Dict[str, Any]] = []
-        for _, row in df.iterrows():
+        for row_index, row in df.iterrows():
             event_id = normalize_event_id(row.get("api_event_id"))
             market = normalize_market(row.get("market"))
             side = normalize_side(row.get("side"))
@@ -197,7 +228,7 @@ class MarketDataService:
                     "point": point,
                     "americanOdds": american_odds,
                     "impliedProbability": american_implied_probability(american_odds),
-                    "lastUpdated": _as_iso_timestamp(row.get("last_seen")) or meta["lastUpdated"],
+                    "lastUpdated": last_seen.iloc[row_index].to_pydatetime().isoformat() if pd.notna(last_seen.iloc[row_index]) else meta["lastUpdated"],
                     "provider": meta["provider"],
                     "dataStatus": meta["dataStatus"],
                     "openingPoint": opening_point,
@@ -205,15 +236,17 @@ class MarketDataService:
                     "latestPoint": latest_point,
                     "latestOdds": latest_price,
                     "snapshots": int(row.get("snapshots", 0)) if not pd.isna(row.get("snapshots")) else 0,
-                    "firstSeen": _as_iso_timestamp(row.get("first_seen")),
-                    "lastSeen": _as_iso_timestamp(row.get("last_seen")),
+                    "firstSeen": first_seen.iloc[row_index].to_pydatetime().isoformat() if pd.notna(first_seen.iloc[row_index]) else None,
+                    "lastSeen": last_seen.iloc[row_index].to_pydatetime().isoformat() if pd.notna(last_seen.iloc[row_index]) else None,
                     "steamFlag": bool(row.get("steam_flag", False)),
-                    "commenceTime": _as_iso_timestamp(row.get("commence_time")),
+                    "commenceTime": commence_time.iloc[row_index].to_pydatetime().isoformat() if pd.notna(commence_time.iloc[row_index]) else None,
                     "awayTeam": str(row.get("away_team", "")).strip(),
                     "homeTeam": str(row.get("home_team", "")).strip(),
                 }
             )
 
+        self._normalized_rows_cache = rows
+        self._normalized_rows_cache_mtime = modified_time
         return rows
 
     def records_for_event(self, event_id: str) -> List[Dict[str, Any]]:
@@ -366,6 +399,17 @@ class MarketDataService:
         }
 
     def all_event_snapshots(self) -> Dict[str, Dict[str, Any]]:
+        try:
+            modified_time = LINE_MOVEMENT_BOARD.stat().st_mtime
+        except OSError:
+            modified_time = None
+
+        if (
+            self._event_snapshots_cache is not None
+            and self._event_snapshots_cache_mtime == modified_time
+        ):
+            return self._event_snapshots_cache
+
         meta = self.metadata()
         grouped: Dict[str, List[Dict[str, Any]]] = {}
         for row in self.load_normalized_market_rows():
@@ -375,6 +419,8 @@ class MarketDataService:
         for event_id, records in grouped.items():
             snapshots[event_id] = self._build_event_snapshot(event_id, records, meta)
 
+        self._event_snapshots_cache = snapshots
+        self._event_snapshots_cache_mtime = modified_time
         return snapshots
 
 

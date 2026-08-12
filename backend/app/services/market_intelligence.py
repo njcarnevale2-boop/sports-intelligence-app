@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pandas as pd
+import numpy as np
 
 
 MODEL_ROOT = (
@@ -17,7 +18,7 @@ LINE_MOVEMENT_BOARD = (
 
 
 _cached_modified_time = None
-_cached_lookup = {}
+_cached_lookups = {}
 
 
 def safe_float(value):
@@ -199,6 +200,45 @@ def movement_supports_side(row):
         return difference > 0
 
     return None
+
+
+def _implied_probability_series(odds_series: pd.Series) -> pd.Series:
+    odds = pd.to_numeric(odds_series, errors="coerce")
+    output = pd.Series(np.nan, index=odds.index, dtype="float64")
+
+    positive_mask = odds > 0
+    negative_mask = odds < 0
+
+    output.loc[positive_mask] = 100.0 / (odds.loc[positive_mask] + 100.0)
+    output.loc[negative_mask] = odds.loc[negative_mask].abs() / (odds.loc[negative_mask].abs() + 100.0)
+    return output
+
+
+def _compute_supports_side(df: pd.DataFrame) -> pd.Series:
+    supports = pd.Series([None] * len(df), index=df.index, dtype="object")
+
+    market = df["normalized_market"]
+    side = df["normalized_side"]
+    point_move = df["point_move"]
+
+    spread_mask = market.eq("spreads") & point_move.notna() & point_move.ne(0)
+    supports.loc[spread_mask] = point_move.loc[spread_mask] < 0
+
+    totals_base_mask = market.eq("totals") & point_move.notna() & point_move.ne(0)
+    totals_over_mask = totals_base_mask & side.eq("over")
+    totals_under_mask = totals_base_mask & side.eq("under")
+    supports.loc[totals_over_mask] = point_move.loc[totals_over_mask] > 0
+    supports.loc[totals_under_mask] = point_move.loc[totals_under_mask] < 0
+
+    h2h_mask = market.eq("h2h")
+    if h2h_mask.any():
+        opening_probability = _implied_probability_series(df["opening_price_observed"])
+        latest_probability = _implied_probability_series(df["latest_price"])
+        difference = latest_probability - opening_probability
+        valid_h2h = h2h_mask & difference.notna() & difference.abs().ge(0.001)
+        supports.loc[valid_h2h] = difference.loc[valid_h2h] > 0
+
+    return supports
 
 
 def calculate_group_intelligence(group):
@@ -439,131 +479,66 @@ def calculate_group_intelligence(group):
     }
 
 
-def build_market_intelligence_lookup():
-    global _cached_lookup
+def build_market_intelligence_lookup(event_ids=None):
+    global _cached_lookups
     global _cached_modified_time
 
     if not LINE_MOVEMENT_BOARD.exists():
-        _cached_lookup = {}
+        _cached_lookups = {}
         _cached_modified_time = None
-        return _cached_lookup
+        return {}
 
     try:
-        modified_time = (
-            LINE_MOVEMENT_BOARD
-            .stat()
-            .st_mtime
-        )
+        modified_time = LINE_MOVEMENT_BOARD.stat().st_mtime
     except OSError:
         return {}
 
-    if (
-        _cached_lookup
-        and _cached_modified_time
-        == modified_time
-    ):
-        return _cached_lookup
+    normalized_ids = None
+    if event_ids is not None:
+        normalized_ids = tuple(sorted(str(event_id) for event_id in event_ids if str(event_id).strip()))
+    if _cached_modified_time != modified_time:
+        _cached_lookups = {}
+        _cached_modified_time = modified_time
+
+    cache_key = normalized_ids
+
+    cached_lookup = _cached_lookups.get(cache_key)
+    if cached_lookup is not None:
+        return cached_lookup
 
     try:
-        df = pd.read_csv(
-            LINE_MOVEMENT_BOARD
-        )
-
-    except (
-        pd.errors.EmptyDataError,
-        OSError,
-    ):
-        _cached_lookup = {}
-        _cached_modified_time = (
-            modified_time
-        )
-
-        return _cached_lookup
+        df = pd.read_csv(LINE_MOVEMENT_BOARD)
+    except (pd.errors.EmptyDataError, OSError):
+        _cached_lookups[cache_key] = {}
+        return {}
 
     if df.empty:
-        _cached_lookup = {}
-        _cached_modified_time = (
-            modified_time
-        )
-
-        return _cached_lookup
+        _cached_lookups[cache_key] = {}
+        return {}
 
     df = df.copy()
+    df["api_event_id"] = df["api_event_id"].astype(str)
+    if normalized_ids is not None:
+        df = df[df["api_event_id"].isin(normalized_ids)]
+    if df.empty:
+        _cached_lookups[cache_key] = {}
+        return {}
 
-    df[
-        "api_event_id"
-    ] = (
-        df[
-            "api_event_id"
-        ]
-        .astype(str)
-    )
-
-    df[
-        "normalized_market"
-    ] = (
-        df[
-            "market"
-        ]
-        .apply(
-            normalize_market
-        )
-    )
-
-    df[
-        "normalized_side"
-    ] = (
-        df[
-            "side"
-        ]
-        .astype(str)
-        .str.lower()
-    )
-
-    df[
-        "supports_side"
-    ] = df.apply(
-        movement_supports_side,
-        axis=1,
-    )
+    df["normalized_market"] = df["market"].apply(normalize_market)
+    df["normalized_side"] = df["side"].astype(str).str.lower()
+    df["point_move"] = pd.to_numeric(df["point_move"], errors="coerce")
+    df["price_move"] = pd.to_numeric(df["price_move"], errors="coerce")
+    df["snapshots"] = pd.to_numeric(df["snapshots"], errors="coerce")
+    df["steam_flag"] = df["steam_flag"].fillna(False) == True
+    df["supports_side"] = _compute_supports_side(df)
 
     lookup = {}
+    grouped = df.groupby(["api_event_id", "normalized_market", "normalized_side"], dropna=False, sort=False)
+    for (event_id, market, side), group in grouped:
+        lookup[(str(event_id), str(market), str(side).lower())] = calculate_group_intelligence(group)
 
-    grouped = df.groupby(
-        [
-            "api_event_id",
-            "normalized_market",
-            "normalized_side",
-        ],
-        dropna=False,
-        sort=False,
-    )
-
-    for (
-        event_id,
-        market,
-        side,
-    ), group in grouped:
-
-        key = (
-            str(event_id),
-            str(market),
-            str(side).lower(),
-        )
-
-        lookup[key] = (
-            calculate_group_intelligence(
-                group
-            )
-        )
-
-    _cached_lookup = lookup
-
-    _cached_modified_time = (
-        modified_time
-    )
-
-    return _cached_lookup
+    _cached_lookups[cache_key] = lookup
+    return lookup
 
 
 def get_market_intelligence(

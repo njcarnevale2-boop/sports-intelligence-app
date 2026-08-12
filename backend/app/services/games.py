@@ -8,7 +8,7 @@ import pandas as pd
 
 from app.providers.provider_manager import ProviderManager
 from app.services.market_data import market_data_service
-from app.services.market_intelligence import get_market_intelligence
+from app.services.market_intelligence import build_market_intelligence_lookup, normalize_market
 from app.services.sports_intelligence_score import calculate_sports_intelligence_score
 
 
@@ -152,12 +152,9 @@ class GamesService:
         schedule_df["api_event_id"] = schedule_df["api_event_id"].astype(str)
 
         context_lookup = self._load_schedule_context_lookup()
-        opportunities_lookup = self._load_best_opportunities_lookup()
-        market_lookup = market_data_service.all_event_snapshots()
-
-        rows: List[Dict[str, Any]] = []
         now_utc = datetime.now(timezone.utc)
 
+        candidate_rows: List[Dict[str, Any]] = []
         for _, source_row in schedule_df.iterrows():
             event_id = str(source_row.get("api_event_id", "")).strip()
             if not event_id:
@@ -179,6 +176,46 @@ class GamesService:
                 context_lookup=context_lookup,
             )
 
+            candidate_rows.append(
+                {
+                    "eventId": event_id,
+                    "season": season,
+                    "week": mapped_week,
+                    "gameDate": game_date_text,
+                    "commenceTime": kickoff,
+                    "awayCode": away_code,
+                    "homeCode": home_code,
+                    "sourceRow": source_row,
+                }
+            )
+
+        if week is not None:
+            candidate_rows = [item for item in candidate_rows if item.get("week") == week]
+        if game_date:
+            candidate_rows = [item for item in candidate_rows if item.get("gameDate") == game_date]
+
+        if not candidate_rows:
+            return {
+                "count": 0,
+                "games": [],
+                "availableWeeks": sorted({int(item["week"]) for item in schedule_df.to_dict("records") if item.get("api_event_id")}),
+                "availableDates": sorted({parse_commence_time(item.get("commence_time")).date().isoformat() for item in schedule_df.to_dict("records") if parse_commence_time(item.get("commence_time")) is not None}),
+                "source": str(GAME_PROJECTIONS),
+                "dataStatus": self._data_status(schedule_available=True, opportunities_available=RANKED_BET_BOARD.exists()),
+                "provider": market_meta["provider"],
+                "lastUpdated": market_meta["lastUpdated"],
+            }
+
+        opportunities_lookup = self._load_best_opportunities_lookup({item["eventId"] for item in candidate_rows})
+        market_lookup = market_data_service.all_event_snapshots()
+
+        rows: List[Dict[str, Any]] = []
+        for item in candidate_rows:
+            event_id = item["eventId"]
+            kickoff = item["commenceTime"]
+            away_code = item["awayCode"]
+            home_code = item["homeCode"]
+            source_row = item["sourceRow"]
             team_away = TEAM_META.get(away_code, {})
             team_home = TEAM_META.get(home_code, {})
 
@@ -209,9 +246,9 @@ class GamesService:
             rows.append(
                 {
                     "eventId": event_id,
-                    "season": season,
-                    "week": mapped_week,
-                    "gameDate": game_date_text,
+                    "season": item["season"],
+                    "week": item["week"],
+                    "gameDate": item["gameDate"],
                     "commenceTime": kickoff.isoformat(),
                     "awayTeam": team_away.get("name", away_code),
                     "homeTeam": team_home.get("name", home_code),
@@ -238,32 +275,12 @@ class GamesService:
             )
 
         rows.sort(key=lambda row: row["commenceTime"])
-
-        if not rows:
-            return {
-                "count": 0,
-                "games": [],
-                "availableWeeks": [],
-                "availableDates": [],
-                "source": str(GAME_PROJECTIONS),
-                "dataStatus": self._data_status(schedule_available=True, opportunities_available=RANKED_BET_BOARD.exists()),
-                "provider": market_meta["provider"],
-                "lastUpdated": market_meta["lastUpdated"],
-            }
-
-        filtered = rows
-        if week is not None:
-            filtered = [item for item in filtered if item.get("week") == week]
-
-        if game_date:
-            filtered = [item for item in filtered if item.get("gameDate") == game_date]
-
-        available_weeks = sorted({int(item["week"]) for item in rows if item.get("week") is not None})
-        available_dates = sorted({item["gameDate"] for item in rows if item.get("gameDate")})
+        available_weeks = sorted({int(item["week"]) for item in candidate_rows if item.get("week") is not None})
+        available_dates = sorted({item["gameDate"] for item in candidate_rows if item.get("gameDate")})
 
         return {
-            "count": len(filtered),
-            "games": filtered,
+            "count": len(rows),
+            "games": rows,
             "availableWeeks": available_weeks,
             "availableDates": available_dates,
             "source": str(GAME_PROJECTIONS),
@@ -327,7 +344,7 @@ class GamesService:
         inferred_week = max(1, ((kickoff - season_start).days // 7) + 1)
         return season, inferred_week
 
-    def _load_best_opportunities_lookup(self) -> Dict[str, Dict[str, Any]]:
+    def _load_best_opportunities_lookup(self, event_ids: Optional[set[str]] = None) -> Dict[str, Dict[str, Any]]:
         if not RANKED_BET_BOARD.exists():
             return {}
 
@@ -353,7 +370,14 @@ class GamesService:
 
         board_df = board_df.copy()
         board_df["api_event_id"] = board_df["api_event_id"].astype(str)
+        if event_ids is not None:
+            event_ids = {str(event_id) for event_id in event_ids}
+            board_df = board_df[board_df["api_event_id"].isin(event_ids)]
+        if board_df.empty:
+            return {}
+
         board_df = board_df.sort_values("rank")
+        market_intelligence_lookup = build_market_intelligence_lookup(event_ids=event_ids)
 
         output: Dict[str, Dict[str, Any]] = {}
         for event_id, group in board_df.groupby("api_event_id", sort=False):
@@ -361,10 +385,9 @@ class GamesService:
             market = str(best.get("market", "")).strip().lower()
             side = str(best.get("side", "")).strip().lower()
 
-            market_intelligence = get_market_intelligence(
-                event_id=event_id,
-                market=market,
-                side=side,
+            market_intelligence = market_intelligence_lookup.get(
+                (str(event_id), normalize_market(market), str(side).lower()),
+                {},
             )
             if market_intelligence.get("booksTracked", 0) == 0:
                 market_intelligence_payload: Optional[Dict[str, Any]] = None

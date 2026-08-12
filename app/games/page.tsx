@@ -7,6 +7,8 @@ import { Badge } from "@/components/ui/badge";
 import TeamLogo from "@/components/team-logo";
 import { fetchJson } from "../lib/api";
 
+const GAMES_REQUEST_TIMEOUT_MS = 30000;
+
 type GameCard = {
   eventId: string;
   season: number;
@@ -120,7 +122,11 @@ export default function GamesPage() {
         if (week !== null) query.set("week", String(week));
         if (selectedDate !== "All") query.set("date", selectedDate);
 
-        const data = await fetchJson<GamesResponse>(`/api/games?${query.toString()}`);
+        const data = await fetchJson<GamesResponse>(
+          `/api/games?${query.toString()}`,
+          undefined,
+          GAMES_REQUEST_TIMEOUT_MS
+        );
         setGames(data.games ?? []);
         setAvailableWeeks(data.availableWeeks ?? []);
         setAvailableDates(data.availableDates ?? []);
@@ -135,7 +141,11 @@ export default function GamesPage() {
         }
       } catch (err) {
         console.error(err);
-        setError("Unable to load the full NFL slate right now.");
+        if (err instanceof Error && err.message === "Request timed out") {
+          setError("Game data is taking longer than expected. Please try again.");
+        } else {
+          setError("Unable to load the full NFL slate right now.");
+        }
       } finally {
         setLoading(false);
       }
@@ -228,7 +238,7 @@ export default function GamesPage() {
 
         {loading ? (
           <div className="rounded-[24px] border border-white/10 bg-[#0B1119] p-10 text-center text-sm text-zinc-400">
-            Loading the full slate...
+            Loading complete NFL slate...
           </div>
         ) : (
           <div className="space-y-8">

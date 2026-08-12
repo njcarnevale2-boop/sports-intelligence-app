@@ -1,7 +1,10 @@
 import os
+import json
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+from app.config import settings
 
 from app.routes.opportunities import router as opportunities_router
 from app.routes.context import router as context_router
@@ -19,14 +22,40 @@ app = FastAPI(
     version="0.1.0",
 )
 
-cors_origins = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",") if origin.strip()]
+_ = settings
+
+
+def parse_cors_origins(raw: str | None) -> list[str]:
+    default_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    if not raw:
+        return default_origins
+
+    value = raw.strip()
+    if not value:
+        return default_origins
+
+    # Support JSON array style env values in addition to comma-separated strings.
+    if value.startswith("["):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                origins = [str(origin).strip() for origin in parsed if str(origin).strip()]
+                return origins or default_origins
+        except json.JSONDecodeError:
+            pass
+
+    origins = [origin.strip() for origin in value.split(",") if origin.strip()]
+    return origins or default_origins
+
+
+cors_origins = parse_cors_origins(os.getenv("CORS_ORIGINS"))
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "X-Requested-With"],
 )
 
 app.include_router(opportunities_router)

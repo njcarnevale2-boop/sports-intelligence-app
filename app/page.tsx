@@ -131,7 +131,7 @@ export default function Home() {
         setLoading(true);
         setError("");
 
-        await trackAnalyticsEvent("HomeViewed", { page: "home" });
+        void trackAnalyticsEvent("HomeViewed", { page: "home" });
 
         const data = await fetchJson<ApiResponse>(
           "/api/opportunities?limit=100"

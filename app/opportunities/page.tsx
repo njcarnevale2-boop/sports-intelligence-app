@@ -182,7 +182,7 @@ export default function OpportunitiesPage() {
         setLoading(true);
         setError("");
 
-        await trackAnalyticsEvent("OpportunitiesViewed", { page: "opportunities" });
+        void trackAnalyticsEvent("OpportunitiesViewed", { page: "opportunities" });
 
         const data = await fetchJson<OpportunitiesResponse>(
           "/api/opportunities?limit=100"
