@@ -10,6 +10,7 @@ import ExecutiveSummary from "@/components/executive-summary";
 import SportsIntelligenceScoreCard from "@/components/sports-intelligence-score-card";
 import { fetchJson } from "../../lib/api";
 import { trackAnalyticsEvent } from "../../lib/analytics";
+import { addToCard as addToCardWithSnapshot } from "@/lib/add-to-card";
 
 type AlternateBook = {
   book: string;
@@ -318,8 +319,8 @@ export default function OpportunityAnalysisPage() {
 
   const [decisionTimeline, setDecisionTimeline] = useState<DecisionTimeline | null>(null);
 
-  const [added, setAdded] =
-    useState(false);
+  const [added, setAdded] = useState(false);
+  const [snapshotError, setSnapshotError] = useState("");
 
   useEffect(() => {
     async function loadData() {
@@ -456,46 +457,18 @@ export default function OpportunityAnalysisPage() {
     }
   }, [params.id]);
 
-  function addToCard() {
-    if (!opportunity) {
-      return;
+  async function addToCard() {
+    if (!opportunity) return;
+
+    setSnapshotError("");
+    const result = await addToCardWithSnapshot(opportunity as Record<string, unknown>);
+    if (result.success) {
+      setAdded(true);
+    } else {
+      // Card may still be saved locally; surface the CLV tracking failure
+      setAdded(true);
+      setSnapshotError(result.error);
     }
-
-    const existing =
-      localStorage.getItem(
-        "sports-intelligence-card"
-      );
-
-    let currentCard: Opportunity[] =
-      [];
-
-    if (existing) {
-      try {
-        currentCard =
-          JSON.parse(existing);
-      } catch {
-        currentCard = [];
-      }
-    }
-
-    const alreadyExists =
-      currentCard.some(
-        (bet) =>
-          bet.id ===
-          opportunity.id
-      );
-
-    if (!alreadyExists) {
-      localStorage.setItem(
-        "sports-intelligence-card",
-        JSON.stringify([
-          ...currentCard,
-          opportunity,
-        ])
-      );
-    }
-
-    setAdded(true);
   }
 
   if (loading) {
@@ -1033,6 +1006,9 @@ export default function OpportunityAnalysisPage() {
               </Button>
             </Link>
           </div>
+          {snapshotError && (
+            <p className="mt-2 text-xs text-amber-400">{snapshotError}</p>
+          )}
         </section>
 
         {/* EXECUTIVE SUMMARY */}
@@ -2013,6 +1989,9 @@ export default function OpportunityAnalysisPage() {
               </Button>
             </Link>
           </div>
+          {snapshotError && (
+            <p className="mt-2 text-xs text-amber-400">{snapshotError}</p>
+          )}
         </section>
       </div>
     </main>

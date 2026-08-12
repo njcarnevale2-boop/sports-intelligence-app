@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import GameIntelligenceCard from "@/components/game-intelligence-card";
 import { fetchJson } from "../lib/api";
 import { trackAnalyticsEvent } from "../lib/analytics";
+import { addToCard as addToCardWithSnapshot } from "@/lib/add-to-card";
 
 type AlternateBook = {
   book: string;
@@ -225,54 +226,18 @@ export default function OpportunitiesPage() {
     loadOpportunities();
   }, []);
 
-  function addToCard(
+  async function addToCard(
     opportunity: Opportunity
   ) {
-    const existing =
-      localStorage.getItem(
-        "sports-intelligence-card"
-      );
-
-    let currentCard: Opportunity[] =
-      [];
-
-    if (existing) {
-      try {
-        currentCard =
-          JSON.parse(existing);
-      } catch {
-        currentCard = [];
-      }
-    }
-
-    const alreadyExists =
-      currentCard.some(
-        (item) =>
-          item.id === opportunity.id
-      );
-
-    if (!alreadyExists) {
-      currentCard.push(
-        opportunity
-      );
-
-      localStorage.setItem(
-        "sports-intelligence-card",
-        JSON.stringify(
-          currentCard
-        )
-      );
+    const alreadyAdded = added.includes(opportunity.id);
+    if (!alreadyAdded) {
+      await addToCardWithSnapshot(opportunity as Record<string, unknown>);
     }
 
     setAdded((current) =>
-      current.includes(
-        opportunity.id
-      )
+      current.includes(opportunity.id)
         ? current
-        : [
-            ...current,
-            opportunity.id,
-          ]
+        : [...current, opportunity.id]
     );
   }
 

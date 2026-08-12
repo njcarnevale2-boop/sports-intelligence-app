@@ -27,9 +27,9 @@ export default function RegisterPage() {
       localStorage.setItem("access_token", payload.access_token);
       localStorage.setItem("refresh_token", payload.refresh_token);
       setMessage("Account created.");
-      router.push("/settings");
+      router.push("/");
     } catch {
-      setMessage("Unable to create account.");
+      setMessage("Unable to create account. The email may already be registered.");
     }
   };
 

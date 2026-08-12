@@ -1,13 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "../auth-context";
 import { fetchJson } from "../lib/api";
 
-export default function LoginPage() {
+function LoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { setUser } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -29,9 +30,11 @@ export default function LoginPage() {
       localStorage.setItem("refresh_token", payload.refresh_token);
       setUser({ email });
       setMessage("Signed in.");
-      router.push("/settings");
+      // Return to the page the user was on before session expired
+      const returnTo = searchParams.get("returnTo") ?? "/";
+      router.push(returnTo);
     } catch {
-      setMessage("Unable to sign in.");
+      setMessage("Unable to sign in. Check your email and password.");
     }
   };
 
@@ -46,10 +49,10 @@ export default function LoginPage() {
 
         <form onSubmit={submit} className="w-full max-w-md rounded-3xl border border-white/10 bg-[#0B1119] p-7 shadow-2xl shadow-black/25">
           <label className="block text-sm text-zinc-400">Email</label>
-          <input value={email} onChange={(e) => setEmail(e.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-sm text-white outline-none" type="email" required />
+          <input value={email} onChange={(e) => setEmail(e.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-sm text-white outline-none focus:ring-1 focus:ring-white/20" type="email" required />
 
           <label className="mt-4 block text-sm text-zinc-400">Password</label>
-          <input value={password} onChange={(e) => setPassword(e.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-sm text-white outline-none" type="password" required />
+          <input value={password} onChange={(e) => setPassword(e.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-sm text-white outline-none focus:ring-1 focus:ring-white/20" type="password" required />
 
           <button className="mt-6 w-full rounded-xl bg-white px-4 py-3 font-medium text-black" type="submit">Sign In</button>
           {message ? <p className="mt-3 text-sm text-zinc-400">{message}</p> : null}
@@ -61,5 +64,13 @@ export default function LoginPage() {
         </form>
       </div>
     </main>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense>
+      <LoginForm />
+    </Suspense>
   );
 }

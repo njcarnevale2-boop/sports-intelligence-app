@@ -7,6 +7,19 @@ export function buildApiUrl(path: string) {
   return `${base}${normalizedPath}`;
 }
 
+function handleExpiredSession(currentPath?: string) {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem("access_token");
+  localStorage.removeItem("refresh_token");
+  // Preserve return destination to restore after login
+  const returnTo = currentPath ?? window.location.pathname;
+  const loginPath = returnTo && returnTo !== "/login" ? `/login?returnTo=${encodeURIComponent(returnTo)}` : "/login";
+  // Only redirect if not already on login to avoid loops
+  if (!window.location.pathname.startsWith("/login")) {
+    window.location.href = loginPath;
+  }
+}
+
 export async function fetchJson<T>(path: string, init?: RequestInit, timeoutMs = 10000): Promise<T> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -16,6 +29,11 @@ export async function fetchJson<T>(path: string, init?: RequestInit, timeoutMs =
       ...init,
       signal: controller.signal,
     });
+
+    if (response.status === 401) {
+      handleExpiredSession();
+      throw new Error("Session expired. Please sign in again.");
+    }
 
     if (!response.ok) {
       throw new Error(`Request failed (${response.status})`);

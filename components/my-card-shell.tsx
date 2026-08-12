@@ -1,11 +1,13 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import GameIntelligenceCard from "@/components/game-intelligence-card";
 import { buildCardSummary, buildPortfolioRiskWarnings, createExportPayload, getBestLineAndPriceOffers, getEdgeValue, normalizeSavedBet, type RiskWarning, type SavedBet } from "@/lib/my-card-helpers";
 
+const CARD_KEY = "sports-intelligence-card";
 const sportsbookOptions = ["DraftKings", "FanDuel", "BetMGM", "Caesars", "ESPN BET", "Fanatics", "bet365"];
 
 function formatSigned(value: number) {
@@ -19,6 +21,21 @@ export default function MyCardShell({ initialBets }: { initialBets: SavedBet[] }
 
   const summary = useMemo(() => buildCardSummary(bets), [bets]);
   const warnings = useMemo(() => buildPortfolioRiskWarnings(bets), [bets]);
+
+  // Remove a bet from the active card and persist; does NOT delete CLV history
+  const removeBet = (betId: string | undefined) => {
+    if (!betId) return;
+    const updated = bets.filter((b) => b.id !== betId && b.eventId !== betId);
+    setBets(updated);
+    if (reviewBet?.id === betId || reviewBet?.eventId === betId) {
+      setReviewBet(updated[0] ?? null);
+    }
+    try {
+      localStorage.setItem(CARD_KEY, JSON.stringify(updated));
+    } catch {
+      // localStorage unavailable
+    }
+  };
 
   const exportJson = () => {
     const payload = createExportPayload(bets);
@@ -105,6 +122,18 @@ export default function MyCardShell({ initialBets }: { initialBets: SavedBet[] }
                 <div className="rounded-2xl border border-dashed border-white/[0.08] p-8 text-sm text-zinc-500">Add opportunities from the opportunities grid to populate the card.</div>
               ) : bets.map((bet) => (
                 <div key={bet.id ?? `${bet.matchup}-${bet.book}`} className="space-y-2">
+                  {/* Remove button above the card */}
+                  <div className="flex items-center justify-between px-1">
+                    <p className="text-xs text-zinc-500">{bet.matchup}</p>
+                    <button
+                      onClick={() => removeBet(bet.id ?? bet.eventId)}
+                      aria-label={`Remove ${bet.matchup ?? "bet"} from My Card`}
+                      className="flex items-center gap-1 rounded-lg border border-white/10 px-2 py-1 text-[10px] text-zinc-500 transition hover:border-red-400/30 hover:text-red-400"
+                    >
+                      <X size={11} />
+                      Remove
+                    </button>
+                  </div>
                   <GameIntelligenceCard
                     game={{
                       id: bet.id,
