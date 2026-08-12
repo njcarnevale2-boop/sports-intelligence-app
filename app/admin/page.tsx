@@ -58,6 +58,14 @@ type AdminStatus = {
   injuryPlayersTracked?: number;
   injuryTeamsUpdated?: number;
   lastInjuryError?: string | null;
+  // Weather status
+  weatherProvider?: string;
+  weatherIsLive?: boolean;
+  weatherDataStatus?: string;
+  lastWeatherRefresh?: string | null;
+  weatherGamesUpdated?: number;
+  weatherForecastsAvailable?: number;
+  lastWeatherError?: string | null;
 };
 
 const metricCard = (label: string, value: string | number, accent = "text-white") => (
@@ -376,6 +384,50 @@ export default function AdminPage() {
                   <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Last Error</p>
                   <p className="mt-1 text-xs font-medium text-amber-400 break-words">
                     {status.lastInjuryError ?? "None"}
+                  </p>
+                </div>
+              </div>
+            </section>
+
+            <section className="mt-6 rounded-3xl border border-white/10 bg-[#0B1119] p-6">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold">Weather Status</h2>
+                <span className={`rounded-full border px-3 py-1 text-xs ${
+                  status.weatherDataStatus === "LIVE"
+                    ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-400"
+                    : status.weatherDataStatus === "CACHED"
+                      ? "border-sky-400/20 bg-sky-400/10 text-sky-400"
+                      : status.weatherDataStatus === "MOCK"
+                        ? "border-amber-400/20 bg-amber-400/10 text-amber-400"
+                        : "border-zinc-700 bg-zinc-800 text-zinc-400"
+                }`}>
+                  {status.weatherDataStatus ?? "MOCK"}
+                </span>
+              </div>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Weather Provider</p>
+                  <p className="mt-1 font-medium text-white">{status.weatherProvider ?? "Open-Meteo (Free)"}</p>
+                  <p className="text-[10px] text-zinc-600">No credentials required</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Last Weather Refresh</p>
+                  <p className="mt-1 font-medium text-white">
+                    {status.lastWeatherRefresh ? new Date(status.lastWeatherRefresh).toLocaleString() : "n/a"}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Games Updated</p>
+                  <p className="mt-1 font-medium text-white">{status.weatherGamesUpdated ?? 0}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Forecasts Available</p>
+                  <p className="mt-1 font-medium text-white">{status.weatherForecastsAvailable ?? 0}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm col-span-full">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Last Error</p>
+                  <p className="mt-1 text-xs font-medium text-amber-400 break-words">
+                    {status.lastWeatherError ?? "None"}
                   </p>
                 </div>
               </div>

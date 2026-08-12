@@ -122,6 +122,11 @@ _EMPTY_STATE: Dict[str, Any] = {
     "injuryTeamsUpdated": 0,
     "lastInjuryError": None,
     "injuryDataStatus": "MOCK",
+    # Weather refresh stats (updated each run)
+    "weatherGamesUpdated": 0,
+    "weatherForecastsAvailable": 0,
+    "lastWeatherError": None,
+    "weatherDataStatus": "MOCK",
 }
 
 
@@ -232,6 +237,32 @@ def _run_once() -> bool:
         except Exception as exc:
             log.warning("Injury refresh step failed (non-fatal): %s", exc)
             state["lastInjuryError"] = str(exc)[:300]
+
+        # Step 5: refresh weather forecasts for upcoming games (non-fatal)
+        try:
+            from app.services.weather import WeatherAnalyzer
+            from app.services.weather_history import get_weather_summary
+            import pandas as _pd
+            games_updated = 0
+            proj_csv = _MODEL_ROOT / "outputs" / "current_game_projections.csv"
+            if proj_csv.exists():
+                df = _pd.read_csv(proj_csv)
+                home_teams = df["home_team"].dropna().unique().tolist() if "home_team" in df.columns else []
+                for ht in home_teams[:32]:   # cap to 32 (one per team per run)
+                    try:
+                        WeatherAnalyzer(home_team=str(ht).upper())
+                        games_updated += 1
+                    except Exception:
+                        pass
+            wx_summary = get_weather_summary()
+            state["weatherGamesUpdated"]      = games_updated
+            state["weatherForecastsAvailable"] = wx_summary.get("forecastsAvailable", 0)
+            state["lastWeatherError"]          = None
+            state["weatherDataStatus"]         = "LIVE" if games_updated > 0 else "UNAVAILABLE"
+            log.info("Weather refresh: games_updated=%d", games_updated)
+        except Exception as exc:
+            log.warning("Weather refresh step failed (non-fatal): %s", exc)
+            state["lastWeatherError"] = str(exc)[:300]
 
         # Update quota from DuckDB
         try:
@@ -420,4 +451,8 @@ def get_refresh_status() -> Dict[str, Any]:
         "injuryTeamsUpdated":   int(state.get("injuryTeamsUpdated")   or 0),
         "lastInjuryError":      state.get("lastInjuryError"),
         "injuryDataStatus":     state.get("injuryDataStatus", "MOCK"),
+        "weatherGamesUpdated":      int(state.get("weatherGamesUpdated")      or 0),
+        "weatherForecastsAvailable": int(state.get("weatherForecastsAvailable") or 0),
+        "lastWeatherError":          state.get("lastWeatherError"),
+        "weatherDataStatus":         state.get("weatherDataStatus", "MOCK"),
     }

@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
 from app.providers.espn_injury_provider import ESPNInjuryProvider
 from app.providers.mock_provider import MockProvider
 from app.providers.odds_provider import OddsProvider
+from app.providers.openmeteo_weather_provider import OpenMeteoWeatherProvider
 from app.providers.sportsradar_provider import SportsRadarProvider
 from app.providers.weather_provider import WeatherProvider
 
@@ -17,7 +18,8 @@ class ProviderManager:
         self.odds_api_key = os.getenv("ODDS_API_KEY", "")
         # INJURY_PROVIDER: "espn" (default, no key needed) | "sportsradar" | "mock"
         self.injury_provider_name = os.getenv("INJURY_PROVIDER", "espn").lower().strip()
-        self.use_mock_weather = os.getenv("USE_MOCK_WEATHER", "true").lower() in {"1", "true", "yes"}
+        # WEATHER_PROVIDER: "openmeteo" (default, no key needed) | "owm" | "mock"
+        self.weather_provider_name = os.getenv("WEATHER_PROVIDER", "openmeteo").lower().strip()
 
     def get_injury_provider(self) -> Any:
         if self.injury_provider_name == "sportsradar" and self.sportsradar_api_key:
@@ -28,9 +30,12 @@ class ProviderManager:
         return ESPNInjuryProvider()
 
     def get_weather_provider(self) -> Any:
-        if self.use_mock_weather or not self.weather_api_key:
+        if self.weather_provider_name == "owm" and self.weather_api_key:
+            return WeatherProvider(self.weather_api_key)
+        if self.weather_provider_name == "mock":
             return MockProvider()
-        return WeatherProvider(self.weather_api_key)
+        # Default: Open-Meteo free API (no credentials required)
+        return OpenMeteoWeatherProvider()
 
     def get_odds_provider(self) -> Any:
         if not self.odds_api_key:

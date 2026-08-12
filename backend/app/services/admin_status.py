@@ -13,6 +13,7 @@ from app.services.injury_history import get_injury_summary
 from app.services.odds_status import get_odds_status
 from app.services.recommendation_snapshot import get_clv_summary
 from app.services.refresh_orchestrator import get_refresh_status
+from app.services.weather_history import get_weather_summary
 from database.models import PerformanceRecord
 from database.session import SessionLocal
 
@@ -40,7 +41,9 @@ class AdminStatusService:
         refresh_status = get_refresh_status()
         clv_summary = get_clv_summary()
         inj_summary = get_injury_summary()
+        wx_summary = get_weather_summary()
         inj_provider_meta = provider_metadata.get("injury", {})
+        wx_provider_meta  = provider_metadata.get("weather", {})
 
         return {
             "apiHealth": "healthy" if database_status == "connected" else "degraded",
@@ -76,6 +79,14 @@ class AdminStatusService:
             "injuryPlayersTracked": inj_summary.get("playersTracked", 0),
             "injuryTeamsUpdated": inj_summary.get("teamsUpdated", 0),
             "lastInjuryError":    inj_summary.get("lastInjuryError") or refresh_status.get("lastInjuryError"),
+            # Weather status fields
+            "weatherProvider":     wx_provider_meta.get("provider", "Open-Meteo (Free)"),
+            "weatherIsLive":       wx_provider_meta.get("isLive", False),
+            "weatherDataStatus":   wx_provider_meta.get("dataStatus") or refresh_status.get("weatherDataStatus", "MOCK"),
+            "lastWeatherRefresh":  wx_summary.get("lastWeatherRefresh"),
+            "weatherGamesUpdated": wx_summary.get("gamesUpdated", 0),
+            "weatherForecastsAvailable": wx_summary.get("forecastsAvailable", 0),
+            "lastWeatherError":    refresh_status.get("lastWeatherError"),
         }
 
     def _read_last_refresh(self) -> str:
