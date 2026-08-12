@@ -15,6 +15,9 @@ type SchedulerStatus = {
   quotaRemaining?: number | null;
   quotaPaused?: boolean;
   provider?: string;
+  closingLinesCapturedThisRun?: number;
+  closingLinesStillPending?: number;
+  closingLinesMissing?: number;
 };
 
 type AdminStatus = {
@@ -282,6 +285,21 @@ export default function AdminPage() {
                     <p className="mt-1 text-xs font-medium text-amber-400 break-words">
                       {status.scheduler.lastError ?? "None"}
                     </p>
+                  </div>
+                </div>
+                {/* Per-run CLV stats */}
+                <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                  <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                    <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Captured This Run</p>
+                    <p className="mt-1 font-medium text-emerald-400">{status.scheduler.closingLinesCapturedThisRun ?? 0}</p>
+                  </div>
+                  <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                    <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Still Pending</p>
+                    <p className="mt-1 font-medium text-sky-400">{status.scheduler.closingLinesStillPending ?? 0}</p>
+                  </div>
+                  <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                    <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Missing This Run</p>
+                    <p className="mt-1 font-medium text-amber-400">{status.scheduler.closingLinesMissing ?? 0}</p>
                   </div>
                 </div>
               </section>

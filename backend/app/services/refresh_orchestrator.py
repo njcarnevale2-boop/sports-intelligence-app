@@ -113,6 +113,10 @@ _EMPTY_STATE: Dict[str, Any] = {
     "cadenceMinutes": None,
     "consecutiveFailures": 0,
     "quotaRemaining": None,
+    # CLV closing-capture stats (updated each run)
+    "closingLinesCapturedThisRun": 0,
+    "closingLinesStillPending": 0,
+    "closingLinesMissing": 0,
 }
 
 
@@ -177,6 +181,22 @@ def _run_once() -> bool:
             raise RuntimeError(f"build_line_movement.py failed: {r2.stderr[-500:]}")
         log.info("build_line_movement.py: done")
 
+        # Step 3: capture closing lines for PENDING recommendations post-kickoff.
+        # Already-captured (AVAILABLE) records are never touched (idempotent).
+        clv_counts: Dict[str, int] = {"captured": 0, "pending": 0, "missing": 0}
+        try:
+            from app.services.recommendation_snapshot import capture_closing_lines, _open_db as _snap_db, _DB_PATH as _snap_db_path
+            clv_counts = capture_closing_lines()
+            log.info(
+                "Closing line capture: captured=%d pending=%d missing=%d",
+                clv_counts["captured"], clv_counts["pending"], clv_counts["missing"],
+            )
+            # Log detail for each newly captured record
+            if clv_counts["captured"] > 0:
+                _log_captured_records()
+        except Exception as exc:
+            log.warning("Closing line capture step failed (non-fatal): %s", exc)
+
         duration = round((datetime.now(timezone.utc) - started).total_seconds(), 2)
         log.info("Odds refresh finished in %.2fs", duration)
 
@@ -184,6 +204,9 @@ def _run_once() -> bool:
         state["lastRefreshAt"] = started.isoformat()
         state["lastError"] = None
         state["consecutiveFailures"] = 0
+        state["closingLinesCapturedThisRun"] = clv_counts["captured"]
+        state["closingLinesStillPending"]    = clv_counts["pending"]
+        state["closingLinesMissing"]         = clv_counts["missing"]
 
         # Update quota from DuckDB
         try:
@@ -221,6 +244,40 @@ def _read_quota_from_db() -> Optional[int]:
         return int(row[0]) if row and row[0] is not None else None
     except Exception:
         return None
+
+
+def _log_captured_records() -> None:
+    """Log detail (no sensitive data) for every newly resolved CLV record."""
+    try:
+        import duckdb  # type: ignore
+        db_path = _MODEL_ROOT / "database" / "nfl_model.duckdb"
+        if not db_path.exists():
+            return
+        con = duckdb.connect(str(db_path), read_only=True)
+        rows = con.execute(
+            """
+            SELECT event_id, sportsbook, market, side,
+                   recommended_at, closing_at, clv_points, clv_percent
+            FROM recommendation_snapshots
+            WHERE closing_status = 'AVAILABLE'
+            ORDER BY closing_at DESC
+            LIMIT 50
+            """
+        ).fetchall()
+        con.close()
+        for r in rows:
+            event_id, book, mkt, side, rec_at, close_at, clv_pts, clv_pct = r
+            clv_str = (
+                f"CLV={clv_pts:+.2f}pts" if clv_pts is not None
+                else f"CLV={clv_pct:+.2f}%" if clv_pct is not None
+                else "CLV=n/a"
+            )
+            log.info(
+                "CLV captured: event=%s book=%s market=%s side=%s rec_at=%s close_at=%s %s",
+                event_id, book, mkt, side, rec_at, close_at, clv_str,
+            )
+    except Exception as exc:
+        log.debug("Could not log CLV details: %s", exc)
 
 
 # ── scheduler loop ──────────────────────────────────────────────────────────
@@ -308,6 +365,9 @@ def trigger_now() -> Dict[str, Any]:
         "lastRefreshAt": state.get("lastRefreshAt"),
         "lastError": state.get("lastError"),
         "quotaRemaining": state.get("quotaRemaining"),
+        "closingLinesCapturedThisRun": state.get("closingLinesCapturedThisRun", 0),
+        "closingLinesStillPending":    state.get("closingLinesStillPending",    0),
+        "closingLinesMissing":         state.get("closingLinesMissing",         0),
     }
 
 
@@ -328,4 +388,7 @@ def get_refresh_status() -> Dict[str, Any]:
         "quotaRemaining": quota,
         "quotaPaused": effective is None,
         "provider": "The Odds API",
+        "closingLinesCapturedThisRun": int(state.get("closingLinesCapturedThisRun") or 0),
+        "closingLinesStillPending":    int(state.get("closingLinesStillPending")    or 0),
+        "closingLinesMissing":         int(state.get("closingLinesMissing")         or 0),
     }
