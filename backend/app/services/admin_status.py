@@ -10,6 +10,7 @@ import pandas as pd
 from app.providers.provider_manager import ProviderManager
 from app.services.data_refresh import refresh_all_data
 from app.services.odds_status import get_odds_status
+from app.services.recommendation_snapshot import get_clv_summary
 from app.services.refresh_orchestrator import get_refresh_status
 from database.models import PerformanceRecord
 from database.session import SessionLocal
@@ -36,6 +37,7 @@ class AdminStatusService:
         provider_metadata = self.provider_manager.metadata()
         odds_status = get_odds_status()
         refresh_status = get_refresh_status()
+        clv_summary = get_clv_summary()
 
         return {
             "apiHealth": "healthy" if database_status == "connected" else "degraded",
@@ -58,6 +60,11 @@ class AdminStatusService:
             "apiUsageRemaining": odds_status["apiUsageRemaining"],
             # Scheduler fields
             "scheduler": refresh_status,
+            # CLV / closing line fields
+            "closingLinesCaptured": clv_summary["closingLinesCaptured"],
+            "pendingClosingLines":  clv_summary["pendingClosingLines"],
+            "missingClosingLines":  clv_summary["missingClosingLines"],
+            "averageCLV":           clv_summary["averageCLVPoints"],
         }
 
     def _read_last_refresh(self) -> str:

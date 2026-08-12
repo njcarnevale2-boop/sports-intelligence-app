@@ -42,6 +42,11 @@ type AdminStatus = {
   apiUsageRemaining?: number | null;
   // Scheduler
   scheduler?: SchedulerStatus;
+  // CLV / closing line
+  closingLinesCaptured?: number;
+  pendingClosingLines?: number;
+  missingClosingLines?: number;
+  averageCLV?: number | null;
 };
 
 const metricCard = (label: string, value: string | number, accent = "text-white") => (
@@ -281,6 +286,30 @@ export default function AdminPage() {
                 </div>
               </section>
             )}
+
+            <section className="mt-6 rounded-3xl border border-white/10 bg-[#0B1119] p-6">
+              <h2 className="text-lg font-semibold">Closing Line Value (CLV)</h2>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Closing Lines Captured</p>
+                  <p className="mt-1 font-medium text-emerald-400">{status.closingLinesCaptured ?? 0}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Pending</p>
+                  <p className="mt-1 font-medium text-sky-400">{status.pendingClosingLines ?? 0}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Missing / Not Captured</p>
+                  <p className="mt-1 font-medium text-amber-400">{status.missingClosingLines ?? 0}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Average CLV (pts)</p>
+                  <p className={`mt-1 font-medium ${(status.averageCLV ?? 0) > 0 ? "text-emerald-400" : (status.averageCLV ?? 0) < 0 ? "text-red-400" : "text-zinc-400"}`}>
+                    {status.averageCLV != null ? (status.averageCLV > 0 ? `+${status.averageCLV}` : status.averageCLV) : "—"}
+                  </p>
+                </div>
+              </div>
+            </section>
           </>
         ) : null}
       </div>

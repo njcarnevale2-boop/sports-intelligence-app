@@ -104,32 +104,62 @@ export default function MyCardShell({ initialBets }: { initialBets: SavedBet[] }
               {bets.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-white/[0.08] p-8 text-sm text-zinc-500">Add opportunities from the opportunities grid to populate the card.</div>
               ) : bets.map((bet) => (
-                <GameIntelligenceCard
-                  key={bet.id ?? `${bet.matchup}-${bet.book}`}
-                  game={{
-                    id: bet.id,
-                    matchup: bet.matchup,
-                    awayTeam: bet.awayTeam,
-                    homeTeam: bet.homeTeam,
-                    commenceTime: bet.commenceTime,
-                    sportsIntelligenceScore: bet.sportsIntelligenceScore?.score,
-                    marketGrade: bet.recommendation,
-                    recommendation: bet.recommendation,
-                    confidence: bet.confidence,
-                    bestAvailableLine: `${bet.book} • ${bet.point ?? "—"}`,
-                    expectedValue: bet.evPerDollar ? `+$${bet.evPerDollar.toFixed(2)} / $1` : "—",
-                    weatherSummary: "Prepared for review in the hand-off view.",
-                    injurySummary: bet.injuryContext?.summary ?? "Neutral",
-                    topReasons: [bet.recommendation ?? "Model edge", `${bet.kelly20 ? `${bet.kelly20.toFixed(2)}u` : "—"} sizing`, `${bet.evPerDollar ? `+$${bet.evPerDollar.toFixed(2)}` : "—"} EV`],
-                    evPerDollar: bet.evPerDollar,
-                    book: bet.book,
-                    market: bet.market,
-                    pick: bet.pick,
-                  }}
-                  compact
-                  clickable={false}
-                  highlightElite={Boolean(bet.sportsIntelligenceScore?.score && bet.sportsIntelligenceScore.score >= 85)}
-                />
+                <div key={bet.id ?? `${bet.matchup}-${bet.book}`} className="space-y-2">
+                  <GameIntelligenceCard
+                    game={{
+                      id: bet.id,
+                      matchup: bet.matchup,
+                      awayTeam: bet.awayTeam,
+                      homeTeam: bet.homeTeam,
+                      commenceTime: bet.commenceTime,
+                      sportsIntelligenceScore: bet.sportsIntelligenceScore?.score,
+                      marketGrade: bet.recommendation,
+                      recommendation: bet.recommendation,
+                      confidence: bet.confidence,
+                      bestAvailableLine: `${bet.book} • ${bet.point ?? "—"}`,
+                      expectedValue: bet.evPerDollar ? `+$${bet.evPerDollar.toFixed(2)} / $1` : "—",
+                      weatherSummary: "Prepared for review in the hand-off view.",
+                      injurySummary: bet.injuryContext?.summary ?? "Neutral",
+                      topReasons: [bet.recommendation ?? "Model edge", `${bet.kelly20 ? `${bet.kelly20.toFixed(2)}u` : "—"} sizing`, `${bet.evPerDollar ? `+$${bet.evPerDollar.toFixed(2)}` : "—"} EV`],
+                      evPerDollar: bet.evPerDollar,
+                      book: bet.book,
+                      market: bet.market,
+                      pick: bet.pick,
+                    }}
+                    compact
+                    clickable={false}
+                    highlightElite={Boolean(bet.sportsIntelligenceScore?.score && bet.sportsIntelligenceScore.score >= 85)}
+                  />
+                  {bet.clv?.closingStatus === "AVAILABLE" && (
+                    <div className="flex gap-2 rounded-xl border border-white/[0.06] bg-black/30 px-4 py-3 text-xs">
+                      <div className="flex-1">
+                        <p className="text-zinc-600 uppercase tracking-widest text-[9px]">Bet</p>
+                        <p className="mt-1 font-medium text-white">{bet.pick} {bet.point != null ? (bet.point > 0 ? `+${bet.point}` : bet.point) : ""}</p>
+                      </div>
+                      <div className="flex-1">
+                        <p className="text-zinc-600 uppercase tracking-widest text-[9px]">Close</p>
+                        <p className="mt-1 font-medium text-white">
+                          {bet.clv.closingPoint != null
+                            ? (bet.clv.closingPoint > 0 ? `+${bet.clv.closingPoint}` : bet.clv.closingPoint)
+                            : "—"}
+                        </p>
+                      </div>
+                      <div className="flex-1">
+                        <p className="text-zinc-600 uppercase tracking-widest text-[9px]">CLV</p>
+                        <p className={`mt-1 font-semibold ${(bet.clv.clvPoints ?? bet.clv.clvPercent ?? 0) > 0 ? "text-emerald-400" : "text-amber-400"}`}>
+                          {bet.clv.clvPoints != null
+                            ? `${bet.clv.clvPoints > 0 ? "+" : ""}${bet.clv.clvPoints} pts`
+                            : bet.clv.clvPercent != null
+                              ? `${bet.clv.clvPercent > 0 ? "+" : ""}${bet.clv.clvPercent}%`
+                              : "—"}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                  {bet.clv?.closingStatus === "PENDING" && (
+                    <p className="px-1 text-[10px] text-zinc-600">CLV pending — game not yet kicked off</p>
+                  )}
+                </div>
               ))}
             </div>
           </div>

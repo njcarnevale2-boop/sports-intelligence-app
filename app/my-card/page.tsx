@@ -57,6 +57,8 @@ export default function MyCardPage() {
     try {
       const parsed = JSON.parse(saved) as SavedBet[];
       setSavedBets(parsed);
+      // Fire-and-forget: enrich each bet with CLV from backend
+      void enrichWithClv(parsed).then((enriched) => setSavedBets(enriched));
     } catch (err) {
       console.error("Unable to read saved card:", err);
     }
@@ -92,4 +94,32 @@ export default function MyCardPage() {
   }, []);
 
   return <MyCardShell initialBets={savedBets} />;
+}
+
+async function enrichWithClv(bets: SavedBet[]): Promise<SavedBet[]> {
+  return Promise.all(
+    bets.map(async (bet) => {
+      if (!bet.eventId) return bet;
+      try {
+        const resp = await fetchJson<{ records: Array<{ closingStatus: string; closingPoint: number | null; closingPrice: number | null; clvPoints: number | null; clvProbability: number | null; clvPercent: number | null }> }>(
+          `/api/recommendation/clv/${bet.eventId}`
+        );
+        const first = resp.records?.[0];
+        if (!first) return bet;
+        return {
+          ...bet,
+          clv: {
+            closingStatus: first.closingStatus,
+            closingPoint: first.closingPoint,
+            closingPrice: first.closingPrice,
+            clvPoints: first.clvPoints,
+            clvProbability: first.clvProbability,
+            clvPercent: first.clvPercent,
+          },
+        };
+      } catch {
+        return bet;
+      }
+    })
+  );
 }

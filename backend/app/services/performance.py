@@ -4,9 +4,9 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.services.recommendation_snapshot import get_clv_summary
 from database.models import PerformanceRecord
 from database.session import SessionLocal
 
@@ -43,8 +43,11 @@ class PerformanceService:
 
     def get_performance_summary(self) -> Dict[str, Any]:
         records = self.session.query(PerformanceRecord).all()
+
+        clv_data = get_clv_summary()
+
         if not records:
-            return self._empty_summary()
+            return self._empty_summary(clv_data)
 
         total_units = sum(float(r.units_won_lost or 0) for r in records)
         wins = sum(1 for r in records if str(r.result or "").lower() == "win")
@@ -59,12 +62,18 @@ class PerformanceService:
         si_profit = self._group_profit(records, "sports_intelligence_score")
         recommendation_profit = self._group_profit(records, "recommendation")
 
-        closing_line_value = self._closing_line_value(records)
-
         return {
             "overallROI": roi,
             "winRate": win_rate,
-            "closingLineValue": closing_line_value,
+            # CLV from DuckDB recommendation_snapshots
+            "averageCLV": clv_data["averageCLVPoints"],
+            "positiveCLVPercent": clv_data["positiveCLVPercent"],
+            "closingLinesCaptured": clv_data["closingLinesCaptured"],
+            "pendingClosingLines":  clv_data["pendingClosingLines"],
+            "missingClosingLines":  clv_data["missingClosingLines"],
+            "clvByMarket":          clv_data["clvByMarket"],
+            "clvBySiScoreBand":     clv_data["clvBySiScoreBand"],
+            "clvBySportsbook":      clv_data["clvBySportsbook"],
             "profitByMarket": market_profit,
             "profitBySportsbook": sportsbook_profit,
             "profitBySiScore": si_profit,
@@ -78,11 +87,19 @@ class PerformanceService:
             },
         }
 
-    def _empty_summary(self) -> Dict[str, Any]:
+    def _empty_summary(self, clv_data: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        clv = clv_data or {}
         return {
             "overallROI": 0.0,
             "winRate": 0.0,
-            "closingLineValue": 0.0,
+            "averageCLV": clv.get("averageCLVPoints"),
+            "positiveCLVPercent": clv.get("positiveCLVPercent"),
+            "closingLinesCaptured": clv.get("closingLinesCaptured", 0),
+            "pendingClosingLines":  clv.get("pendingClosingLines",  0),
+            "missingClosingLines":  clv.get("missingClosingLines",  0),
+            "clvByMarket":          clv.get("clvByMarket",          []),
+            "clvBySiScoreBand":     clv.get("clvBySiScoreBand",     []),
+            "clvBySportsbook":      clv.get("clvBySportsbook",      []),
             "profitByMarket": [],
             "profitBySportsbook": [],
             "profitBySiScore": [],
@@ -106,18 +123,6 @@ class PerformanceService:
             grouped[label] = grouped.get(label, 0.0) + float(record.units_won_lost or 0)
 
         return [{"label": label, "profit": round(total, 2)} for label, total in sorted(grouped.items())]
-
-    def _closing_line_value(self, records: List[PerformanceRecord]) -> float:
-        if not records:
-            return 0.0
-
-        values: List[float] = []
-        for record in records:
-            if record.line_at_recommendation is None or record.closing_line is None:
-                continue
-            values.append(float(record.closing_line) - float(record.line_at_recommendation))
-
-        return round(sum(values) / len(values), 2) if values else 0.0
 
 
 def get_performance_service() -> PerformanceService:

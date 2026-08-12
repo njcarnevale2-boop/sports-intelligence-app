@@ -15,6 +15,7 @@ from app.routes.auth import router as auth_router
 from app.routes.performance import router as performance_router
 from app.routes.analytics import router as analytics_router
 from app.routes.games import router as games_router
+from app.routes.recommendation_snapshot import router as recommendation_snapshot_router
 from database.session import init_db
 
 app = FastAPI(
@@ -67,6 +68,7 @@ app.include_router(auth_router)
 app.include_router(performance_router)
 app.include_router(analytics_router)
 app.include_router(games_router)
+app.include_router(recommendation_snapshot_router)
 
 
 @app.on_event("startup")

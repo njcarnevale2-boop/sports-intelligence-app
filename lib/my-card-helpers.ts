@@ -20,6 +20,15 @@ export type SavedBet = {
   marketIntelligence?: { score?: number };
   injuryContext?: { summary?: string; awayInjuryScore?: number; homeInjuryScore?: number };
   alternateBooks?: Array<{ book: string; point: number; price: number; edge: number; evPerDollar: number }>;
+  // CLV (populated post-kickoff from backend)
+  clv?: {
+    closingStatus?: string;   // AVAILABLE | PENDING | NOT_CAPTURED
+    closingPoint?: number | null;
+    closingPrice?: number | null;
+    clvPoints?: number | null;
+    clvProbability?: number | null;
+    clvPercent?: number | null;
+  } | null;
 };
 
 export type CardSummary = {
