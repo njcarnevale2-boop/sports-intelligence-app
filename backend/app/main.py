@@ -75,6 +75,8 @@ def startup_event() -> None:
         init_db()
     except Exception:
         pass
+    from app.services.refresh_orchestrator import start_scheduler
+    start_scheduler()
 
 
 @app.get("/health")

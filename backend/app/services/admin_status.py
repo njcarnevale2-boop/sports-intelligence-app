@@ -10,6 +10,7 @@ import pandas as pd
 from app.providers.provider_manager import ProviderManager
 from app.services.data_refresh import refresh_all_data
 from app.services.odds_status import get_odds_status
+from app.services.refresh_orchestrator import get_refresh_status
 from database.models import PerformanceRecord
 from database.session import SessionLocal
 
@@ -34,6 +35,7 @@ class AdminStatusService:
 
         provider_metadata = self.provider_manager.metadata()
         odds_status = get_odds_status()
+        refresh_status = get_refresh_status()
 
         return {
             "apiHealth": "healthy" if database_status == "connected" else "degraded",
@@ -44,7 +46,7 @@ class AdminStatusService:
             "injuriesLoaded": injuries_loaded,
             "weatherLoaded": weather_loaded,
             "databaseStatus": database_status,
-            "queueStatus": "idle",
+            "queueStatus": "running" if refresh_status["isRunning"] else "idle",
             "providerMetadata": provider_metadata,
             "errorLog": error_log,
             # Live odds fields
@@ -54,6 +56,8 @@ class AdminStatusService:
             "oddsGamesUpdated": odds_status["gamesUpdated"],
             "snapshotCount": odds_status["snapshotCount"],
             "apiUsageRemaining": odds_status["apiUsageRemaining"],
+            # Scheduler fields
+            "scheduler": refresh_status,
         }
 
     def _read_last_refresh(self) -> str:
