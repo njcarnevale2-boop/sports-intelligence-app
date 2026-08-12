@@ -9,6 +9,7 @@ import pandas as pd
 
 from app.providers.provider_manager import ProviderManager
 from app.services.data_refresh import refresh_all_data
+from app.services.injury_history import get_injury_summary
 from app.services.odds_status import get_odds_status
 from app.services.recommendation_snapshot import get_clv_summary
 from app.services.refresh_orchestrator import get_refresh_status
@@ -38,6 +39,8 @@ class AdminStatusService:
         odds_status = get_odds_status()
         refresh_status = get_refresh_status()
         clv_summary = get_clv_summary()
+        inj_summary = get_injury_summary()
+        inj_provider_meta = provider_metadata.get("injury", {})
 
         return {
             "apiHealth": "healthy" if database_status == "connected" else "degraded",
@@ -65,6 +68,14 @@ class AdminStatusService:
             "pendingClosingLines":  clv_summary["pendingClosingLines"],
             "missingClosingLines":  clv_summary["missingClosingLines"],
             "averageCLV":           clv_summary["averageCLVPoints"],
+            # Injury status fields
+            "injuryProvider":     inj_provider_meta.get("provider", "ESPN (Public)"),
+            "injuryIsLive":       inj_provider_meta.get("isLive", False),
+            "injuryDataStatus":   inj_provider_meta.get("dataStatus") or refresh_status.get("injuryDataStatus", "MOCK"),
+            "lastInjuryRefresh":  inj_summary.get("lastInjuryRefresh"),
+            "injuryPlayersTracked": inj_summary.get("playersTracked", 0),
+            "injuryTeamsUpdated": inj_summary.get("teamsUpdated", 0),
+            "lastInjuryError":    inj_summary.get("lastInjuryError") or refresh_status.get("lastInjuryError"),
         }
 
     def _read_last_refresh(self) -> str:

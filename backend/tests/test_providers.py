@@ -8,7 +8,7 @@ from app.providers.provider_manager import ProviderManager
 
 def test_provider_manager_falls_back_to_mock_when_key_missing(monkeypatch):
     monkeypatch.delenv("SPORTSRADAR_API_KEY", raising=False)
-    monkeypatch.setenv("USE_MOCK_INJURIES", "true")
+    monkeypatch.setenv("INJURY_PROVIDER", "mock")
 
     manager = ProviderManager()
     provider = manager.get_injury_provider()
@@ -19,9 +19,19 @@ def test_provider_manager_falls_back_to_mock_when_key_missing(monkeypatch):
 
 def test_provider_manager_uses_mock_when_override_is_enabled(monkeypatch):
     monkeypatch.setenv("SPORTSRADAR_API_KEY", "demo-key")
-    monkeypatch.setenv("USE_MOCK_INJURIES", "true")
+    monkeypatch.setenv("INJURY_PROVIDER", "mock")
 
     manager = ProviderManager()
     provider = manager.get_injury_provider()
 
     assert provider.provider_name == "Mock"
+
+
+def test_provider_manager_default_is_espn(monkeypatch):
+    monkeypatch.delenv("INJURY_PROVIDER", raising=False)
+
+    manager = ProviderManager()
+    provider = manager.get_injury_provider()
+
+    assert provider.provider_name == "ESPN (Public)"
+    assert provider.get_metadata()["requiresCredentials"] is False

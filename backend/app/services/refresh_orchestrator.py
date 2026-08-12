@@ -117,6 +117,11 @@ _EMPTY_STATE: Dict[str, Any] = {
     "closingLinesCapturedThisRun": 0,
     "closingLinesStillPending": 0,
     "closingLinesMissing": 0,
+    # Injury refresh stats (updated each run)
+    "injuryPlayersUpdated": 0,
+    "injuryTeamsUpdated": 0,
+    "lastInjuryError": None,
+    "injuryDataStatus": "MOCK",
 }
 
 
@@ -207,6 +212,26 @@ def _run_once() -> bool:
         state["closingLinesCapturedThisRun"] = clv_counts["captured"]
         state["closingLinesStillPending"]    = clv_counts["pending"]
         state["closingLinesMissing"]         = clv_counts["missing"]
+
+        # Step 4: refresh injury data (non-fatal – never blocks odds refresh)
+        try:
+            from app.services.injuries import InjuryAnalyzer
+            from app.services.injury_history import get_injury_summary
+            analyzer = InjuryAnalyzer()
+            analyzer.analyze()   # triggers live fetch + snapshot store
+            inj_summary = get_injury_summary()
+            state["injuryPlayersUpdated"] = inj_summary.get("playersTracked", 0)
+            state["injuryTeamsUpdated"]   = inj_summary.get("teamsUpdated", 0)
+            state["lastInjuryError"]      = None
+            state["injuryDataStatus"]     = analyzer._data_status
+            log.info(
+                "Injury refresh: players=%d teams=%d status=%s",
+                state["injuryPlayersUpdated"], state["injuryTeamsUpdated"],
+                state["injuryDataStatus"],
+            )
+        except Exception as exc:
+            log.warning("Injury refresh step failed (non-fatal): %s", exc)
+            state["lastInjuryError"] = str(exc)[:300]
 
         # Update quota from DuckDB
         try:
@@ -391,4 +416,8 @@ def get_refresh_status() -> Dict[str, Any]:
         "closingLinesCapturedThisRun": int(state.get("closingLinesCapturedThisRun") or 0),
         "closingLinesStillPending":    int(state.get("closingLinesStillPending")    or 0),
         "closingLinesMissing":         int(state.get("closingLinesMissing")         or 0),
+        "injuryPlayersUpdated": int(state.get("injuryPlayersUpdated") or 0),
+        "injuryTeamsUpdated":   int(state.get("injuryTeamsUpdated")   or 0),
+        "lastInjuryError":      state.get("lastInjuryError"),
+        "injuryDataStatus":     state.get("injuryDataStatus", "MOCK"),
     }

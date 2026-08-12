@@ -1,31 +1,115 @@
 from __future__ import annotations
 
+import logging
+import os
 from typing import Any, Dict, List, Optional
 
 from app.providers.provider_manager import ProviderManager
 
+log = logging.getLogger("injuries")
+
+# Set ALLOW_MOCK_FALLBACK=true only in development
+_ALLOW_MOCK = os.getenv("ALLOW_MOCK_FALLBACK", "true").lower() in {"1", "true", "yes"}
+
 
 class InjuryAnalyzer:
     """
-    Evaluate mock injury data with realistic NFL weighting.
+    Evaluate NFL injury data with realistic positional weighting.
 
-    The focus is to produce a believable injury-burden signal for the UI and
-    downstream betting intelligence tools without requiring SportsRadar yet.
+    Data priority:
+      1. Live provider fetch (ESPN public API by default)
+      2. Last cached snapshot from DuckDB
+      3. Mock data (only if ALLOW_MOCK_FALLBACK=true, never in prod silently)
     """
 
     def __init__(self, injuries: Optional[List[Dict[str, Any]]] = None):
         self.provider_manager = ProviderManager()
         self.provider = self.provider_manager.get_injury_provider()
         self.provider_metadata = self.provider.get_metadata()
-        # Use supplied injuries when available; otherwise fall back to the
-        # realistic mock roster that exercises the key positions.
-        self.injuries = injuries or self._mock_injuries()
+        self._data_status = "MOCK"
+        self._last_updated: Optional[str] = None
+
+        if injuries is not None:
+            # Explicitly supplied list (e.g. from tests)
+            self.injuries = injuries
+            self._data_status = "MOCK"
+        else:
+            self.injuries = self._load_injuries()
+
+    def _load_injuries(self) -> List[Dict[str, Any]]:
+        """Fetch live injuries with cached / mock fallback."""
+        from app.providers.espn_injury_provider import ESPNInjuryProvider
+        from app.services.injury_history import get_cached_injuries, store_snapshot, detect_changes, store_changes
+
+        # Attempt live fetch if provider supports it
+        if hasattr(self.provider, "fetch_injuries"):
+            try:
+                result = self.provider.fetch_injuries()
+                provider_name = result.get("provider", "ESPN (Public)")
+                injuries = result.get("injuries", [])
+                is_live_response = result.get("dataStatus") == "LIVE"
+
+                if injuries:
+                    changes = detect_changes(injuries, provider_name)
+                    if changes:
+                        store_changes(changes)
+                        log.info("Detected %d injury status changes", len(changes))
+                    store_snapshot(injuries, provider_name)
+                    self.provider_metadata = {
+                        **self.provider_metadata,
+                        "isLive": True,
+                        "dataStatus": "LIVE",
+                        "lastUpdated": result.get("lastUpdated"),
+                    }
+                    self._data_status = "LIVE"
+                    self._last_updated = result.get("lastUpdated")
+                    return injuries
+
+                # Live response but 0 injuries (preseason / no reports yet)
+                if is_live_response:
+                    self.provider_metadata = {
+                        **self.provider_metadata,
+                        "isLive": True,
+                        "dataStatus": "LIVE",
+                        "lastUpdated": result.get("lastUpdated"),
+                    }
+                    self._data_status = "LIVE"
+                    self._last_updated = result.get("lastUpdated")
+                    # Fall through to cache/mock for display data, but keep LIVE status
+                    log.info("Live fetch returned 0 injuries (preseason / no current reports)")
+
+                log.info("Live injury fetch returned empty, trying cache")
+            except Exception as exc:
+                log.warning("Live injury fetch exception: %s", exc)
+
+        # Try DuckDB cache
+        cached = get_cached_injuries()
+        if cached and cached.get("injuries"):
+            self.provider_metadata = {
+                **self.provider_metadata,
+                "isLive": False,
+                "dataStatus": "CACHED",
+                "lastUpdated": cached.get("lastUpdated"),
+            }
+            self._data_status = "CACHED"
+            self._last_updated = cached.get("lastUpdated")
+            log.info("Using cached injury data (%d records)", len(cached["injuries"]))
+            return cached["injuries"]
+
+        # Fall back to mock only if explicitly allowed
+        if _ALLOW_MOCK:
+            log.info("Using mock injury data (ALLOW_MOCK_FALLBACK=true)")
+            self.provider_metadata = {**self.provider_metadata, "isLive": False, "dataStatus": "MOCK"}
+            self._data_status = "MOCK"
+            return self._mock_injuries()
+
+        log.warning("No injury data available and mock fallback disabled")
+        self.provider_metadata = {**self.provider_metadata, "isLive": False, "dataStatus": "UNAVAILABLE"}
+        self._data_status = "UNAVAILABLE"
+        return []
 
     def analyze(self) -> Dict[str, Any]:
-        """
-        Analyze the full injury snapshot and return a compact report with
-        aggregate and per-team analysis.
-        """
+        """Return compact report with aggregate and per-team analysis."""
 
         team_groups: Dict[str, List[Dict[str, Any]]] = {}
 
@@ -99,7 +183,12 @@ class InjuryAnalyzer:
             "summary": self._build_summary(overall_score),
             "teams": team_reports,
             "providerMetadata": self.provider_metadata,
-            "dataMode": "mock" if self.provider_metadata.get("status") == "Mock" else "live",
+            "dataMode": self._data_status.lower(),
+            # Explicit status fields required by the live/mock status spec
+            "provider": self.provider_metadata.get("provider", "Unknown"),
+            "isLive": self.provider_metadata.get("isLive", False),
+            "lastUpdated": self._last_updated or self.provider_metadata.get("lastUpdated"),
+            "dataStatus": self._data_status,
         }
 
     def _analyze_team(self, team: str, injuries: List[Dict[str, Any]]) -> Dict[str, Any]:
