@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,23 @@ export default function MyCardShell({ initialBets }: { initialBets: SavedBet[] }
   const [bets, setBets] = useState<SavedBet[]>(initialBets.map(normalizeSavedBet));
   const [selectedSportsbook, setSelectedSportsbook] = useState(sportsbookOptions[0]);
   const [reviewBet, setReviewBet] = useState<SavedBet | null>(initialBets[0] ? normalizeSavedBet(initialBets[0]) : null);
+
+  // Sync when parent reloads from localStorage or CLV enrichment
+  useEffect(() => {
+    const normalized = initialBets.map(normalizeSavedBet);
+    setBets(normalized);
+    setReviewBet((prev) => {
+      if (normalized.length === 0) return null;
+      if (prev) {
+        const match = normalized.find(
+          (b) => (prev.id && b.id === prev.id) || (prev.eventId && b.eventId === prev.eventId)
+        );
+        if (match) return match;
+      }
+      return normalized[0];
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialBets]);
 
   const summary = useMemo(() => buildCardSummary(bets), [bets]);
   const warnings = useMemo(() => buildPortfolioRiskWarnings(bets), [bets]);

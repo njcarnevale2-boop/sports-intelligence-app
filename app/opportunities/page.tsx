@@ -185,6 +185,9 @@ export default function OpportunitiesPage() {
   const [added, setAdded] =
     useState<string[]>([]);
 
+  const [snapshotErrors, setSnapshotErrors] =
+    useState<Record<string, string>>({});
+
   useEffect(() => {
     async function loadOpportunities() {
       try {
@@ -240,7 +243,13 @@ export default function OpportunitiesPage() {
   ) {
     const alreadyAdded = added.includes(opportunity.id);
     if (!alreadyAdded) {
-      await addToCardWithSnapshot(opportunity as Record<string, unknown>);
+      const result = await addToCardWithSnapshot(opportunity as Record<string, unknown>);
+      if (!result.success) {
+        setSnapshotErrors((prev) => ({ ...prev, [opportunity.id]: result.error }));
+      } else {
+        // Clear any prior error on re-add
+        setSnapshotErrors((prev) => { const next = { ...prev }; delete next[opportunity.id]; return next; });
+      }
     }
 
     setAdded((current) =>
@@ -1122,11 +1131,19 @@ export default function OpportunitiesPage() {
                           }
                         >
                           {isAdded
-                            ? "Added ✓"
+                            ? snapshotErrors[opportunity.id]
+                              ? "Added (tracking failed)"
+                              : "Added ✓"
                             : "Add to My Card"}
                         </Button>
 
-                        {isAdded && (
+                        {isAdded && snapshotErrors[opportunity.id] && (
+                          <p className="text-xs text-amber-400">
+                            {snapshotErrors[opportunity.id]}
+                          </p>
+                        )}
+
+                        {isAdded && !(snapshotErrors[opportunity.id]) && (
                           <Link
                             href="/my-card"
                             className="flex h-11 w-full items-center justify-center rounded-lg border border-white/10 bg-transparent px-5 text-sm font-medium text-white transition hover:bg-white/[0.05]"
