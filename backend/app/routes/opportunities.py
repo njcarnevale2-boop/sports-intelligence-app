@@ -916,6 +916,33 @@ def get_opportunity(
 # ---------------------------------------------------------
 
 
+@router.get("/games/{event_id}/opportunity")
+def get_game_best_opportunity(event_id: str):
+    """Return the top-ranked SIA opportunity for this game, or null if none qualifies."""
+    if not RANKED_BET_BOARD.exists():
+        return {"eventId": event_id, "opportunity": None}
+
+    df = pd.read_csv(RANKED_BET_BOARD)
+    df["api_event_id"] = df["api_event_id"].astype(str)
+    match = df[df["api_event_id"] == event_id]
+
+    if match.empty:
+        return {"eventId": event_id, "opportunity": None}
+
+    match = match.sort_values("rank")
+    selected = match.iloc[0]
+    alternates = make_alternate_books(match, selected)
+    market_snapshot = market_data_service.event_market_snapshot(event_id)
+
+    opportunity = row_to_opportunity(
+        selected,
+        include_alternates=alternates,
+        market_snapshot=market_snapshot,
+        injury_ctx=InjuryMatchupContext(),
+    )
+    return {"eventId": event_id, "opportunity": opportunity}
+
+
 @router.get(
     "/games/{event_id}/injuries"
 )

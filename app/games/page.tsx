@@ -318,14 +318,11 @@ export default function GamesPage() {
                       </div>
 
                       <div className="mt-6 flex flex-wrap gap-3">
-                        <Link href={`/opportunities/${game.eventId}`} className="rounded-full border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white">
+                        <Link href={`/games/${game.eventId}`} className="rounded-full border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white">
                           View Intelligence
                         </Link>
                         <Link href="/line-movement" className="rounded-full border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white">
                           View Line Movement
-                        </Link>
-                        <Link href={`/opportunities?eventId=${game.eventId}`} className="rounded-full border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white">
-                          View Full Analysis
                         </Link>
                       </div>
                     </article>
