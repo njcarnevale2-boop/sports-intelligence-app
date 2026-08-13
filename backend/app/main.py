@@ -1,5 +1,7 @@
+import logging
 import os
 import json
+import time
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -78,6 +80,40 @@ def startup_event() -> None:
     except Exception:
         pass
     from app.services.refresh_orchestrator import start_scheduler
+    from app.services.market_data import market_data_service
+
+    logger = logging.getLogger("startup")
+    logging.basicConfig(level=logging.INFO)
+
+    logger.info("Market data warm-up: starting")
+    t0 = time.perf_counter()
+    try:
+        rows = market_data_service.load_normalized_market_rows()
+        snapshots = market_data_service.all_event_snapshots()
+        elapsed_md = time.perf_counter() - t0
+
+        from app.services.market_intelligence import build_market_intelligence_lookup
+        t1 = time.perf_counter()
+        build_market_intelligence_lookup()
+        elapsed_mi = time.perf_counter() - t1
+
+        elapsed = time.perf_counter() - t0
+        logger.info(
+            "Market data warm-up: complete in %.2fs (market_data=%.2fs, market_intelligence=%.2fs) — %d rows, %d events",
+            elapsed,
+            elapsed_md,
+            elapsed_mi,
+            len(rows),
+            len(snapshots),
+        )
+    except Exception as exc:  # noqa: BLE001
+        elapsed = time.perf_counter() - t0
+        logger.warning(
+            "Market data warm-up: failed after %.2fs (%s) — cold-start latency expected",
+            elapsed,
+            exc,
+        )
+
     start_scheduler()
 
 
