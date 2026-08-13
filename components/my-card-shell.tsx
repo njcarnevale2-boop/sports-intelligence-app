@@ -7,51 +7,42 @@ import { Button } from "@/components/ui/button";
 import GameIntelligenceCard from "@/components/game-intelligence-card";
 import { buildCardSummary, buildPortfolioRiskWarnings, createExportPayload, getBestLineAndPriceOffers, getEdgeValue, normalizeSavedBet, type RiskWarning, type SavedBet } from "@/lib/my-card-helpers";
 
-const CARD_KEY = "sports-intelligence-card";
 const sportsbookOptions = ["DraftKings", "FanDuel", "BetMGM", "Caesars", "ESPN BET", "Fanatics", "bet365"];
 
 function formatSigned(value: number) {
   return value >= 0 ? `+${value.toFixed(1)}` : value.toFixed(1);
 }
 
-export default function MyCardShell({ initialBets }: { initialBets: SavedBet[] }) {
-  const [bets, setBets] = useState<SavedBet[]>(initialBets.map(normalizeSavedBet));
+export default function MyCardShell({ bets, onRemoveBet }: { bets: SavedBet[]; onRemoveBet: (idOrEventId: string) => void }) {
   const [selectedSportsbook, setSelectedSportsbook] = useState(sportsbookOptions[0]);
-  const [reviewBet, setReviewBet] = useState<SavedBet | null>(initialBets[0] ? normalizeSavedBet(initialBets[0]) : null);
+  const [reviewBet, setReviewBet] = useState<SavedBet | null>(bets[0] ? normalizeSavedBet(bets[0]) : null);
 
-  // Sync when parent reloads from localStorage or CLV enrichment
+  // Keep reviewBet valid when the bet list changes (CLV enrichment or removals)
   useEffect(() => {
-    const normalized = initialBets.map(normalizeSavedBet);
-    setBets(normalized);
     setReviewBet((prev) => {
-      if (normalized.length === 0) return null;
+      if (!bets.length) return null;
       if (prev) {
-        const match = normalized.find(
+        const match = bets.find(
           (b) => (prev.id && b.id === prev.id) || (prev.eventId && b.eventId === prev.eventId)
         );
         if (match) return match;
       }
-      return normalized[0];
+      return normalizeSavedBet(bets[0]);
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialBets]);
+  }, [bets]);
 
   const summary = useMemo(() => buildCardSummary(bets), [bets]);
   const warnings = useMemo(() => buildPortfolioRiskWarnings(bets), [bets]);
 
-  // Remove a bet from the active card and persist; does NOT delete CLV history
+  // Remove a bet; parent updates state and localStorage atomically
   const removeBet = (betId: string | undefined) => {
     if (!betId) return;
-    const updated = bets.filter((b) => b.id !== betId && b.eventId !== betId);
-    setBets(updated);
     if (reviewBet?.id === betId || reviewBet?.eventId === betId) {
-      setReviewBet(updated[0] ?? null);
+      const next = bets.find((b) => b.id !== betId && b.eventId !== betId);
+      setReviewBet(next ? normalizeSavedBet(next) : null);
     }
-    try {
-      localStorage.setItem(CARD_KEY, JSON.stringify(updated));
-    } catch {
-      // localStorage unavailable
-    }
+    onRemoveBet(betId);
   };
 
   const exportJson = () => {

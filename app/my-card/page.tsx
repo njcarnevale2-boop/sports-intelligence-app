@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import MyCardShell from "@/components/my-card-shell";
 import { fetchJson } from "../lib/api";
 import { trackAnalyticsEvent } from "../lib/analytics";
-import type { SavedBet } from "@/lib/my-card-helpers";
+import { normalizeSavedBet, type SavedBet } from "@/lib/my-card-helpers";
 
 type PortfolioBet = {
   id: string;
@@ -44,21 +44,45 @@ type PortfolioResponse = {
   portfolio: PortfolioBet[];
 };
 
+const CARD_KEY = "sports-intelligence-card";
+
 export default function MyCardPage() {
-  const [savedBets, setSavedBets] = useState<SavedBet[]>([]);
+  const [bets, setBets] = useState<SavedBet[]>([]);
+
+  // Owned here so CLV enrichment and removals share a single state reference
+  const removeBet = useCallback((idOrEventId: string) => {
+    setBets((current) => {
+      const updated = current.filter(
+        (b) => b.id !== idOrEventId && b.eventId !== idOrEventId
+      );
+      try {
+        localStorage.setItem(CARD_KEY, JSON.stringify(updated));
+      } catch { /* storage unavailable */ }
+      return updated;
+    });
+  }, []);
 
   useEffect(() => {
     void trackAnalyticsEvent("MyCardViewed", { page: "my-card" });
 
-    const saved = localStorage.getItem("sports-intelligence-card");
-
+    const saved = localStorage.getItem(CARD_KEY);
     if (!saved) return;
 
     try {
       const parsed = JSON.parse(saved) as SavedBet[];
-      setSavedBets(parsed);
-      // Fire-and-forget: enrich each bet with CLV from backend
-      void enrichWithClv(parsed).then((enriched) => setSavedBets(enriched));
+      const normalized = parsed.map(normalizeSavedBet);
+      setBets(normalized);
+      // Functional updater: only applies CLV to bets still on the card
+      void enrichWithClv(normalized).then((enriched) =>
+        setBets((current) =>
+          current.map((b) => {
+            const e = enriched.find(
+              (r) => (b.id && r.id === b.id) || (b.eventId && r.eventId === b.eventId)
+            );
+            return e ?? b;
+          })
+        )
+      );
     } catch (err) {
       console.error("Unable to read saved card:", err);
     }
@@ -84,7 +108,7 @@ export default function MyCardPage() {
           injuryContext: { summary: "Model view is neutral", awayInjuryScore: 15, homeInjuryScore: 12 },
         })) as SavedBet[];
 
-        setSavedBets((current) => (current.length > 0 ? current : portfolio));
+        setBets((current) => (current.length > 0 ? current : portfolio.map(normalizeSavedBet)));
       } catch (err) {
         console.error(err);
       }
@@ -93,7 +117,7 @@ export default function MyCardPage() {
     loadPortfolio();
   }, []);
 
-  return <MyCardShell initialBets={savedBets} />;
+  return <MyCardShell bets={bets} onRemoveBet={removeBet} />;
 }
 
 async function enrichWithClv(bets: SavedBet[]): Promise<SavedBet[]> {
