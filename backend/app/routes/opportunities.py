@@ -520,7 +520,10 @@ def get_opportunities(
         le=500,
     ),
     best_lines_only: bool = True,
+    week: int | None = Query(default=None),
 ):
+    from app.services.games import service as games_service
+
     market_meta = market_data_service.metadata()
 
     if (
@@ -538,6 +541,19 @@ def get_opportunities(
         RANKED_BET_BOARD
     )
 
+    # Resolve week: default to first available week when no week param given
+    all_games_payload = games_service.list_games()
+    available_weeks: list[int] = all_games_payload.get("availableWeeks", [])
+    resolved_week: int = week if week is not None else (available_weeks[0] if available_weeks else 1)
+
+    # Filter to only eventIds belonging to the resolved week
+    week_games_payload = games_service.list_games(week=resolved_week)
+    week_event_ids: set[str] = {g["eventId"] for g in week_games_payload.get("games", [])}
+    week_scheduled_games: int = len(week_event_ids)
+
+    df["api_event_id"] = df["api_event_id"].astype(str)
+    df = df[df["api_event_id"].isin(week_event_ids)]
+
     # One InjuryMatchupContext per request — one ESPN fetch total.
     shared_injury_ctx = InjuryMatchupContext()
 
@@ -552,35 +568,28 @@ def get_opportunities(
             .head(limit)
         )
 
-        opportunities = [
-            row_to_opportunity(
+        opportunities = []
+        for week_rank, (_, row) in enumerate(df.iterrows(), start=1):
+            opp = row_to_opportunity(
                 row,
                 market_snapshot=market_snapshots.get(str(row["api_event_id"])),
                 injury_ctx=shared_injury_ctx,
             )
-            for _, row
-            in df.iterrows()
-        ]
+            opp["weekRank"] = week_rank
+            opportunities.append(opp)
 
         return {
-            "count": len(
-                opportunities
-            ),
-
-            "source": str(
-                RANKED_BET_BOARD
-            ),
-
-            "bestLinesOnly": (
-                False
-            ),
+            "count": len(opportunities),
+            "week": resolved_week,
+            "weekScheduledGames": week_scheduled_games,
+            "weekQualifiedOpportunities": len(opportunities),
+            "availableWeeks": available_weeks,
+            "source": str(RANKED_BET_BOARD),
+            "bestLinesOnly": False,
             "provider": market_meta["provider"],
             "lastUpdated": market_meta["lastUpdated"],
             "dataStatus": market_meta["dataStatus"],
-
-            "opportunities": (
-                opportunities
-            ),
+            "opportunities": opportunities,
         }
 
     grouped = df.groupby(
@@ -593,58 +602,47 @@ def get_opportunities(
         sort=False,
     )
 
-    best_rows = []
     market_snapshots = market_data_service.all_event_snapshots()
 
-    # Collect best pandas rows per group (no enrichment yet)
+    # Collect best pandas rows per group; track group's minimum rank for correct ordering
     raw_best_rows = []
     raw_alternates_map = {}
+    raw_group_min_rank: dict[int, int] = {}
     for group_key, group in grouped:
         selected = best_line_for_group(group)
+        group_min_rank = int(group["rank"].min())
         raw_best_rows.append(selected)
         raw_alternates_map[id(selected)] = make_alternate_books(group, selected)
+        raw_group_min_rank[id(selected)] = group_min_rank
 
-    # Sort by rank column and apply limit BEFORE enrichment
-    raw_best_rows.sort(key=lambda r: (int(r["rank"]), -float(r["edge_pp"]), -float(r["ev_per_dollar"])))
+    # Sort by group's minimum model rank (preserves rank-1 intent even if that row was replaced)
+    raw_best_rows.sort(key=lambda r: (raw_group_min_rank[id(r)], -float(r["edge_pp"]), -float(r["ev_per_dollar"])))
     raw_best_rows = raw_best_rows[:limit]
 
     best_rows = []
-    for selected in raw_best_rows:
+    for week_rank, selected in enumerate(raw_best_rows, start=1):
         item = row_to_opportunity(
             selected,
             include_alternates=raw_alternates_map[id(selected)],
             market_snapshot=market_snapshots.get(str(selected["api_event_id"])),
             injury_ctx=shared_injury_ctx,
         )
+        # weekRank is sequential position on the filtered week board; rank is the model's row rank
+        item["weekRank"] = week_rank
         best_rows.append(item)
 
-    best_rows.sort(
-        key=lambda item: (
-            item["rank"],
-            -item["edge"],
-            -item["evPerDollar"],
-        )
-    )
-
-    opportunities = best_rows
-
     return {
-        "count": len(
-            opportunities
-        ),
-
-        "source": str(
-            RANKED_BET_BOARD
-        ),
-
+        "count": len(best_rows),
+        "week": resolved_week,
+        "weekScheduledGames": week_scheduled_games,
+        "weekQualifiedOpportunities": len(best_rows),
+        "availableWeeks": available_weeks,
+        "source": str(RANKED_BET_BOARD),
         "bestLinesOnly": True,
         "provider": market_meta["provider"],
         "lastUpdated": market_meta["lastUpdated"],
         "dataStatus": market_meta["dataStatus"],
-
-        "opportunities": (
-            opportunities
-        ),
+        "opportunities": best_rows,
     }
 
 
@@ -1041,16 +1039,27 @@ def get_game_weather(
         )
 
     row = match.iloc[0]
-    weather = WeatherAnalyzer().analyze()
+
+    home_team = str(row["home_team"])
+    away_team = str(row["away_team"])
+    commence_time_str = str(row.get("commence_time", ""))
+
+    # Parse kickoff so the weather provider can look up the correct forecast window
+    kickoff_dt = None
+    if commence_time_str:
+        try:
+            parsed = pd.to_datetime(commence_time_str, utc=True, errors="coerce")
+            if parsed is not None and not pd.isna(parsed):
+                kickoff_dt = parsed.to_pydatetime()
+        except Exception:
+            pass
+
+    weather = WeatherAnalyzer(home_team=home_team, kickoff=kickoff_dt).analyze()
 
     return {
         "eventId": event_id,
-        "awayTeam": str(
-            row["away_team"]
-        ),
-        "homeTeam": str(
-            row["home_team"]
-        ),
+        "awayTeam": away_team,
+        "homeTeam": home_team,
         "weather": weather,
     }
 

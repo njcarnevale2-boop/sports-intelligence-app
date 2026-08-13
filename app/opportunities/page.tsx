@@ -98,6 +98,7 @@ type Opportunity = {
   modelConfidence: number;
 
   rank: number;
+  weekRank?: number;
 
   marketIntelligence: MarketIntelligence;
 
@@ -108,6 +109,10 @@ type Opportunity = {
 
 type OpportunitiesResponse = {
   count: number;
+  week?: number;
+  weekScheduledGames?: number;
+  weekQualifiedOpportunities?: number;
+  availableWeeks?: number[];
   source: string;
   bestLinesOnly: boolean;
   provider?: string;
@@ -188,6 +193,15 @@ export default function OpportunitiesPage() {
   const [snapshotErrors, setSnapshotErrors] =
     useState<Record<string, string>>({});
 
+  const [week, setWeek] = useState<number | null>(null);
+  const [availableWeeks, setAvailableWeeks] = useState<number[]>([]);
+  const [weekScheduledGames, setWeekScheduledGames] = useState<number>(0);
+  const [weekQualifiedOpportunities, setWeekQualifiedOpportunities] = useState<number>(0);
+
+  function changeWeek(w: number) {
+    setWeek(w);
+  }
+
   useEffect(() => {
     async function loadOpportunities() {
       try {
@@ -196,14 +210,21 @@ export default function OpportunitiesPage() {
 
         void trackAnalyticsEvent("OpportunitiesViewed", { page: "opportunities" });
 
+        const query = new URLSearchParams({ limit: "100" });
+        if (week !== null) query.set("week", String(week));
+
         const data = await fetchJson<OpportunitiesResponse>(
-          "/api/opportunities?limit=100"
+          `/api/opportunities?${query.toString()}`
         );
 
-        setOpportunities(
-          data.opportunities
-        );
+        setOpportunities(data.opportunities);
         setFreshness({ dataStatus: data.dataStatus, lastUpdated: data.lastUpdated });
+        if (data.availableWeeks?.length) {
+          setAvailableWeeks((prev) => data.availableWeeks!.length >= prev.length ? data.availableWeeks! : prev);
+        }
+        if (week === null && data.week != null) setWeek(data.week);
+        if (data.weekScheduledGames != null) setWeekScheduledGames(data.weekScheduledGames);
+        if (data.weekQualifiedOpportunities != null) setWeekQualifiedOpportunities(data.weekQualifiedOpportunities);
 
         const saved =
           localStorage.getItem(
@@ -236,7 +257,7 @@ export default function OpportunitiesPage() {
     }
 
     loadOpportunities();
-  }, []);
+  }, [week]);
 
   async function addToCard(
     opportunity: Opportunity
@@ -459,20 +480,42 @@ export default function OpportunitiesPage() {
             </p>
 
             <h1 className="mt-3 text-4xl font-semibold tracking-[-0.03em] md:text-6xl">
-              Today&apos;s best
-              opportunities.
+              Week {week ?? "…"} opportunities.
             </h1>
 
-            <p className="mt-5 max-w-2xl text-base leading-7 text-zinc-500">
-              Model edge, expected
-              value, confidence, and
-              live market behavior
-              combined into one
-              decision framework.
-            </p>
+            <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-zinc-500">
+              {weekScheduledGames > 0 && <span>{weekScheduledGames} games analyzed</span>}
+              {weekQualifiedOpportunities > 0 && (
+                <span className="text-emerald-400">{weekQualifiedOpportunities} qualified {weekQualifiedOpportunities === 1 ? "opportunity" : "opportunities"}</span>
+              )}
+            </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
+            {/* Week navigation */}
+            {availableWeeks.length > 0 && week !== null && (
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => { const i = availableWeeks.indexOf(week); if (i > 0) changeWeek(availableWeeks[i - 1]); }}
+                  disabled={availableWeeks.indexOf(week) <= 0}
+                  className="flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] text-sm text-zinc-400 transition hover:bg-white/[0.08] disabled:opacity-30 disabled:cursor-not-allowed"
+                  aria-label="Previous week"
+                >‹</button>
+                <select
+                  value={week}
+                  onChange={(e) => changeWeek(Number(e.target.value))}
+                  className="h-9 rounded-lg border border-white/10 bg-[#0D131C] px-3 text-sm font-medium text-white outline-none"
+                >
+                  {availableWeeks.map((w) => <option key={w} value={w}>Week {w}</option>)}
+                </select>
+                <button
+                  onClick={() => { const i = availableWeeks.indexOf(week); if (i < availableWeeks.length - 1) changeWeek(availableWeeks[i + 1]); }}
+                  disabled={availableWeeks.indexOf(week) >= availableWeeks.length - 1}
+                  className="flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] text-sm text-zinc-400 transition hover:bg-white/[0.08] disabled:opacity-30 disabled:cursor-not-allowed"
+                  aria-label="Next week"
+                >›</button>
+              </div>
+            )}
             <Link
               href="/my-card"
               className="flex h-11 items-center justify-center rounded-lg border border-white/10 bg-transparent px-5 text-sm font-medium text-white transition hover:bg-white/[0.05]"
@@ -488,6 +531,13 @@ export default function OpportunitiesPage() {
             )}
           </div>
         </div>
+
+        {/* THIN-WEEK NOTICE */}
+        {!loading && weekQualifiedOpportunities > 0 && weekQualifiedOpportunities < 4 && (
+          <div className="mt-5 rounded-2xl border border-sky-400/20 bg-sky-400/[0.04] px-5 py-4 text-sm text-sky-300">
+            SIA has identified {weekQualifiedOpportunities} qualifying {weekQualifiedOpportunities === 1 ? "opportunity" : "opportunities"} for Week {week}. Additional opportunities may emerge as market, injury, and weather information develops closer to kickoff.
+          </div>
+        )}
 
         {/* FILTERS */}
 
@@ -771,18 +821,14 @@ export default function OpportunitiesPage() {
 
                         <span className="text-xs text-zinc-700">
                           #
-                          {
-                            opportunity.rank
-                          }
+                          {opportunity.weekRank ?? opportunity.rank}
                         </span>
 
                         <Badge
                           variant="outline"
                           className="border-emerald-400/20 bg-emerald-400/[0.05] text-emerald-400"
                         >
-                          {
-                            opportunity.recommendation
-                          }
+                          {opportunity.sportsIntelligenceScore.recommendation}
                         </Badge>
 
                         <Badge

@@ -15,28 +15,46 @@ RANKED_BET_BOARD = (
     MODEL_ROOT / "outputs" / "ranked_bet_board.csv"
 )
 
+GAME_PROJECTIONS = (
+    MODEL_ROOT / "outputs" / "current_game_projections.csv"
+)
+
 
 def get_event_matchup(event_id: str):
-    df = pd.read_csv(RANKED_BET_BOARD)
+    # Use game_projections.csv (all 272 games) so context works even without a ranked opportunity
+    if GAME_PROJECTIONS.exists():
+        try:
+            df = pd.read_csv(GAME_PROJECTIONS)
+            df["api_event_id"] = df["api_event_id"].astype(str)
+            match = df[df["api_event_id"] == event_id]
+            if not match.empty:
+                row = match.iloc[0]
+                return {
+                    "eventId": event_id,
+                    "gameday": str(row["commence_time"])[:10],
+                    "awayTeam": str(row["away_team"]),
+                    "homeTeam": str(row["home_team"]),
+                }
+        except Exception:
+            pass
 
-    match = df[df["api_event_id"] == event_id]
+    # Fallback: ranked_bet_board (opportunities only)
+    if RANKED_BET_BOARD.exists():
+        df = pd.read_csv(RANKED_BET_BOARD)
+        match = df[df["api_event_id"] == event_id]
+        if not match.empty:
+            row = match.iloc[0]
+            return {
+                "eventId": event_id,
+                "gameday": str(row["commence_time"])[:10],
+                "awayTeam": str(row["away_team"]),
+                "homeTeam": str(row["home_team"]),
+            }
 
-    if match.empty:
-        raise HTTPException(
-            status_code=404,
-            detail="Event not found in ranked bet board",
-        )
-
-    row = match.iloc[0]
-
-    commence_date = str(row["commence_time"])[:10]
-
-    return {
-        "eventId": event_id,
-        "gameday": commence_date,
-        "awayTeam": str(row["away_team"]),
-        "homeTeam": str(row["home_team"]),
-    }
+    raise HTTPException(
+        status_code=404,
+        detail="Game not found",
+    )
 
 
 def safe_float(value):

@@ -15,8 +15,11 @@ type ProfitPoint = {
 type PerformanceSummary = {
   overallROI: number;
   winRate: number;
-  closingLineValue: number;
-  totalTrackedRecommendations?: number;
+  averageCLV: number | null;          // null = no closed games yet
+  positiveCLVPercent: number | null;
+  closingLinesCaptured: number;
+  pendingClosingLines: number;
+  missingClosingLines: number;
   profitByMarket: ProfitPoint[];
   profitBySportsbook: ProfitPoint[];
   profitBySiScore: ProfitPoint[];
@@ -57,9 +60,11 @@ export default function PerformancePage() {
         summary.profitByRecommendation.length ||
         summary.overallROI !== 0 ||
         summary.winRate !== 0 ||
-        summary.closingLineValue !== 0
+        summary.averageCLV !== null
     );
   }, [summary]);
+
+  const totalTracked = (summary?.closingLinesCaptured ?? 0) + (summary?.pendingClosingLines ?? 0);
 
   if (loading) {
     return (
@@ -84,7 +89,7 @@ export default function PerformancePage() {
           </div>
 
           <Badge variant="outline" className={hasHistory ? "border-emerald-400/20 bg-emerald-400/[0.05] text-emerald-400" : "border-white/10 bg-white/[0.04] text-zinc-300"}>
-            {hasHistory ? "Live performance data" : "Not enough history yet"}
+            {hasHistory ? "Live performance data" : totalTracked > 0 ? "Tracking active" : "Not enough history yet"}
           </Badge>
         </div>
 
@@ -107,14 +112,20 @@ export default function PerformancePage() {
 
           <div className="rounded-2xl border border-white/10 bg-[#0B1119] p-6">
             <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-700 inline-flex items-center">Closing line value<Tooltip term="CLV" /></p>
-            <p className="mt-3 text-3xl font-semibold text-white">{summary?.closingLineValue ? `${summary.closingLineValue.toFixed(2)}` : "—"}</p>
+            <p className="mt-3 text-3xl font-semibold text-white">{summary?.averageCLV != null ? `${summary.averageCLV > 0 ? "+" : ""}${summary.averageCLV.toFixed(2)}` : "—"}</p>
           </div>
 
           <div className="rounded-2xl border border-white/10 bg-[#0B1119] p-6">
-            <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-700">Tracked recommendations</p>
-            <p className="mt-3 text-3xl font-semibold text-white">{summary?.totalTrackedRecommendations ?? 0}</p>
+            <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-700">Tracked bets</p>
+            <p className="mt-3 text-3xl font-semibold text-white">{totalTracked}</p>
           </div>
         </section>
+
+        {summary?.pendingClosingLines != null && summary.pendingClosingLines > 0 && (
+          <div className="mt-4 rounded-2xl border border-sky-400/20 bg-sky-400/[0.05] px-5 py-4 text-sm text-sky-300">
+            {summary.pendingClosingLines} {summary.pendingClosingLines === 1 ? "bet is" : "bets are"} currently being tracked. Closing-line and result metrics will update as games are played.
+          </div>
+        )}
 
         {hasHistory ? (
           <section className="mt-8 grid gap-4 lg:grid-cols-2">
