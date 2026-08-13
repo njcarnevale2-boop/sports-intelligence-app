@@ -458,9 +458,11 @@ export default function OpportunityAnalysisPage() {
         }
       } catch (err) {
         console.error(err);
-
+        const msg = err instanceof Error ? err.message : "";
         setError(
-          "Unable to load this opportunity."
+          msg.includes("404")
+            ? "Opportunity not found."
+            : "Unable to load this opportunity."
         );
       } finally {
         setLoading(false);

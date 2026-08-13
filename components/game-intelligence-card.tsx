@@ -168,9 +168,5 @@ export default function GameIntelligenceCard({
     </article>
   );
 
-  if (clickable && href) {
-    return <Link href={href} className="block">{card}</Link>;
-  }
-
   return card;
 }

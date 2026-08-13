@@ -32,7 +32,7 @@ export { GLOSSARY };
 
 export default function Tooltip({ term }: { term: string }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  const ref = useRef<HTMLSpanElement>(null);
 
   const definition = GLOSSARY[term];
   if (!definition) return null;
@@ -50,7 +50,7 @@ export default function Tooltip({ term }: { term: string }) {
   }, [open]);
 
   return (
-    <div ref={ref} className="relative inline-flex items-center">
+    <span ref={ref} className="relative inline-flex items-center">
       <button
         type="button"
         aria-label={`What is ${term}?`}
@@ -61,16 +61,16 @@ export default function Tooltip({ term }: { term: string }) {
       </button>
 
       {open && (
-        <div
+        <span
           role="tooltip"
-          className="absolute bottom-full left-1/2 z-50 mb-2 w-64 -translate-x-1/2 rounded-2xl border border-white/10 bg-[#0D141D] p-4 text-xs leading-5 text-zinc-300 shadow-2xl shadow-black/40"
+          className="absolute block bottom-full left-1/2 z-50 mb-2 w-64 -translate-x-1/2 rounded-2xl border border-white/10 bg-[#0D141D] p-4 text-xs leading-5 text-zinc-300 shadow-2xl shadow-black/40"
         >
-          <p className="font-semibold text-white">{term}</p>
-          <p className="mt-1 text-zinc-400">{definition}</p>
+          <span className="block font-semibold text-white">{term}</span>
+          <span className="mt-1 block text-zinc-400">{definition}</span>
           {/* Caret */}
-          <div className="absolute left-1/2 top-full -mt-px h-0 w-0 -translate-x-1/2 border-x-4 border-t-4 border-x-transparent border-t-[#0D141D]" />
-        </div>
+          <span className="absolute block left-1/2 top-full -mt-px h-0 w-0 -translate-x-1/2 border-x-4 border-t-4 border-x-transparent border-t-[#0D141D]" />
+        </span>
       )}
-    </div>
+    </span>
   );
 }
