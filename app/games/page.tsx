@@ -3,11 +3,14 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 
-import { Badge } from "@/components/ui/badge";
 import TeamLogo from "@/components/team-logo";
 import { fetchJson } from "../lib/api";
 
 const GAMES_REQUEST_TIMEOUT_MS = 30000;
+
+// ---------------------------------------------------------------------------
+// Types — shape matches /api/games response, no backend changes needed
+// ---------------------------------------------------------------------------
 
 type GameCard = {
   eventId: string;
@@ -24,315 +27,383 @@ type GameCard = {
   status: string;
   spread?: number | null;
   total?: number | null;
-  moneyline?: { home?: number; away?: number } | null;
   bestOpportunity?: string | null;
   sportsIntelligenceScore?: number | null;
-  marketIntelligence?: { grade?: string; signal?: string; booksTracked?: number } | null;
-  bestAvailableLine?: {
-    awaySpread?: { sportsbook?: string; line?: number | null; price?: number | null } | null;
-    homeSpread?: { sportsbook?: string; line?: number | null; price?: number | null } | null;
-    over?: { sportsbook?: string; line?: number | null; price?: number | null } | null;
-    under?: { sportsbook?: string; line?: number | null; price?: number | null } | null;
-  } | null;
-  bestSportsbook?: {
-    awaySpread?: string | null;
-    homeSpread?: string | null;
-    over?: string | null;
-    under?: string | null;
-  } | null;
-  booksTracked?: number;
-  marketLastUpdated?: string | null;
-  marketProvider?: string;
   marketDataStatus?: string;
-  injuryContext?: unknown | null;
-  weatherContext?: unknown | null;
 };
 
 type GamesResponse = {
   count: number;
-  week?: number;
-  date?: string;
-  source?: string;
   availableWeeks: number[];
   availableDates: string[];
-  dataStatus?: {
-    schedule?: string;
-    opportunities?: string;
-    marketIntelligence?: string;
-    injury?: string;
-    weather?: string;
-  };
+  dataStatus?: { marketIntelligence?: string };
   games: GameCard[];
 };
 
-function scoreTone(score?: number | null) {
-  if (score == null) return "text-zinc-400";
-  if (score >= 85) return "text-emerald-400";
-  if (score >= 75) return "text-sky-400";
-  return "text-amber-400";
-}
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-function recommendationBadge(grade?: string | null) {
-  if (grade === "Elite Opportunity") return "border-emerald-400/20 bg-emerald-400/[0.06] text-emerald-300";
-  if (grade === "Lean") return "border-sky-400/20 bg-sky-400/[0.06] text-sky-300";
-  return "border-amber-400/20 bg-amber-400/[0.06] text-amber-300";
-}
-
-function formatKickoff(commenceTime: string) {
-  const kickoff = new Date(commenceTime);
-  if (Number.isNaN(kickoff.getTime())) return "Unavailable";
-  return kickoff.toLocaleString("en-US", {
+function formatKickoff(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "TBD";
+  return d.toLocaleString("en-US", {
     weekday: "short",
     month: "short",
-    day: "2-digit",
+    day: "numeric",
     hour: "numeric",
     minute: "2-digit",
     timeZoneName: "short",
   });
 }
 
-function formatDateHeading(gameDate: string) {
-  const date = new Date(`${gameDate}T00:00:00Z`);
-  if (Number.isNaN(date.getTime())) return gameDate;
-  return date.toLocaleDateString("en-US", {
+function formatDateHeading(dateStr: string) {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return dateStr;
+  return d.toLocaleDateString("en-US", {
     weekday: "long",
     month: "long",
     day: "numeric",
-    year: "numeric",
     timeZone: "UTC",
-  });
+  }).toUpperCase();
 }
+
+function formatDateTab(dateStr: string) {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return dateStr;
+  return d.toLocaleDateString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  }).toUpperCase();
+}
+
+function scoreTone(score?: number | null) {
+  if (score == null) return "text-zinc-500";
+  if (score >= 85) return "text-emerald-400";
+  if (score >= 75) return "text-sky-400";
+  return "text-amber-400";
+}
+
+function signedSpread(spread: number) {
+  return spread > 0 ? `+${spread}` : `${spread}`;
+}
+
+// ---------------------------------------------------------------------------
+// Page
+// ---------------------------------------------------------------------------
 
 export default function GamesPage() {
   const [games, setGames] = useState<GameCard[]>([]);
   const [availableWeeks, setAvailableWeeks] = useState<number[]>([]);
   const [availableDates, setAvailableDates] = useState<string[]>([]);
-  const [dataStatus, setDataStatus] = useState<GamesResponse["dataStatus"] | null>(null);
+  const [marketStatus, setMarketStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [week, setWeek] = useState<number | null>(null);
   const [selectedDate, setSelectedDate] = useState<string>("All");
 
   useEffect(() => {
-    async function loadGames() {
+    async function load() {
       try {
         setLoading(true);
         setError("");
-        const query = new URLSearchParams();
-        if (week !== null) query.set("week", String(week));
-        if (selectedDate !== "All") query.set("date", selectedDate);
+
+        const q = new URLSearchParams();
+        if (week !== null) q.set("week", String(week));
+        if (selectedDate !== "All") q.set("date", selectedDate);
 
         const data = await fetchJson<GamesResponse>(
-          `/api/games?${query.toString()}`,
+          `/api/games?${q.toString()}`,
           undefined,
           GAMES_REQUEST_TIMEOUT_MS
         );
+
         setGames(data.games ?? []);
-        // Always use the longest list so a filtered response never shrinks the selector
         setAvailableWeeks((prev) => {
           const next = data.availableWeeks ?? [];
           return next.length >= prev.length ? next : prev;
         });
         setAvailableDates(data.availableDates ?? []);
-        setDataStatus(data.dataStatus ?? null);
+        setMarketStatus(data.dataStatus?.marketIntelligence ?? null);
 
         if (week === null && data.availableWeeks?.length) {
           setWeek(data.availableWeeks[0]);
         }
-
         if (selectedDate !== "All" && data.availableDates && !data.availableDates.includes(selectedDate)) {
           setSelectedDate("All");
         }
       } catch (err) {
-        console.error(err);
-        if (err instanceof Error && err.message === "Request timed out") {
-          setError("Game data is taking longer than expected. Please try again.");
-        } else {
-          setError("Unable to load the full NFL slate right now.");
-        }
+        const msg = err instanceof Error ? err.message : "";
+        setError(
+          msg === "Request timed out"
+            ? "Game data is taking longer than expected — try again."
+            : "Unable to load the NFL slate right now."
+        );
       } finally {
         setLoading(false);
       }
     }
 
-    loadGames();
-  }, [selectedDate, week]);
+    void load();
+  }, [week, selectedDate]);
 
-  const summaryLabel = useMemo(() => {
-    if (games.length === 0) return "No games available";
-    return `${games.length} games in slate`;
-  }, [games.length]);
+  function changeWeek(w: number) {
+    setSelectedDate("All");
+    setWeek(w);
+  }
+
+  const prevWeek =
+    week !== null && availableWeeks.length > 0
+      ? (availableWeeks[availableWeeks.indexOf(week) - 1] ?? null)
+      : null;
+  const nextWeek =
+    week !== null && availableWeeks.length > 0
+      ? (availableWeeks[availableWeeks.indexOf(week) + 1] ?? null)
+      : null;
+
+  const qualifiedCount = useMemo(
+    () => games.filter((g) => g.bestOpportunity).length,
+    [games]
+  );
 
   const groupedGames = useMemo(() => {
-    const grouped = new Map<string, GameCard[]>();
+    const map = new Map<string, GameCard[]>();
     for (const game of games) {
-      const key = game.gameDate;
-      const existing = grouped.get(key) ?? [];
-      existing.push(game);
-      grouped.set(key, existing);
+      map.set(game.gameDate, [...(map.get(game.gameDate) ?? []), game]);
     }
-    return Array.from(grouped.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+    return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
   }, [games]);
-
-  const statusLabel = useMemo(() => {
-    if (!dataStatus) return "UNAVAILABLE";
-    return [
-      `Schedule ${dataStatus.schedule ?? "UNAVAILABLE"}`,
-      `Market ${dataStatus.marketIntelligence ?? "UNAVAILABLE"}`,
-      `Injury ${dataStatus.injury ?? "UNAVAILABLE"}`,
-      `Weather ${dataStatus.weather ?? "UNAVAILABLE"}`,
-    ].join(" • ");
-  }, [dataStatus]);
 
   return (
     <main className="min-h-screen bg-[#05070B] text-white">
-      <div className="mx-auto flex max-w-7xl flex-col gap-8 px-6 py-8 lg:px-10">
-        <header className="rounded-[32px] border border-white/10 bg-gradient-to-br from-white/[0.08] via-white/[0.04] to-transparent p-8 shadow-2xl shadow-black/30">
-          <div className="flex flex-wrap items-end justify-between gap-4">
-            <div>
-              <p className="text-[11px] uppercase tracking-[0.32em] text-zinc-500">Game Intelligence Hub</p>
-              <h1 className="mt-3 text-4xl font-semibold tracking-tight">NFL Game Intelligence</h1>
-              <p className="mt-3 max-w-3xl text-sm leading-7 text-zinc-400">
-                Complete NFL schedule coverage by week and date, with optional intelligence overlays when available.
-              </p>
-            </div>
-            <Badge variant="outline" className="border-white/10 bg-black/20 text-zinc-200">
-              {summaryLabel}
-            </Badge>
+      <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6 lg:px-8">
+
+        {/* HEADER */}
+        <header className="mb-8">
+          <p className="text-[11px] uppercase tracking-[0.28em] text-zinc-600">Sports Intelligence</p>
+          <h1 className="mt-2 text-3xl font-semibold tracking-tight sm:text-4xl">NFL Games</h1>
+          <p className="mt-2 text-sm text-zinc-500">
+            Complete NFL slate with Sports Intelligence layered on top.
+          </p>
+          <div className="mt-4 flex flex-wrap items-center gap-3 text-xs">
+            {week !== null && (
+              <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-zinc-400">
+                Week {week}
+              </span>
+            )}
+            {!loading && (
+              <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-zinc-400">
+                {games.length} {games.length === 1 ? "game" : "games"}
+              </span>
+            )}
+            {!loading && qualifiedCount > 0 && (
+              <span className="rounded-full border border-emerald-400/20 bg-emerald-400/[0.06] px-3 py-1 text-emerald-400">
+                {qualifiedCount} qualified {qualifiedCount === 1 ? "opportunity" : "opportunities"}
+              </span>
+            )}
+            {marketStatus && marketStatus !== "UNAVAILABLE" && (
+              <span className="text-zinc-700">Market {marketStatus}</span>
+            )}
           </div>
-
-          <div className="mt-8 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex flex-wrap gap-2">
-              {availableWeeks.map((weekOption) => (
-                <button
-                  key={weekOption}
-                  onClick={() => setWeek(weekOption)}
-                  className={`rounded-full border px-4 py-2 text-sm transition ${week === weekOption ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300" : "border-white/10 bg-white/[0.04] text-zinc-300 hover:bg-white/[0.08]"}`}
-                >
-                  Week {weekOption}
-                </button>
-              ))}
-            </div>
-
-            <div className="flex flex-wrap gap-2">
-              <button
-                onClick={() => setSelectedDate("All")}
-                className={`rounded-full border px-3 py-2 text-sm transition ${selectedDate === "All" ? "border-white/20 bg-white/[0.1] text-white" : "border-white/10 bg-transparent text-zinc-400 hover:text-white"}`}
-              >
-                All Dates
-              </button>
-              {availableDates.map((dateOption) => (
-                <button
-                  key={dateOption}
-                  onClick={() => setSelectedDate(dateOption)}
-                  className={`rounded-full border px-3 py-2 text-sm transition ${selectedDate === dateOption ? "border-white/20 bg-white/[0.1] text-white" : "border-white/10 bg-transparent text-zinc-400 hover:text-white"}`}
-                >
-                  {dateOption}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <p className="mt-6 text-xs uppercase tracking-[0.18em] text-zinc-500">{statusLabel}</p>
         </header>
 
-        {error ? (
-          <div className="rounded-[24px] border border-white/10 bg-[#0B1119] p-6 text-sm text-zinc-400">{error}</div>
-        ) : null}
+        {/* WEEK NAVIGATION */}
+        <div className="mb-5 flex items-center gap-2">
+          <button
+            onClick={() => prevWeek !== null && changeWeek(prevWeek)}
+            disabled={prevWeek === null}
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] text-base text-zinc-400 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-30"
+            aria-label="Previous week"
+          >
+            ‹
+          </button>
 
-        {loading ? (
-          <div className="rounded-[24px] border border-white/10 bg-[#0B1119] p-10 text-center text-sm text-zinc-400">
-            Loading complete NFL slate...
-          </div>
-        ) : (
-          <div className="space-y-8">
-            {groupedGames.map(([date, items]) => (
-              <section key={date}>
-                <h2 className="mb-4 text-lg font-semibold text-zinc-200">{formatDateHeading(date)}</h2>
-                <div className="grid gap-4 xl:grid-cols-2">
-                  {items.map((game) => (
-                    <article key={game.eventId} className="rounded-[28px] border border-white/10 bg-[#0B1119] p-6 shadow-2xl shadow-black/20">
-                      <div className="flex items-start justify-between gap-4">
-                        <div>
-                          <p className="text-[10px] uppercase tracking-[0.26em] text-zinc-600">{game.gameDate}</p>
-                          <p className="mt-2 text-sm text-zinc-400">{formatKickoff(game.commenceTime)}</p>
-                        </div>
-                        <Badge variant="outline" className={recommendationBadge(game.bestOpportunity || undefined)}>
-                          {game.status}
-                        </Badge>
-                      </div>
+          <select
+            value={week ?? ""}
+            onChange={(e) => changeWeek(Number(e.target.value))}
+            className="h-9 flex-1 rounded-lg border border-white/10 bg-[#0D131C] px-3 text-sm font-medium text-white outline-none sm:flex-none sm:w-36"
+          >
+            {availableWeeks.map((w) => (
+              <option key={w} value={w}>Week {w}</option>
+            ))}
+          </select>
 
-                      <div className="mt-6 flex items-center justify-between gap-4">
-                        <div className="flex flex-1 items-center gap-3">
-                          <TeamLogo src={game.awayLogo} alt={game.awayTeam} size={56} />
-                          <div>
-                            <p className="text-[10px] uppercase tracking-[0.24em] text-zinc-500">Away</p>
-                            <p className="text-lg font-semibold">{game.awayTeam}</p>
-                          </div>
-                        </div>
+          <button
+            onClick={() => nextWeek !== null && changeWeek(nextWeek)}
+            disabled={nextWeek === null}
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] text-base text-zinc-400 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-30"
+            aria-label="Next week"
+          >
+            ›
+          </button>
+        </div>
 
-                        <div className="px-3 text-center text-sm font-medium text-zinc-500">@</div>
-
-                        <div className="flex flex-1 items-center justify-end gap-3">
-                          <div className="text-right">
-                            <p className="text-[10px] uppercase tracking-[0.24em] text-zinc-500">Home</p>
-                            <p className="text-lg font-semibold">{game.homeTeam}</p>
-                          </div>
-                          <TeamLogo src={game.homeLogo} alt={game.homeTeam} size={56} />
-                        </div>
-                      </div>
-
-                      <div className="mt-6 grid gap-3 md:grid-cols-3">
-                        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                          <p className="text-[10px] uppercase tracking-[0.24em] text-zinc-600">Spread / Total</p>
-                          <p className="mt-2 text-xl font-semibold text-white">
-                            {game.spread == null ? "Unavailable" : game.spread > 0 ? `+${game.spread}` : game.spread} / {game.total ?? "Unavailable"}
-                          </p>
-                        </div>
-                        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                          <p className="text-[10px] uppercase tracking-[0.24em] text-zinc-600">Moneyline</p>
-                          <p className="mt-2 text-xl font-semibold text-white">
-                            {game.moneyline ? `H ${game.moneyline.home ?? "N/A"} • A ${game.moneyline.away ?? "N/A"}` : "Unavailable"}
-                          </p>
-                        </div>
-                        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                          <p className="text-[10px] uppercase tracking-[0.24em] text-zinc-600">SI Score</p>
-                          <p className={`mt-2 text-xl font-semibold ${scoreTone(game.sportsIntelligenceScore)}`}>
-                            {game.sportsIntelligenceScore ?? "Unavailable"}
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="mt-6 rounded-[24px] border border-white/10 bg-black/20 p-5">
-                        <div className="space-y-2 text-sm leading-7 text-zinc-400">
-                          <p><span className="font-medium text-zinc-200">Best opportunity:</span> {game.bestOpportunity ?? "Unavailable"}</p>
-                          <p><span className="font-medium text-zinc-200">Market signal:</span> {game.marketIntelligence?.signal ?? "Unavailable"}</p>
-                          <p><span className="font-medium text-zinc-200">Best sportsbook:</span> {game.bestSportsbook?.homeSpread ?? game.bestSportsbook?.awaySpread ?? "Unavailable"}</p>
-                          <p><span className="font-medium text-zinc-200">Best spread line:</span> {game.bestAvailableLine?.homeSpread ? `${game.bestAvailableLine.homeSpread.line ?? "N/A"} (${game.bestAvailableLine.homeSpread.price ?? "N/A"})` : "Unavailable"}</p>
-                          <p><span className="font-medium text-zinc-200">Books tracked:</span> {game.booksTracked ?? 0}</p>
-                          <p><span className="font-medium text-zinc-200">Market last updated:</span> {game.marketLastUpdated ? new Date(game.marketLastUpdated).toLocaleString() : "Unavailable"}</p>
-                          <p><span className="font-medium text-zinc-200">Market source:</span> {game.marketProvider ?? "Unavailable"} ({game.marketDataStatus ?? "UNAVAILABLE"})</p>
-                          <p><span className="font-medium text-zinc-200">Injury context:</span> Unavailable</p>
-                          <p><span className="font-medium text-zinc-200">Weather context:</span> Unavailable</p>
-                        </div>
-                      </div>
-
-                      <div className="mt-6 flex flex-wrap gap-3">
-                        <Link href={`/games/${game.eventId}`} className="rounded-full border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white">
-                          View Intelligence
-                        </Link>
-                        <Link href="/line-movement" className="rounded-full border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:text-white">
-                          View Line Movement
-                        </Link>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              </section>
+        {/* DATE FILTER */}
+        {availableDates.length > 1 && (
+          <div className="mb-8 flex gap-2 overflow-x-auto pb-1">
+            <button
+              onClick={() => setSelectedDate("All")}
+              className={`shrink-0 rounded-full border px-4 py-1.5 text-xs font-medium transition ${
+                selectedDate === "All"
+                  ? "border-white/20 bg-white/[0.1] text-white"
+                  : "border-white/10 bg-transparent text-zinc-500 hover:text-white"
+              }`}
+            >
+              ALL
+            </button>
+            {availableDates.map((d) => (
+              <button
+                key={d}
+                onClick={() => setSelectedDate(d)}
+                className={`shrink-0 rounded-full border px-4 py-1.5 text-xs font-medium transition ${
+                  selectedDate === d
+                    ? "border-white/20 bg-white/[0.1] text-white"
+                    : "border-white/10 bg-transparent text-zinc-500 hover:text-white"
+                }`}
+              >
+                {formatDateTab(d)}
+              </button>
             ))}
           </div>
         )}
+
+        {/* LOADING / ERROR */}
+        {error && (
+          <p className="mb-6 rounded-xl border border-white/10 bg-[#0B1119] px-5 py-4 text-sm text-zinc-400">
+            {error}
+          </p>
+        )}
+
+        {loading && (
+          <div className="py-16 text-center text-sm text-zinc-600">
+            Loading Week {week ?? "…"}…
+          </div>
+        )}
+
+        {/* GAME LIST */}
+        {!loading && !error && (
+          <div className="space-y-10">
+            {groupedGames.length === 0 ? (
+              <p className="py-12 text-center text-sm text-zinc-600">
+                No games found for this selection.
+              </p>
+            ) : (
+              groupedGames.map(([date, dayGames]) => (
+                <section key={date}>
+                  <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-[0.22em] text-zinc-600">
+                    {formatDateHeading(date)}
+                  </h2>
+                  <div className="space-y-2">
+                    {dayGames.map((game) => (
+                      <GameRow key={game.eventId} game={game} />
+                    ))}
+                  </div>
+                </section>
+              ))
+            )}
+          </div>
+        )}
+
       </div>
     </main>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Game row — scannable, week-first, minimal
+// ---------------------------------------------------------------------------
+
+function GameRow({ game }: { game: GameCard }) {
+  const hasOpp = Boolean(game.bestOpportunity);
+
+  return (
+    <article className="group rounded-xl border border-white/[0.07] bg-[#0B1119] px-5 py-4 transition hover:border-white/[0.14] hover:bg-white/[0.02]">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+
+        {/* Teams + kickoff */}
+        <div className="flex flex-1 flex-col gap-3 sm:flex-row sm:items-center sm:gap-6">
+          {/* Teams */}
+          <div className="flex items-center gap-5 flex-1">
+            <div className="flex items-center gap-2 min-w-0">
+              <TeamLogo src={game.awayLogo} alt={game.awayTeam} size={36} />
+              <span className="text-sm font-semibold leading-tight truncate">{game.awayTeam}</span>
+            </div>
+            <span className="shrink-0 text-xs text-zinc-600">@</span>
+            <div className="flex items-center gap-2 min-w-0">
+              <TeamLogo src={game.homeLogo} alt={game.homeTeam} size={36} />
+              <span className="text-sm font-semibold leading-tight truncate">{game.homeTeam}</span>
+            </div>
+          </div>
+
+          {/* Kickoff */}
+          <p className="text-xs text-zinc-600 shrink-0">{formatKickoff(game.commenceTime)}</p>
+        </div>
+
+        {/* Right: lines + SI + action */}
+        <div className="flex items-center justify-between gap-4 sm:justify-end sm:gap-6">
+          {/* Spread / Total */}
+          <div className="flex items-center gap-4 text-sm">
+            {game.spread != null ? (
+              <span>
+                <span className="text-[10px] text-zinc-600 mr-1">Sprd</span>
+                <span className="text-zinc-200">{signedSpread(game.spread)}</span>
+              </span>
+            ) : null}
+            {game.total != null ? (
+              <span>
+                <span className="text-[10px] text-zinc-600 mr-1">O/U</span>
+                <span className="text-zinc-200">{game.total}</span>
+              </span>
+            ) : null}
+            {game.spread == null && game.total == null && (
+              <span className="text-xs text-zinc-700">No lines</span>
+            )}
+          </div>
+
+          {/* SI score + opportunity text */}
+          <div className="hidden sm:flex flex-col items-end min-w-[140px]">
+            {hasOpp ? (
+              <>
+                {game.sportsIntelligenceScore != null && (
+                  <span className={`text-xs font-semibold ${scoreTone(game.sportsIntelligenceScore)}`}>
+                    SI {game.sportsIntelligenceScore.toFixed(1)}
+                  </span>
+                )}
+                <span className="mt-0.5 text-[11px] text-zinc-400 text-right leading-snug max-w-[150px]">
+                  {game.bestOpportunity}
+                </span>
+              </>
+            ) : (
+              <span className="text-[11px] text-zinc-700">No opportunity</span>
+            )}
+          </div>
+
+          {/* Action */}
+          <Link
+            href={`/games/${game.eventId}`}
+            className="shrink-0 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-medium text-zinc-400 transition hover:border-white/20 hover:bg-white/[0.08] hover:text-white"
+          >
+            View →
+          </Link>
+        </div>
+      </div>
+
+      {/* Mobile: SI + opportunity below teams */}
+      {hasOpp && (
+        <div className="mt-2 flex items-center gap-2 sm:hidden">
+          {game.sportsIntelligenceScore != null && (
+            <span className={`text-xs font-semibold ${scoreTone(game.sportsIntelligenceScore)}`}>
+              SI {game.sportsIntelligenceScore.toFixed(1)}
+            </span>
+          )}
+          <span className="text-[11px] text-zinc-500 leading-snug">
+            {game.bestOpportunity}
+          </span>
+        </div>
+      )}
+    </article>
+  );
+}
+
