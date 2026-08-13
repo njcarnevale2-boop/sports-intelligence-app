@@ -16,7 +16,7 @@ export type SavedBet = {
   evPerDollar?: number;
   kelly20?: number;
   recommendation?: string;
-  sportsIntelligenceScore?: { score?: number };
+  sportsIntelligenceScore?: { score?: number; recommendation?: string; grade?: string };
   marketIntelligence?: { score?: number };
   injuryContext?: { summary?: string; awayInjuryScore?: number; homeInjuryScore?: number };
   alternateBooks?: Array<{ book: string; point: number; price: number; edge: number; evPerDollar: number }>;
@@ -71,7 +71,7 @@ export function normalizeSavedBet(bet: Record<string, unknown> & Partial<SavedBe
     evPerDollar: typeof bet.evPerDollar === 'number' ? bet.evPerDollar : undefined,
     kelly20: typeof bet.kelly20 === 'number' ? bet.kelly20 : undefined,
     recommendation: typeof bet.recommendation === 'string' ? bet.recommendation : undefined,
-    sportsIntelligenceScore: typeof bet.sportsIntelligenceScore === 'object' && bet.sportsIntelligenceScore ? bet.sportsIntelligenceScore as { score?: number } : undefined,
+    sportsIntelligenceScore: typeof bet.sportsIntelligenceScore === 'object' && bet.sportsIntelligenceScore ? bet.sportsIntelligenceScore as { score?: number; recommendation?: string; grade?: string } : undefined,
     marketIntelligence: typeof bet.marketIntelligence === 'object' && bet.marketIntelligence ? bet.marketIntelligence as { score?: number } : undefined,
     injuryContext: typeof bet.injuryContext === 'object' && bet.injuryContext ? bet.injuryContext as { summary?: string; awayInjuryScore?: number; homeInjuryScore?: number } : undefined,
     alternateBooks: Array.isArray(bet.alternateBooks) ? bet.alternateBooks as Array<{ book: string; point: number; price: number; edge: number; evPerDollar: number }> : undefined,

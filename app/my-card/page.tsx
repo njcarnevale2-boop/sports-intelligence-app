@@ -69,8 +69,13 @@ export default function MyCardPage() {
     if (!saved) return;
 
     try {
-      const parsed = JSON.parse(saved) as SavedBet[];
-      const normalized = parsed.map(normalizeSavedBet);
+      const parsed = JSON.parse(saved) as Array<Record<string, unknown>>;
+      // Drop legacy bets (no eventId AND no awayTeam/homeTeam) written by old hardcoded stub
+      const valid = parsed.filter((raw) => raw.eventId || (raw.awayTeam && raw.homeTeam));
+      if (valid.length < parsed.length) {
+        try { localStorage.setItem(CARD_KEY, JSON.stringify(valid)); } catch { /* storage unavailable */ }
+      }
+      const normalized = valid.map(normalizeSavedBet);
       setBets(normalized);
       // Functional updater: only applies CLV to bets still on the card
       void enrichWithClv(normalized).then((enriched) =>

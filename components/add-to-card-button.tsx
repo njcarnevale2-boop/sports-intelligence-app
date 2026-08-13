@@ -3,24 +3,21 @@
 import { useState } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
+import { addToCard, type SavedCardItem } from "@/lib/add-to-card";
 
-const bet = {
-  matchup: "Bills @ Ravens",
-  pick: "Buffalo +3",
-  book: "FanDuel",
-  confidence: 91,
-  edge: "+6.8%",
+type Props = {
+  opportunity: SavedCardItem;
 };
 
-export default function AddToCardButton() {
+export default function AddToCardButton({ opportunity }: Props) {
   const [added, setAdded] = useState(false);
+  const [loading, setLoading] = useState(false);
 
-  function addToCard() {
-    localStorage.setItem(
-      "sports-intelligence-card",
-      JSON.stringify([bet])
-    );
-
+  async function handleAdd() {
+    if (added || loading) return;
+    setLoading(true);
+    await addToCard(opportunity);
+    setLoading(false);
     setAdded(true);
   }
 
@@ -39,11 +36,12 @@ export default function AddToCardButton() {
 
   return (
     <Button
-      onClick={addToCard}
+      onClick={() => void handleAdd()}
+      disabled={loading}
       variant="outline"
       className="h-11 border-white/10 bg-transparent px-5 text-white hover:bg-white/[0.05]"
     >
-      Add to My Card
+      {loading ? "Adding…" : "Add to My Card"}
     </Button>
   );
 }
