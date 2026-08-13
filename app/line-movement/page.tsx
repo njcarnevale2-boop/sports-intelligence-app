@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { fetchJson } from "../lib/api";
+import Tooltip from "@/components/ui/tooltip";
 
 type LineMovement = {
   id: string;
@@ -381,8 +382,9 @@ export default function LineMovementPage() {
           </div>
 
           <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-6">
-            <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
+            <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700 inline-flex items-center">
               Steam Moves
+              <Tooltip term="Steam" />
             </p>
 
             <p className="mt-3 text-3xl font-semibold text-emerald-400">
