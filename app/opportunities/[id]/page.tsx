@@ -11,6 +11,8 @@ import SportsIntelligenceScoreCard from "@/components/sports-intelligence-score-
 import { fetchJson } from "../../lib/api";
 import { trackAnalyticsEvent } from "../../lib/analytics";
 import { addToCard as addToCardWithSnapshot } from "@/lib/add-to-card";
+import FreshnessBadge from "@/components/ui/freshness-badge";
+import Tooltip from "@/components/ui/tooltip";
 
 type AlternateBook = {
   book: string;
@@ -98,6 +100,12 @@ type Opportunity = {
   sportsIntelligenceScore: SportsIntelligenceScore;
 
   alternateBooks?: AlternateBook[];
+
+  injuryContext?: {
+    awayInjuryScore?: number;
+    homeInjuryScore?: number;
+    providerMetadata?: { dataStatus?: string; isLive?: boolean; lastUpdated?: string | null };
+  } | null;
 };
 
 type DecisionTimeline = {
@@ -321,6 +329,7 @@ export default function OpportunityAnalysisPage() {
 
   const [added, setAdded] = useState(false);
   const [snapshotError, setSnapshotError] = useState("");
+  const [weatherStatus, setWeatherStatus] = useState<{ dataStatus?: string; lastUpdated?: string | null } | null>(null);
 
   useEffect(() => {
     async function loadData() {
@@ -406,15 +415,21 @@ export default function OpportunityAnalysisPage() {
           setDecisionTimeline(null);
         }
 
+        // Fetch weather status alongside projection/context
         const [
           projectionResult,
           contextResult,
+          weatherResult,
         ] =
           await Promise.allSettled([
             fetchJson<GameProjection>(`/api/games/${opportunityData.eventId}`),
-
             fetchJson<ScheduleContext>(`/api/games/${opportunityData.eventId}/context`),
+            fetchJson<{ dataStatus?: string; lastUpdated?: string | null }>(`/api/games/${opportunityData.eventId}/weather`),
           ]);
+
+        if (weatherResult.status === "fulfilled") {
+          setWeatherStatus({ dataStatus: weatherResult.value.dataStatus, lastUpdated: weatherResult.value.lastUpdated });
+        }
 
         if (
           projectionResult.status ===
@@ -618,8 +633,9 @@ export default function OpportunityAnalysisPage() {
               </div>
 
               <div>
-                <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
+                <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700 inline-flex items-center">
                   Confidence
+                  <Tooltip term="Confidence" />
                 </p>
 
                 <p className="mt-1 text-3xl font-semibold">
@@ -630,8 +646,9 @@ export default function OpportunityAnalysisPage() {
               </div>
 
               <div>
-                <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
+                <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700 inline-flex items-center">
                   Model Edge
+                  <Tooltip term="Model Edge" />
                 </p>
 
                 <p className="mt-1 text-3xl font-semibold text-emerald-400">
@@ -644,8 +661,9 @@ export default function OpportunityAnalysisPage() {
               </div>
 
               <div>
-                <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
+                <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700 inline-flex items-center">
                   EV / $1
+                  <Tooltip term="EV" />
                 </p>
 
                 <p className="mt-1 text-3xl font-semibold">
@@ -711,12 +729,27 @@ export default function OpportunityAnalysisPage() {
                   <p className="mt-3 text-sm leading-7 text-zinc-400">{explainability.marketExplanation}</p>
                 </div>
                 <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
-                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">Injury</p>
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">Injury</p>
+                    {opportunity.injuryContext?.providerMetadata?.dataStatus && (
+                      <FreshnessBadge status={opportunity.injuryContext.providerMetadata.dataStatus} lastUpdated={opportunity.injuryContext.providerMetadata.lastUpdated} />
+                    )}
+                  </div>
                   <p className="mt-3 text-sm leading-7 text-zinc-400">{explainability.injuryExplanation}</p>
                 </div>
                 <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
-                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">Weather</p>
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">Weather</p>
+                    {weatherStatus?.dataStatus ? (
+                      <FreshnessBadge status={weatherStatus.dataStatus} lastUpdated={weatherStatus.lastUpdated} />
+                    ) : (
+                      <span className="text-[10px] text-zinc-600">Forecast not yet available</span>
+                    )}
+                  </div>
                   <p className="mt-3 text-sm leading-7 text-zinc-400">{explainability.weatherExplanation}</p>
+                  {weatherStatus?.dataStatus === "UNAVAILABLE" && (
+                    <p className="mt-2 text-[11px] text-zinc-600">Game-time forecast not available yet — game may be outside the 16-day forecast window.</p>
+                  )}
                 </div>
               </div>
 

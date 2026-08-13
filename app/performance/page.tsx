@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 
 import { Badge } from "@/components/ui/badge";
 import { fetchJson } from "../lib/api";
@@ -165,8 +166,21 @@ export default function PerformancePage() {
             </div>
           </section>
         ) : (
-          <section className="mt-8 rounded-3xl border border-dashed border-white/10 bg-[#0B1119] p-8 text-sm leading-7 text-zinc-500">
-            Not enough historical performance has been tracked yet. Once recommendations are recorded, this view will populate with live ROI, win rate, CLV, and profit breakdowns.
+          <section className="mt-8 rounded-3xl border border-dashed border-white/10 bg-[#0B1119] p-8">
+            <h3 className="text-lg font-semibold text-white">Your performance history will appear here as tracked bets settle.</h3>
+            <p className="mt-3 text-sm leading-7 text-zinc-500">
+              SIA tracks your results automatically once you add bets to My Card. After games settle you'll see:
+            </p>
+            <ul className="mt-3 space-y-1.5 text-sm text-zinc-500">
+              <li className="flex items-start gap-2"><span className="mt-1 text-zinc-700">•</span>Overall ROI and win rate</li>
+              <li className="flex items-start gap-2"><span className="mt-1 text-zinc-700">•</span>Closing Line Value — did you beat the market before kickoff?</li>
+              <li className="flex items-start gap-2"><span className="mt-1 text-zinc-700">•</span>Performance broken down by market, sportsbook, and SI Score band</li>
+            </ul>
+            <div className="mt-6">
+              <Link href="/opportunities" className="inline-flex h-10 items-center gap-2 rounded-xl bg-white px-5 text-sm font-medium text-black transition hover:bg-zinc-200">
+                Add a bet to My Card →
+              </Link>
+            </div>
           </section>
         )}
       </div>

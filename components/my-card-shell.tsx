@@ -134,6 +134,11 @@ export default function MyCardShell({ initialBets }: { initialBets: SavedBet[] }
                       Remove
                     </button>
                   </div>
+                  <button
+                    className={`w-full text-left transition ${reviewBet?.id === bet.id ? "ring-1 ring-emerald-400/30 rounded-[28px]" : ""}`}
+                    onClick={() => setReviewBet(bet)}
+                    aria-label={`Select ${bet.matchup ?? "bet"} for review`}
+                  >
                   <GameIntelligenceCard
                     game={{
                       id: bet.id,
@@ -159,6 +164,7 @@ export default function MyCardShell({ initialBets }: { initialBets: SavedBet[] }
                     clickable={false}
                     highlightElite={Boolean(bet.sportsIntelligenceScore?.score && bet.sportsIntelligenceScore.score >= 85)}
                   />
+                  </button>
                   {bet.clv?.closingStatus === "AVAILABLE" && (
                     <div className="flex gap-2 rounded-xl border border-white/[0.06] bg-black/30 px-4 py-3 text-xs">
                       <div className="flex-1">
@@ -196,17 +202,84 @@ export default function MyCardShell({ initialBets }: { initialBets: SavedBet[] }
           <div className="space-y-6">
             <div className="rounded-[28px] border border-white/[0.08] bg-[#0D131C] p-6">
               <p className="text-[11px] uppercase tracking-[0.2em] text-zinc-600">Review Bet</p>
-              <h2 className="mt-2 text-2xl font-semibold">Hand-off prep</h2>
-              <div className="mt-4 rounded-2xl border border-white/[0.08] bg-black/20 p-4">
-                <label className="text-sm text-zinc-500">Choose Sportsbook</label>
-                <select value={selectedSportsbook} onChange={(event) => setSelectedSportsbook(event.target.value)} className="mt-2 w-full rounded-xl border border-white/[0.08] bg-[#05070A] px-3 py-2 text-sm text-white outline-none">
-                  {sportsbookOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                </select>
-                <div className="mt-4 rounded-xl border border-emerald-400/15 bg-emerald-400/[0.05] p-4">
-                  <p className="text-sm text-zinc-300">Prepared for {selectedSportsbook}</p>
-                  <p className="mt-2 text-sm text-zinc-500">No bet is placed. This view prepares a clean hand-off package for later execution.</p>
+              <h2 className="mt-2 text-2xl font-semibold">Bet Slip</h2>
+              {reviewBet ? (
+                <div className="mt-4 space-y-3">
+                  {/* Selection */}
+                  <div className="rounded-2xl border border-white/[0.08] bg-black/20 p-4">
+                    <p className="text-[10px] uppercase tracking-widest text-zinc-600">Selection</p>
+                    <p className="mt-1 text-base font-semibold text-white">{reviewBet.pick}</p>
+                    <p className="text-sm text-zinc-500">{reviewBet.matchup}</p>
+                  </div>
+                  {/* Sportsbook + line */}
+                  <div className="rounded-2xl border border-white/[0.08] bg-black/20 p-4">
+                    <p className="text-[10px] uppercase tracking-widest text-zinc-600">Sportsbook</p>
+                    <select
+                      value={selectedSportsbook}
+                      onChange={(e) => setSelectedSportsbook(e.target.value)}
+                      className="mt-2 w-full rounded-xl border border-white/[0.08] bg-[#05070A] px-3 py-2 text-sm text-white outline-none"
+                    >
+                      {sportsbookOptions.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
+                    </select>
+                  </div>
+                  {/* Odds + sizing */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="rounded-2xl border border-white/[0.08] bg-black/20 p-4">
+                      <p className="text-[10px] uppercase tracking-widest text-zinc-600">Line / Odds</p>
+                      <p className="mt-1 font-semibold text-white">
+                        {reviewBet.point != null ? (reviewBet.point > 0 ? `+${reviewBet.point}` : reviewBet.point) : "—"}{" "}
+                        <span className="text-zinc-400">
+                          {reviewBet.price != null ? (reviewBet.price > 0 ? `+${reviewBet.price}` : reviewBet.price) : "—"}
+                        </span>
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border border-white/[0.08] bg-black/20 p-4">
+                      <p className="text-[10px] uppercase tracking-widest text-zinc-600">Suggested Stake</p>
+                      <p className="mt-1 font-semibold text-white">
+                        {reviewBet.kelly20 != null ? `${(reviewBet.kelly20 * 100).toFixed(1)}% Kelly` : "—"}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border border-white/[0.08] bg-black/20 p-4">
+                      <p className="text-[10px] uppercase tracking-widest text-zinc-600">SI Score</p>
+                      <p className={`mt-1 font-semibold ${(reviewBet.sportsIntelligenceScore?.score ?? 0) >= 85 ? "text-emerald-400" : "text-sky-400"}`}>
+                        {reviewBet.sportsIntelligenceScore?.score ?? "—"}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border border-white/[0.08] bg-black/20 p-4">
+                      <p className="text-[10px] uppercase tracking-widest text-zinc-600">Expected Value</p>
+                      <p className="mt-1 font-semibold text-emerald-400">
+                        {reviewBet.evPerDollar != null ? `+$${reviewBet.evPerDollar.toFixed(3)}/$ ` : "—"}
+                      </p>
+                    </div>
+                  </div>
+                  {/* Best line comparison */}
+                  {(() => {
+                    const best = getBestLineAndPriceOffers(reviewBet).bestLine;
+                    if (!best || best.book === reviewBet.book) return null;
+                    return (
+                      <div className="rounded-2xl border border-sky-400/15 bg-sky-400/[0.04] p-4 text-sm">
+                        <p className="text-sky-400 font-medium">Better line available</p>
+                        <p className="mt-1 text-zinc-400">{best.book} offers {best.point != null ? (best.point > 0 ? `+${best.point}` : best.point) : "—"} at {best.price != null ? (best.price > 0 ? `+${best.price}` : best.price) : "—"}</p>
+                      </div>
+                    );
+                  })()}
+                  {/* Copy action */}
+                  <button
+                    onClick={() => {
+                      const text = `${reviewBet.pick} — ${selectedSportsbook}\nLine: ${reviewBet.point != null ? (reviewBet.point > 0 ? `+${reviewBet.point}` : reviewBet.point) : "—"} at ${reviewBet.price != null ? (reviewBet.price > 0 ? `+${reviewBet.price}` : reviewBet.price) : "—"}\nStake: ${reviewBet.kelly20 != null ? `${(reviewBet.kelly20 * 100).toFixed(1)}% Kelly` : "—"} | EV: ${reviewBet.evPerDollar != null ? `+$${reviewBet.evPerDollar.toFixed(3)}` : "—"}/$ \nSI Score: ${reviewBet.sportsIntelligenceScore?.score ?? "—"}`;
+                      void navigator.clipboard?.writeText(text);
+                    }}
+                    className="w-full rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2.5 text-sm text-zinc-300 transition hover:bg-white/[0.07]"
+                  >
+                    Copy Bet Details
+                  </button>
+                  <p className="text-[10px] text-zinc-700 text-center">No bet is placed. This is a preparation slip only.</p>
                 </div>
-              </div>
+              ) : (
+                <div className="mt-4 rounded-2xl border border-dashed border-white/[0.08] p-6 text-sm text-zinc-500">
+                  Add a bet to your card to see the review slip.
+                </div>
+              )}
             </div>
 
             <div className="rounded-[28px] border border-white/[0.08] bg-[#0D131C] p-6">

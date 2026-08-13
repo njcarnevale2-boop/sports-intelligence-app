@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 
 import { Badge } from "@/components/ui/badge";
+import FreshnessBadge from "@/components/ui/freshness-badge";
+import Tooltip from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import GameIntelligenceCard from "@/components/game-intelligence-card";
 import { fetchJson } from "./lib/api";
@@ -89,6 +91,9 @@ type Opportunity = {
 type ApiResponse = {
   count: number;
   source: string;
+  provider?: string;
+  dataStatus?: string;
+  lastUpdated?: string | null;
   opportunities: Opportunity[];
 };
 
@@ -118,6 +123,7 @@ function scoreTextColor(score: number) {
 export default function Home() {
   const [opportunities, setOpportunities] =
     useState<Opportunity[]>([]);
+  const [freshnessStatus, setFreshnessStatus] = useState<{ dataStatus?: string; lastUpdated?: string | null }>({});
 
   const [loading, setLoading] =
     useState(true);
@@ -140,6 +146,7 @@ export default function Home() {
         setOpportunities(
           data.opportunities
         );
+        setFreshnessStatus({ dataStatus: data.dataStatus, lastUpdated: data.lastUpdated });
       } catch (err) {
         console.error(err);
 
@@ -278,12 +285,13 @@ export default function Home() {
               {opportunities.length} Opportunities
             </Badge>
 
-            <Badge
-              variant="outline"
-              className="border-emerald-400/20 bg-emerald-400/[0.05] text-emerald-400"
-            >
-              Model Live
-            </Badge>
+            {freshnessStatus.dataStatus && (
+              <FreshnessBadge
+                status={freshnessStatus.dataStatus}
+                lastUpdated={freshnessStatus.lastUpdated}
+                label="Model"
+              />
+            )}
           </div>
         </div>
       </header>
@@ -491,8 +499,9 @@ export default function Home() {
                   <div className="mt-6 flex flex-wrap items-center gap-5">
 
                     <div>
-                      <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-700">
+                      <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-700 inline-flex items-center">
                         Sports Intelligence Score
+                        <Tooltip term="SI Score" />
                       </p>
 
                       <div className="mt-2 flex items-baseline gap-2">

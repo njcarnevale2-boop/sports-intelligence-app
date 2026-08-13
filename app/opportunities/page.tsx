@@ -9,6 +9,8 @@ import GameIntelligenceCard from "@/components/game-intelligence-card";
 import { fetchJson } from "../lib/api";
 import { trackAnalyticsEvent } from "../lib/analytics";
 import { addToCard as addToCardWithSnapshot } from "@/lib/add-to-card";
+import FreshnessBadge from "@/components/ui/freshness-badge";
+import Tooltip from "@/components/ui/tooltip";
 
 type AlternateBook = {
   book: string;
@@ -108,6 +110,9 @@ type OpportunitiesResponse = {
   count: number;
   source: string;
   bestLinesOnly: boolean;
+  provider?: string;
+  dataStatus?: string;
+  lastUpdated?: string | null;
   opportunities: Opportunity[];
 };
 
@@ -155,6 +160,9 @@ export default function OpportunitiesPage() {
   const [opportunities, setOpportunities] =
     useState<Opportunity[]>([]);
 
+  const [freshness, setFreshness] =
+    useState<{ dataStatus?: string; lastUpdated?: string | null }>({});
+
   const [loading, setLoading] =
     useState(true);
 
@@ -192,6 +200,7 @@ export default function OpportunitiesPage() {
         setOpportunities(
           data.opportunities
         );
+        setFreshness({ dataStatus: data.dataStatus, lastUpdated: data.lastUpdated });
 
         const saved =
           localStorage.getItem(
@@ -454,12 +463,21 @@ export default function OpportunitiesPage() {
             </p>
           </div>
 
-          <Link
-            href="/my-card"
-            className="flex h-11 items-center justify-center rounded-lg border border-white/10 bg-transparent px-5 text-sm font-medium text-white transition hover:bg-white/[0.05]"
-          >
-            View My Card →
-          </Link>
+          <div className="flex flex-wrap items-center gap-3">
+            <Link
+              href="/my-card"
+              className="flex h-11 items-center justify-center rounded-lg border border-white/10 bg-transparent px-5 text-sm font-medium text-white transition hover:bg-white/[0.05]"
+            >
+              View My Card →
+            </Link>
+            {freshness.dataStatus && (
+              <FreshnessBadge
+                status={freshness.dataStatus}
+                lastUpdated={freshness.lastUpdated}
+                label="Model"
+              />
+            )}
+          </div>
         </div>
 
         {/* FILTERS */}
