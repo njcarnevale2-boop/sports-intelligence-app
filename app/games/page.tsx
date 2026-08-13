@@ -312,98 +312,164 @@ export default function GamesPage() {
 }
 
 // ---------------------------------------------------------------------------
-// Game row — scannable, week-first, minimal
+// Game row — scannable rigid layout, no overlap
 // ---------------------------------------------------------------------------
 
 function GameRow({ game }: { game: GameCard }) {
   const hasOpp = Boolean(game.bestOpportunity);
+  const kickoffDate = formatKickoffDate(game.commenceTime);
+  const kickoffTime = formatKickoffTime(game.commenceTime);
 
   return (
-    <article className="group rounded-xl border border-white/[0.07] bg-[#0B1119] px-5 py-4 transition hover:border-white/[0.14] hover:bg-white/[0.02]">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+    <>
+      {/* Desktop layout: grid columns */}
+      <article className="hidden sm:flex items-center gap-3 rounded-xl border border-white/[0.07] bg-[#0B1119] px-6 py-4 transition hover:border-white/[0.14] hover:bg-white/[0.02]">
 
-        {/* Teams + kickoff */}
-        <div className="flex flex-1 flex-col gap-3 sm:flex-row sm:items-center sm:gap-6">
-          {/* Teams */}
-          <div className="flex items-center gap-5 flex-1">
-            <div className="flex items-center gap-2 min-w-0">
-              <TeamLogo src={game.awayLogo} alt={game.awayTeam} size={36} />
-              <span className="text-sm font-semibold leading-tight truncate">{game.awayTeam}</span>
-            </div>
-            <span className="shrink-0 text-xs text-zinc-600">@</span>
-            <div className="flex items-center gap-2 min-w-0">
-              <TeamLogo src={game.homeLogo} alt={game.homeTeam} size={36} />
-              <span className="text-sm font-semibold leading-tight truncate">{game.homeTeam}</span>
-            </div>
+        {/* MATCHUP (max 2 columns) */}
+        <div className="flex items-center gap-4 min-w-max">
+          <div className="flex items-center gap-2">
+            <TeamLogo src={game.awayLogo} alt={game.awayTeam} size={32} />
+            <span className="text-sm font-semibold text-white">{game.awayAbbreviation || game.awayTeam}</span>
           </div>
-
-          {/* Kickoff */}
-          <p className="text-xs text-zinc-600 shrink-0">{formatKickoff(game.commenceTime)}</p>
+          <span className="text-xs text-zinc-600 mx-1">@</span>
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold text-white">{game.homeAbbreviation || game.homeTeam}</span>
+            <TeamLogo src={game.homeLogo} alt={game.homeTeam} size={32} />
+          </div>
         </div>
 
-        {/* Right: lines + SI + action */}
-        <div className="flex items-center justify-between gap-4 sm:justify-end sm:gap-6">
-          {/* Spread / Total */}
-          <div className="flex items-center gap-4 text-sm">
-            {game.spread != null ? (
-              <span>
-                <span className="text-[10px] text-zinc-600 mr-1">Sprd</span>
-                <span className="text-zinc-200">{signedSpread(game.spread)}</span>
-              </span>
-            ) : null}
-            {game.total != null ? (
-              <span>
-                <span className="text-[10px] text-zinc-600 mr-1">O/U</span>
-                <span className="text-zinc-200">{game.total}</span>
-              </span>
-            ) : null}
-            {game.spread == null && game.total == null && (
-              <span className="text-xs text-zinc-700">No lines</span>
-            )}
-          </div>
-
-          {/* SI score + opportunity text */}
-          <div className="hidden sm:flex flex-col items-end min-w-[140px]">
-            {hasOpp ? (
-              <>
-                {game.sportsIntelligenceScore != null && (
-                  <span className={`text-xs font-semibold ${scoreTone(game.sportsIntelligenceScore)}`}>
-                    SI {game.sportsIntelligenceScore.toFixed(1)}
-                  </span>
-                )}
-                <span className="mt-0.5 text-[11px] text-zinc-400 text-right leading-snug max-w-[150px]">
-                  {game.bestOpportunity}
-                </span>
-              </>
-            ) : (
-              <span className="text-[11px] text-zinc-700">No opportunity</span>
-            )}
-          </div>
-
-          {/* Action */}
-          <Link
-            href={`/games/${game.eventId}`}
-            className="shrink-0 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-medium text-zinc-400 transition hover:border-white/20 hover:bg-white/[0.08] hover:text-white"
-          >
-            View →
-          </Link>
+        {/* KICKOFF */}
+        <div className="flex flex-col items-start min-w-[90px] flex-shrink-0">
+          <span className="text-xs text-zinc-600">{kickoffDate}</span>
+          <span className="text-xs font-medium text-zinc-300">{kickoffTime}</span>
         </div>
-      </div>
 
-      {/* Mobile: SI + opportunity below teams */}
-      {hasOpp && (
-        <div className="mt-2 flex items-center gap-2 sm:hidden">
-          {game.sportsIntelligenceScore != null && (
-            <span className={`text-xs font-semibold ${scoreTone(game.sportsIntelligenceScore)}`}>
-              SI {game.sportsIntelligenceScore.toFixed(1)}
-            </span>
-          )}
-          <span className="text-[11px] text-zinc-500 leading-snug">
-            {game.bestOpportunity}
+        {/* SPREAD */}
+        <div className="flex flex-col items-start min-w-[70px] flex-shrink-0">
+          <span className="text-[10px] text-zinc-600">SPREAD</span>
+          <span className="text-sm font-semibold text-zinc-200 mt-0.5">
+            {game.spread != null ? signedSpread(game.spread) : "—"}
           </span>
         </div>
-      )}
-    </article>
+
+        {/* TOTAL */}
+        <div className="flex flex-col items-start min-w-[70px] flex-shrink-0">
+          <span className="text-[10px] text-zinc-600">TOTAL</span>
+          <span className="text-sm font-semibold text-zinc-200 mt-0.5">
+            {game.total != null ? game.total.toFixed(1) : "—"}
+          </span>
+        </div>
+
+        {/* SIA SIGNAL */}
+        <div className="flex flex-col items-start min-w-[140px] flex-shrink-0 ml-auto">
+          {hasOpp ? (
+            <>
+              {game.sportsIntelligenceScore != null && (
+                <span className={`text-xs font-semibold ${scoreTone(game.sportsIntelligenceScore)}`}>
+                  SI {game.sportsIntelligenceScore.toFixed(1)}
+                </span>
+              )}
+              <span className="text-[11px] text-zinc-400 mt-0.5 leading-snug max-w-[130px]">
+                {game.bestOpportunity}
+              </span>
+            </>
+          ) : (
+            <span className="text-[11px] text-zinc-700">No Qualified</span>
+          )}
+        </div>
+
+        {/* ACTION */}
+        <Link
+          href={`/games/${game.eventId}`}
+          className="shrink-0 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-medium text-zinc-400 transition hover:border-white/20 hover:bg-white/[0.08] hover:text-white ml-2"
+        >
+          View Intelligence →
+        </Link>
+      </article>
+
+      {/* Mobile card layout */}
+      <article className="sm:hidden rounded-xl border border-white/[0.07] bg-[#0B1119] p-4 transition hover:border-white/[0.14] hover:bg-white/[0.02]">
+        {/* Matchup + logos */}
+        <div className="flex items-center justify-center gap-3 mb-3">
+          <div className="flex items-center gap-2">
+            <TeamLogo src={game.awayLogo} alt={game.awayTeam} size={28} />
+            <span className="text-sm font-semibold text-white">{game.awayAbbreviation || game.awayTeam}</span>
+          </div>
+          <span className="text-xs text-zinc-600">@</span>
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold text-white">{game.homeAbbreviation || game.homeTeam}</span>
+            <TeamLogo src={game.homeLogo} alt={game.homeTeam} size={28} />
+          </div>
+        </div>
+
+        {/* Kickoff */}
+        <div className="text-center text-xs mb-3">
+          <span className="text-zinc-600">{kickoffDate}</span>
+          <span className="text-zinc-600 mx-1">•</span>
+          <span className="font-medium text-zinc-300">{kickoffTime}</span>
+        </div>
+
+        {/* Spread + Total */}
+        <div className="flex gap-4 justify-center mb-3 text-sm">
+          <div className="flex flex-col items-center">
+            <span className="text-[10px] text-zinc-600">SPREAD</span>
+            <span className="font-semibold text-zinc-200 mt-0.5">
+              {game.spread != null ? signedSpread(game.spread) : "—"}
+            </span>
+          </div>
+          <div className="flex flex-col items-center">
+            <span className="text-[10px] text-zinc-600">TOTAL</span>
+            <span className="font-semibold text-zinc-200 mt-0.5">
+              {game.total != null ? game.total.toFixed(1) : "—"}
+            </span>
+          </div>
+        </div>
+
+        {/* SIA Signal */}
+        {hasOpp && (
+          <div className="text-center mb-3 pb-3 border-b border-white/[0.05]">
+            {game.sportsIntelligenceScore != null && (
+              <div className={`text-xs font-semibold ${scoreTone(game.sportsIntelligenceScore)}`}>
+                SI {game.sportsIntelligenceScore.toFixed(1)}
+              </div>
+            )}
+            <div className="text-[11px] text-zinc-400 mt-1">
+              {game.bestOpportunity}
+            </div>
+          </div>
+        )}
+
+        {/* Action */}
+        <Link
+          href={`/games/${game.eventId}`}
+          className="block text-center rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-medium text-zinc-400 transition hover:border-white/20 hover:bg-white/[0.08] hover:text-white"
+        >
+          View Intelligence →
+        </Link>
+      </article>
+    </>
   );
+}
+
+// Format kickoff as "Sun, Sep 13"
+function formatKickoffDate(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "TBD";
+  return d.toLocaleString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+// Format time as "1:00 PM ET"
+function formatKickoffTime(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "TBD";
+  return d.toLocaleString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
 }
 

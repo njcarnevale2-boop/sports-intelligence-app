@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import GameIntelligenceCard from "@/components/game-intelligence-card";
+import TeamLogo from "@/components/team-logo";
 import { fetchJson } from "../lib/api";
 import { trackAnalyticsEvent } from "../lib/analytics";
 import { addToCard as addToCardWithSnapshot } from "@/lib/add-to-card";
@@ -69,6 +70,10 @@ type Opportunity = {
   matchup: string;
   awayTeam: string;
   homeTeam: string;
+  awayAbbreviation?: string;
+  homeAbbreviation?: string;
+  awayLogo?: string;
+  homeLogo?: string;
 
   pick: string;
   book: string;
@@ -816,6 +821,23 @@ export default function OpportunitiesPage() {
                     {/* LEFT */}
 
                     <div className="max-w-2xl flex-1">
+
+                      {/* MATCHUP WITH LOGOS */}
+                      <div className="mb-5 flex items-center justify-center gap-3 px-4 py-3 rounded-2xl border border-white/[0.07] bg-black/10">
+                        <div className="flex items-center gap-2">
+                          <TeamLogo src={opportunity.awayLogo} alt={opportunity.awayTeam} size={28} />
+                          <span className="text-sm font-semibold text-zinc-200">
+                            {opportunity.awayAbbreviation || opportunity.awayTeam}
+                          </span>
+                        </div>
+                        <span className="text-xs text-zinc-600">@</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-semibold text-zinc-200">
+                            {opportunity.homeAbbreviation || opportunity.homeTeam}
+                          </span>
+                          <TeamLogo src={opportunity.homeLogo} alt={opportunity.homeTeam} size={28} />
+                        </div>
+                      </div>
 
                       <div className="flex flex-wrap items-center gap-3">
 
