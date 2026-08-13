@@ -150,6 +150,7 @@ def row_to_opportunity(
     row,
     include_alternates=None,
     market_snapshot=None,
+    injury_ctx=None,
 ):
     result = {
         "id": build_id(row),
@@ -357,14 +358,16 @@ def row_to_opportunity(
     # INJURY MATCHUP CONTEXT
     # -----------------------------------------------------
 
+    # Reuse the caller-supplied context to avoid one ESPN fetch per row.
     injury_context = (
-        InjuryMatchupContext().build_context(
-            away_team=str(
-                row["away_team"]
-            ),
-            home_team=str(
-                row["home_team"]
-            ),
+        injury_ctx.build_context(
+            away_team=str(row["away_team"]),
+            home_team=str(row["home_team"]),
+        )
+        if injury_ctx is not None
+        else InjuryMatchupContext().build_context(
+            away_team=str(row["away_team"]),
+            home_team=str(row["home_team"]),
         )
     )
     result["injuryContext"] = injury_context
@@ -534,6 +537,9 @@ def get_opportunities(
         RANKED_BET_BOARD
     )
 
+    # One InjuryMatchupContext per request — one ESPN fetch total.
+    shared_injury_ctx = InjuryMatchupContext()
+
     if not best_lines_only:
         market_snapshots = market_data_service.all_event_snapshots()
 
@@ -549,6 +555,7 @@ def get_opportunities(
             row_to_opportunity(
                 row,
                 market_snapshot=market_snapshots.get(str(row["api_event_id"])),
+                injury_ctx=shared_injury_ctx,
             )
             for _, row
             in df.iterrows()
@@ -588,47 +595,37 @@ def get_opportunities(
     best_rows = []
     market_snapshots = market_data_service.all_event_snapshots()
 
-    for _, group in grouped:
-        selected = (
-            best_line_for_group(
-                group
-            )
-        )
+    # Collect best pandas rows per group (no enrichment yet)
+    raw_best_rows = []
+    raw_alternates_map = {}
+    for group_key, group in grouped:
+        selected = best_line_for_group(group)
+        raw_best_rows.append(selected)
+        raw_alternates_map[id(selected)] = make_alternate_books(group, selected)
 
-        alternates = (
-            make_alternate_books(
-                group,
-                selected,
-            )
-        )
+    # Sort by rank column and apply limit BEFORE enrichment
+    raw_best_rows.sort(key=lambda r: (int(r["rank"]), -float(r["edge_pp"]), -float(r["ev_per_dollar"])))
+    raw_best_rows = raw_best_rows[:limit]
 
-        item = (
-            row_to_opportunity(
-                selected,
-                include_alternates=(
-                    alternates
-                ),
-                market_snapshot=market_snapshots.get(str(selected["api_event_id"])),
-            )
+    best_rows = []
+    for selected in raw_best_rows:
+        item = row_to_opportunity(
+            selected,
+            include_alternates=raw_alternates_map[id(selected)],
+            market_snapshot=market_snapshots.get(str(selected["api_event_id"])),
+            injury_ctx=shared_injury_ctx,
         )
-
-        best_rows.append(
-            item
-        )
+        best_rows.append(item)
 
     best_rows.sort(
         key=lambda item: (
             item["rank"],
             -item["edge"],
-            -item[
-                "evPerDollar"
-            ],
+            -item["evPerDollar"],
         )
     )
 
-    opportunities = (
-        best_rows[:limit]
-    )
+    opportunities = best_rows
 
     return {
         "count": len(
