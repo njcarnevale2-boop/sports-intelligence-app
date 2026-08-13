@@ -836,7 +836,7 @@ export default function OpportunitiesPage() {
 
                       <div className="mt-5">
                         <div className="rounded-2xl border border-white/[0.07] bg-black/10 p-4">
-                          <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-700">Sports Intelligence Score</p>
+                          <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-700 inline-flex items-center">Sports Intelligence Score<Tooltip term="SI Score" /></p>
                           <p className="mt-2 text-3xl font-semibold text-emerald-400">{sportsScore.score.toFixed(1)}</p>
                           <p className="mt-2 text-sm text-zinc-500">{sportsScore.grade}</p>
                         </div>
@@ -875,8 +875,8 @@ export default function OpportunitiesPage() {
                         </div>
 
                         <div className="rounded-xl border border-white/[0.07] bg-black/10 p-4">
-                          <p className="text-[10px] uppercase tracking-wider text-zinc-700">
-                            EV / $1
+                          <p className="text-[10px] uppercase tracking-wider text-zinc-700 inline-flex items-center">
+                            EV / $1<Tooltip term="EV" />
                           </p>
 
                           <p className="mt-2 font-semibold text-emerald-400">

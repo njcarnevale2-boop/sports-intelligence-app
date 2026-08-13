@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import GameIntelligenceCard from "@/components/game-intelligence-card";
 import { buildCardSummary, buildPortfolioRiskWarnings, createExportPayload, getBestLineAndPriceOffers, getEdgeValue, normalizeSavedBet, type RiskWarning, type SavedBet } from "@/lib/my-card-helpers";
+import Tooltip from "@/components/ui/tooltip";
 
 const sportsbookOptions = ["DraftKings", "FanDuel", "BetMGM", "Caesars", "ESPN BET", "Fanatics", "bet365"];
 
@@ -94,11 +95,11 @@ export default function MyCardShell({ bets, onRemoveBet }: { bets: SavedBet[]; o
               <p className="mt-3 text-3xl font-semibold">{summary.totalBets}</p>
             </div>
             <div className="rounded-2xl border border-white/[0.08] bg-[#0D131C]/80 p-5">
-              <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">Avg SI Score</p>
+              <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-600 inline-flex items-center">Avg SI Score<Tooltip term="SI Score" /></p>
               <p className="mt-3 text-3xl font-semibold">{summary.averageSiScore}</p>
             </div>
             <div className="rounded-2xl border border-white/[0.08] bg-[#0D131C]/80 p-5">
-              <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">Total EV</p>
+              <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-600 inline-flex items-center">Total EV<Tooltip term="EV" /></p>
               <p className="mt-3 text-3xl font-semibold text-emerald-400">+{summary.totalExpectedValue.toFixed(2)}</p>
             </div>
             <div className="rounded-2xl border border-white/[0.08] bg-[#0D131C]/80 p-5">
@@ -110,7 +111,7 @@ export default function MyCardShell({ bets, onRemoveBet }: { bets: SavedBet[]; o
               <p className="mt-3 text-3xl font-semibold">{summary.portfolioRisk}</p>
             </div>
             <div className="rounded-2xl border border-white/[0.08] bg-[#0D131C]/80 p-5">
-              <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">Avg Edge</p>
+              <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-600 inline-flex items-center">Avg Edge<Tooltip term="Model Edge" /></p>
               <p className="mt-3 text-3xl font-semibold text-emerald-400">{summary.averageEdge.toFixed(1)}%</p>
             </div>
           </div>

@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { fetchJson } from "../../lib/api";
 import { addToCard as addToCardHelper } from "@/lib/add-to-card";
+import Tooltip from "@/components/ui/tooltip";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -320,26 +321,26 @@ export default function GameIntelligencePage() {
             <>
               <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                  <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">SI Score</p>
+                  <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600 inline-flex items-center">SI Score<Tooltip term="SI Score" /></p>
                   <p className={`mt-2 text-2xl font-semibold ${scoreTone(si?.score)}`}>
                     {si?.score?.toFixed(1) ?? "—"}
                   </p>
                   <p className="mt-1 text-xs text-zinc-600">{si?.grade ?? ""}</p>
                 </div>
                 <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                  <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Model Edge</p>
+                  <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600 inline-flex items-center">Model Edge<Tooltip term="Model Edge" /></p>
                   <p className="mt-2 text-2xl font-semibold text-emerald-400">
                     +{opportunity.edge.toFixed(1)}%
                   </p>
                 </div>
                 <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                  <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">EV / $1</p>
+                  <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600 inline-flex items-center">EV / $1<Tooltip term="EV" /></p>
                   <p className="mt-2 text-2xl font-semibold text-emerald-400">
                     +${opportunity.evPerDollar.toFixed(3)}
                   </p>
                 </div>
                 <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                  <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Confidence</p>
+                  <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600 inline-flex items-center">Confidence<Tooltip term="Confidence" /></p>
                   <p className="mt-2 text-2xl font-semibold">{opportunity.confidence}%</p>
                 </div>
               </div>
@@ -361,7 +362,7 @@ export default function GameIntelligencePage() {
               {/* Market Intelligence */}
               {mi && (
                 <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
-                  <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Market Intelligence</p>
+                  <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600 inline-flex items-center">Market Intelligence<Tooltip term="Market Intelligence" /></p>
                   <p className="mt-2 text-base font-semibold">{mi.signal}</p>
                   <div className="mt-3 grid gap-3 sm:grid-cols-4 text-xs text-zinc-500">
                     <span>Score: {mi.score.toFixed(1)}/10</span>

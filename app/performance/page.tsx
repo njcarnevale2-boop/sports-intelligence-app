@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 
 import { Badge } from "@/components/ui/badge";
+import Tooltip from "@/components/ui/tooltip";
 import { fetchJson } from "../lib/api";
 
 type ProfitPoint = {
@@ -105,7 +106,7 @@ export default function PerformancePage() {
           </div>
 
           <div className="rounded-2xl border border-white/10 bg-[#0B1119] p-6">
-            <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-700">Closing line value</p>
+            <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-700 inline-flex items-center">Closing line value<Tooltip term="CLV" /></p>
             <p className="mt-3 text-3xl font-semibold text-white">{summary?.closingLineValue ? `${summary.closingLineValue.toFixed(2)}` : "—"}</p>
           </div>
 

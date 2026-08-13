@@ -5,25 +5,33 @@ import { HelpCircle } from "lucide-react";
 
 const GLOSSARY: Record<string, string> = {
   "SI Score":
-    "Sports Intelligence Score — a 0–100 signal combining model edge, expected value, confidence, market intelligence, and data completeness. Higher is stronger.",
+    "SIA's composite opportunity rating (0–100) weighted across model edge (30%), expected value (20%), confidence (15%), market intelligence (15%), data completeness (10%), and injury context (10%). Higher scores indicate stronger overall opportunities. A high SI Score does not guarantee a win.",
+  "Model Probability":
+    "SIA's estimated probability that the selected outcome occurs. Distinct from Confidence — Model Probability is the model's view of the true likelihood of the outcome, not a measure of how reliable the supporting data is.",
+  "Market Implied":
+    "The probability implied by the current sportsbook odds. For example, -110 odds imply approximately 52.4%. This reflects what the market currently prices the outcome at.",
   "Model Edge":
-    "How much better the model thinks your chances are versus the market's implied probability. +5% edge means the model estimates you have a 5% advantage over the posted price.",
+    "The gap between SIA's estimated probability and the market's implied probability. +8% edge means SIA estimates the outcome is 8 percentage points more likely than the posted odds imply. Positive edge suggests potential mispricing — it does not guarantee a win.",
   "Expected Value":
-    "The average dollars you can expect to win per $1 risked over many similar bets, if the model is calibrated correctly. Positive EV bets are mathematically profitable long-term.",
-  "Confidence":
-    "How certain the model is about this projection, based on data quality, lineup completeness, and historical accuracy for this game type.",
-  "Market Intelligence":
-    "A signal derived from how multiple sportsbooks are pricing and moving the line. High market intelligence means sharp money or consensus movement supports the bet.",
-  "Steam":
-    "Rapid coordinated line movement across several books at once — typically a signal that sharp bettors have placed large wagers on one side.",
-  "Kelly":
-    "Kelly Criterion — a mathematical formula for sizing bets proportionally to your edge. The '20% Kelly' column uses a fractional version to reduce variance.",
-  "CLV":
-    "Closing Line Value — how your bet compares with the market's final price before kickoff. Positive CLV means you got a better number than what the market closed at.",
+    "Estimated average return per $1 risked over many similar bets, calculated from SIA's probability estimate. Positive EV reflects mathematical value at the current price — individual outcomes still vary widely and a single win or loss proves nothing.",
   "EV":
-    "Expected Value — see 'Expected Value' above.",
+    "Expected Value — estimated average return per $1 risked across many similar bets. Positive EV reflects mathematical value, not a guaranteed profit on any individual wager.",
+  "Confidence":
+    "How strongly SIA's signals support the prediction, based on data quality, signal consistency, and available context (0–100 scale). Confidence measures the quality of the evidence — it is NOT a win probability. A bet can have 90% Confidence and still lose.",
+  "Kelly 20%":
+    "A conservative bankroll-sizing guideline derived from the Kelly Criterion, capped at 20% of the full Kelly recommendation to limit volatility. This is a rough sizing signal — not financial advice. Actual stake decisions rest with you.",
+  "Kelly":
+    "Kelly Criterion — a mathematical formula for sizing bets in proportion to your estimated edge. SIA shows the '20% Kelly' figure, a conservative fractional version that limits variance compared to full Kelly.",
+  "Fair Odds":
+    "The sportsbook price that would correspond exactly to SIA's estimated probability. If fair odds are -120 and the posted price is -105, the bet carries positive expected value at the current market price.",
+  "Steam":
+    "Rapid, coordinated line movement across multiple sportsbooks in a short window — often interpreted as a signal that sharp or influential bettors have acted on one side. Steam does not guarantee a correct outcome.",
+  "CLV":
+    "Closing Line Value — the difference between the price captured when you added a bet and the market's final closing price before kickoff. Positive CLV means you received better odds than the market's closing consensus. CLV is widely used to assess long-term betting quality.",
+  "Market Intelligence":
+    "SIA's analysis of sportsbook pricing behavior, including how many books are moving, the magnitude of line moves, steam signals, and directional consensus. High Market Intelligence score means market data supports the model's position.",
   "Data Completeness":
-    "What percentage of relevant context (lineups, injuries, weather, market data) is available for this game. Low completeness reduces model confidence.",
+    "The percentage of relevant context available for this projection — including injury reports, weather data, and market information. Low completeness reduces model confidence in the assessment.",
 };
 
 type GlossaryKey = keyof typeof GLOSSARY;

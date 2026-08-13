@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 
 import TeamLogo from "@/components/team-logo";
+import Tooltip from "@/components/ui/tooltip";
 import { fetchJson } from "../lib/api";
 import { addToCard as addToCardHelper } from "@/lib/add-to-card";
 
@@ -297,21 +298,21 @@ export default function BriefingPage() {
           {/* Key Metrics */}
           <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
             <div className="rounded-xl border border-white/[0.07] bg-black/20 p-3">
-              <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">SI Score</p>
+              <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-600 inline-flex items-center">SI Score<Tooltip term="SI Score" /></p>
               <p className={`mt-1 text-xl font-semibold ${scoreTone(lead.sportsIntelligenceScore.score)}`}>
                 {lead.sportsIntelligenceScore.score.toFixed(1)}
               </p>
             </div>
             <div className="rounded-xl border border-white/[0.07] bg-black/20 p-3">
-              <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">Model Edge</p>
+              <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-600 inline-flex items-center">Model Edge<Tooltip term="Model Edge" /></p>
               <p className="mt-1 text-xl font-semibold text-emerald-400">+{lead.edge.toFixed(1)}%</p>
             </div>
             <div className="rounded-xl border border-white/[0.07] bg-black/20 p-3">
-              <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">EV / $1</p>
+              <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-600 inline-flex items-center">EV / $1<Tooltip term="EV" /></p>
               <p className="mt-1 text-xl font-semibold">+${lead.evPerDollar.toFixed(3)}</p>
             </div>
             <div className="rounded-xl border border-white/[0.07] bg-black/20 p-3">
-              <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">Confidence</p>
+              <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-600 inline-flex items-center">Confidence<Tooltip term="Confidence" /></p>
               <p className="mt-1 text-xl font-semibold">{lead.confidence}%</p>
             </div>
           </div>

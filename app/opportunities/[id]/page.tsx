@@ -1771,8 +1771,9 @@ export default function OpportunityAnalysisPage() {
 
           <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-6">
 
-            <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
+            <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700 inline-flex items-center">
               Model Probability
+              <Tooltip term="Model Probability" />
             </p>
 
             <p className="mt-3 text-2xl font-semibold">
@@ -1785,8 +1786,9 @@ export default function OpportunityAnalysisPage() {
 
           <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-6">
 
-            <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
+            <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700 inline-flex items-center">
               Market Implied
+              <Tooltip term="Market Implied" />
             </p>
 
             <p className="mt-3 text-2xl font-semibold">
@@ -1799,8 +1801,9 @@ export default function OpportunityAnalysisPage() {
 
           <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-6">
 
-            <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
+            <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700 inline-flex items-center">
               20% Kelly
+              <Tooltip term="Kelly 20%" />
             </p>
 
             <p className="mt-3 text-2xl font-semibold">
@@ -1816,8 +1819,9 @@ export default function OpportunityAnalysisPage() {
 
           <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-6">
 
-            <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
+            <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700 inline-flex items-center">
               Fair Odds
+              <Tooltip term="Fair Odds" />
             </p>
 
             <p className="mt-3 text-2xl font-semibold">
