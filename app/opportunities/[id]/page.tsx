@@ -50,6 +50,7 @@ type SportsIntelligenceScore = {
     confidence: number;
     marketIntelligence: number;
     dataCompleteness: number;
+    injuryContext?: number;
   };
 
   weights: {
@@ -58,6 +59,7 @@ type SportsIntelligenceScore = {
     confidence: number;
     marketIntelligence: number;
     dataCompleteness: number;
+    injuryContext?: number;
   };
 
   reasons: string[];
@@ -104,6 +106,9 @@ type Opportunity = {
   injuryContext?: {
     awayInjuryScore?: number;
     homeInjuryScore?: number;
+    severity?: string;
+    summary?: string;
+    keyInjuries?: string[];
     providerMetadata?: { dataStatus?: string; isLive?: boolean; lastUpdated?: string | null };
   } | null;
 };
@@ -259,6 +264,109 @@ function marketAppearance(score: number) {
   };
 }
 
+// ── Deterministic explanation helpers ───────────────────────────────────────
+
+function buildWhySIALikes(opp: Opportunity, weatherStatus: { dataStatus?: string } | null): string {
+  const { pick, modelProbability, impliedProbability, edge, evPerDollar, sportsIntelligenceScore: si, marketIntelligence: mi } = opp;
+  const prob = `SIA gives ${pick} a ${modelProbability.toFixed(1)}% win probability compared with the market's ${impliedProbability.toFixed(1)}% implied probability, creating a ${edge.toFixed(1)}-point model edge.`;
+  const ev = evPerDollar >= 0.08 ? ` The current price generates ${evPerDollar >= 0.20 ? "strong" : "positive"} expected value (+$${evPerDollar.toFixed(3)} per dollar wagered).` : "";
+  let mkt = "";
+  if (mi.score >= 7) mkt = " Market movement has confirmed the model's direction.";
+  else if (mi.score >= 5) mkt = " Market confirmation is mixed, which tempers overall conviction.";
+  else mkt = " The market has not yet confirmed the model's direction.";
+  const rec = si.recommendation;
+  const tier = rec === "Elite Bet" || rec === "Strong Bet" ? ` This keeps the recommendation at ${rec}.` : ` The overall setup is graded as a ${rec}.`;
+  return `${prob}${ev}${mkt}${tier}`;
+}
+
+function buildSupportingSignals(opp: Opportunity): string[] {
+  const signals: string[] = [];
+  if (opp.edge >= 20) signals.push("Exceptional model edge over the current market");
+  else if (opp.edge >= 12) signals.push("Strong model edge over the current market");
+  else if (opp.edge >= 5) signals.push("Positive model edge is present");
+  if (opp.evPerDollar >= 0.20) signals.push("Strong expected value at the current price");
+  else if (opp.evPerDollar >= 0.08) signals.push("Positive expected value at the current price");
+  if (opp.confidence >= 80) signals.push("High model confidence");
+  else if (opp.confidence >= 65) signals.push("Solid model confidence");
+  const mi = opp.marketIntelligence;
+  if (mi.score >= 7) signals.push("Sportsbook movement confirms the model");
+  else if (mi.score >= 5 && mi.consensus >= 60) signals.push("Directional market agreement present");
+  if (opp.dataCompleteness >= 85) signals.push("Strong underlying data coverage");
+  const injSev = opp.injuryContext?.severity?.toLowerCase() ?? "neutral";
+  if (injSev === "neutral" || injSev === "small") signals.push("No material injury concern");
+  return signals.slice(0, 4);
+}
+
+function buildCautionSignals(opp: Opportunity, weatherStatus: { dataStatus?: string } | null): string[] {
+  const cautions: string[] = [];
+  const mi = opp.marketIntelligence;
+  if (mi.score < 5) cautions.push("The market has not confirmed the model's direction");
+  else if (mi.score < 7) cautions.push("Market confirmation is mixed");
+  if (weatherStatus?.dataStatus === "UNAVAILABLE") cautions.push("Game-time weather forecast not yet available");
+  if (opp.dataCompleteness < 70) cautions.push("Incomplete underlying data reduces conviction");
+  const injSev = opp.injuryContext?.severity?.toLowerCase() ?? "neutral";
+  if (injSev === "moderate") cautions.push("Injury context is a moderate concern");
+  else if (injSev === "significant" || injSev === "major") cautions.push("Injury context is a material headwind");
+  if (opp.edge < 5) cautions.push("Model edge is modest");
+  return cautions.slice(0, 4);
+}
+
+function buildMarketScoreExplanation(market: MarketIntelligence): string {
+  const { score, booksMoving, booksTracked, steamBooks, consensus, snapshots } = market;
+  const level = score >= 7 ? "strong" : score >= 5 ? "moderate" : "limited";
+  const movePart = booksTracked > 0
+    ? `${booksMoving} of ${booksTracked} tracked sportsbooks have moved on this market`
+    : "no sportsbook movement data available";
+  const steamPart = steamBooks >= 2
+    ? `${steamBooks} sharp steam signals detected`
+    : steamBooks === 1
+    ? "one sharp steam signal has appeared"
+    : "no sharp steam signals detected";
+  const consensusPart = consensus >= 75
+    ? `directional agreement is strong at ${consensus.toFixed(0)}%`
+    : consensus >= 55
+    ? `directional agreement is moderate at ${consensus.toFixed(0)}%`
+    : `directional agreement is mixed at ${consensus.toFixed(0)}%`;
+  const snapshotPart = snapshots >= 5
+    ? `${snapshots} market updates recorded`
+    : `limited market history (${snapshots} updates)`;
+  return `Market confirmation is ${level}: ${movePart}; ${steamPart}; ${consensusPart}; ${snapshotPart}.`;
+}
+
+function componentExplanation(name: string, score: number): string {
+  if (name === "modelEdge") {
+    if (score >= 80) return "SIA's estimated probability materially exceeds the market-implied probability.";
+    if (score >= 40) return "The model sees a moderate edge over the current market price.";
+    return "The model edge over the current market price is limited.";
+  }
+  if (name === "expectedValue") {
+    if (score >= 80) return "The current price generates strong positive expected value per dollar.";
+    if (score >= 30) return "The price produces positive but moderate expected value.";
+    return "Expected value at current odds is limited.";
+  }
+  if (name === "confidence") {
+    if (score >= 80) return "The model's win probability estimate has high internal consistency.";
+    if (score >= 60) return "Model confidence is solid.";
+    return "Model confidence is moderate — additional signals would improve conviction.";
+  }
+  if (name === "marketIntelligence") {
+    if (score >= 70) return "Sportsbook movement has confirmed the model's direction.";
+    if (score >= 40) return "Sportsbook movement has not strongly confirmed the model.";
+    return "The market has not yet confirmed the model signal.";
+  }
+  if (name === "dataCompleteness") {
+    if (score >= 80) return "Underlying data coverage is strong.";
+    if (score >= 60) return "Data coverage is adequate but not complete.";
+    return "Data coverage is incomplete, which reduces conviction.";
+  }
+  if (name === "injuryContext") {
+    if (score >= 90) return "No material injury factor is affecting this position.";
+    if (score >= 60) return "Injury context is a moderate consideration for this game.";
+    return "Injury context is a meaningful headwind for this position.";
+  }
+  return "";
+}
+
 export default function OpportunityAnalysisPage() {
   const params =
     useParams<{ id: string }>();
@@ -330,6 +438,8 @@ export default function OpportunityAnalysisPage() {
   const [added, setAdded] = useState(false);
   const [snapshotError, setSnapshotError] = useState("");
   const [weatherStatus, setWeatherStatus] = useState<{ dataStatus?: string; lastUpdated?: string | null } | null>(null);
+  const [showFullExplainability, setShowFullExplainability] = useState(false);
+  const [showMarketDetails, setShowMarketDetails] = useState(false);
 
   useEffect(() => {
     async function loadData() {
@@ -679,193 +789,193 @@ export default function OpportunityAnalysisPage() {
           </div>
         </section>
 
+        {/* WHY SIA LIKES THIS BET */}
+
+        <section className="mt-10 rounded-3xl border border-white/[0.08] bg-[#0B1119] p-7 lg:p-8">
+          <p className="text-[11px] uppercase tracking-[0.22em] text-emerald-400">Why SIA Likes This Bet</p>
+          <p className="mt-4 text-base leading-8 text-zinc-300">
+            {buildWhySIALikes(opportunity, weatherStatus)}
+          </p>
+
+          <div className="mt-6 grid gap-4 sm:grid-cols-2">
+            {/* Supporting signals */}
+            {buildSupportingSignals(opportunity).length > 0 && (
+              <div className="rounded-2xl border border-emerald-400/15 bg-emerald-400/[0.04] p-5">
+                <p className="text-[10px] uppercase tracking-[0.2em] text-emerald-400">Supporting This Bet</p>
+                <ul className="mt-3 space-y-2">
+                  {buildSupportingSignals(opportunity).map((s) => (
+                    <li key={s} className="flex items-start gap-2 text-sm text-zinc-300">
+                      <span className="mt-0.5 text-emerald-400">✓</span>
+                      {s}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* Caution signals */}
+            {buildCautionSignals(opportunity, weatherStatus).length > 0 && (
+              <div className="rounded-2xl border border-amber-400/15 bg-amber-400/[0.04] p-5">
+                <p className="text-[10px] uppercase tracking-[0.2em] text-amber-400">What Holds It Back</p>
+                <ul className="mt-3 space-y-2">
+                  {buildCautionSignals(opportunity, weatherStatus).map((s) => (
+                    <li key={s} className="flex items-start gap-2 text-sm text-zinc-300">
+                      <span className="mt-0.5 text-amber-400">–</span>
+                      {s}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+
+          <div className="mt-6 flex flex-wrap gap-3">
+            <button
+              onClick={addToCard}
+              disabled={added}
+              className={`rounded-xl border px-5 py-2.5 text-sm font-medium transition ${added ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300" : "border-white/10 bg-white text-black hover:bg-zinc-200"}`}
+            >
+              {added ? "Added to My Card ✓" : "Add to My Card"}
+            </button>
+            <Link href="/my-card">
+              <button className="rounded-xl border border-white/10 bg-transparent px-5 py-2.5 text-sm text-white transition hover:bg-white/[0.05]">
+                Review My Card →
+              </button>
+            </Link>
+          </div>
+          {snapshotError && <p className="mt-2 text-xs text-amber-400">{snapshotError}</p>}
+        </section>
+
         {/* SPORTS INTELLIGENCE SCORE */}
 
-        <section className="mt-10">
+        <section className="mt-8">
 
           <SportsIntelligenceScoreCard
             score={sportsScore}
           />
 
-          {explainability && (
-            <div className="mt-6 rounded-3xl border border-white/[0.08] bg-[#0B1119] p-8">
-              <div className="flex flex-wrap items-center justify-between gap-4">
-                <div>
-                  <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">Explainability Engine</p>
-                  <h3 className="mt-2 text-2xl font-semibold tracking-tight">How the score is built</h3>
-                </div>
-                <div className="rounded-full border border-emerald-400/20 bg-emerald-400/[0.05] px-3 py-1 text-sm text-emerald-400">
-                  Deterministic rules-based explanation
-                </div>
+          {/* COMPACT SCORE BREAKDOWN */}
+
+          <div className="mt-6 rounded-3xl border border-white/[0.08] bg-[#0B1119] p-6 lg:p-8">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">Score Breakdown</p>
+                <h3 className="mt-1 text-xl font-semibold tracking-tight">
+                  Why this scored {sportsScore.score.toFixed(1)}
+                </h3>
               </div>
-
-              <p className="mt-5 max-w-3xl text-sm leading-7 text-zinc-400">{explainability.overallSummary}</p>
-
-              <div className="mt-8 grid gap-6 lg:grid-cols-2">
-                <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
-                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">Strengths</p>
-                  <ul className="mt-4 space-y-2 text-sm text-zinc-400">
-                    {explainability.strengths.map((item) => (
-                      <li key={item}>• {item}</li>
-                    ))}
-                  </ul>
-                </div>
-
-                <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
-                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">Weaknesses</p>
-                  <ul className="mt-4 space-y-2 text-sm text-zinc-400">
-                    {explainability.weaknesses.map((item) => (
-                      <li key={item}>• {item}</li>
-                    ))}
-                  </ul>
-                </div>
+              <div className="rounded-full border border-white/[0.08] bg-white/[0.04] px-3 py-1 text-xs text-zinc-500">
+                Deterministic rules-based
               </div>
+            </div>
 
-              <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
-                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">Confidence</p>
-                  <p className="mt-3 text-sm leading-7 text-zinc-400">{explainability.confidenceExplanation}</p>
+            <div className="mt-5 divide-y divide-white/[0.05]">
+              {([
+                ["modelEdge",         "Model Edge",      sportsScore.components.modelEdge,         sportsScore.weights.modelEdge],
+                ["expectedValue",     "Expected Value",  sportsScore.components.expectedValue,     sportsScore.weights.expectedValue],
+                ["confidence",        "Confidence",      sportsScore.components.confidence,        sportsScore.weights.confidence],
+                ["marketIntelligence","Market",          sportsScore.components.marketIntelligence,sportsScore.weights.marketIntelligence],
+                ["dataCompleteness",  "Data Quality",    sportsScore.components.dataCompleteness,  sportsScore.weights.dataCompleteness],
+                ...(sportsScore.components.injuryContext != null
+                  ? [["injuryContext", "Injury Context",  sportsScore.components.injuryContext,    sportsScore.weights.injuryContext] as const]
+                  : []),
+              ] as [string, string, number, number][]).map(([key, label, score, weight]) => (
+                <div key={key} className="grid grid-cols-[1fr_auto_auto] items-center gap-4 py-3 sm:grid-cols-[2fr_1fr_1fr_3fr]">
+                  <span className="text-sm text-zinc-300">{label}</span>
+                  <span className={`text-sm font-semibold ${score >= 75 ? "text-emerald-400" : score >= 50 ? "text-sky-400" : "text-amber-400"}`}>
+                    {score.toFixed(0)}<span className="text-xs text-zinc-600">/100</span>
+                  </span>
+                  <span className="text-xs text-zinc-600">{weight}%</span>
+                  <span className="hidden text-xs leading-5 text-zinc-500 sm:block">{componentExplanation(key, score)}</span>
                 </div>
-                <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
-                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">Market</p>
-                  <p className="mt-3 text-sm leading-7 text-zinc-400">{explainability.marketExplanation}</p>
+              ))}
+            </div>
+
+            {/* FULL EXPLANATION COLLAPSIBLE */}
+            <button
+              onClick={() => setShowFullExplainability((v) => !v)}
+              className="mt-5 flex items-center gap-2 text-xs text-zinc-500 transition hover:text-zinc-300"
+            >
+              <span>{showFullExplainability ? "▲ Hide Full Explanation" : "▼ See Full Score Explanation"}</span>
+            </button>
+
+            {showFullExplainability && explainability && (
+              <div className="mt-6 space-y-6">
+                <p className="max-w-3xl text-sm leading-7 text-zinc-400">{explainability.overallSummary}</p>
+
+                <div className="grid gap-6 lg:grid-cols-2">
+                  <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">Strengths</p>
+                    <ul className="mt-4 space-y-2 text-sm text-zinc-400">
+                      {explainability.strengths.map((item) => <li key={item}>• {item}</li>)}
+                    </ul>
+                  </div>
+                  <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">Weaknesses</p>
+                    <ul className="mt-4 space-y-2 text-sm text-zinc-400">
+                      {explainability.weaknesses.map((item) => <li key={item}>• {item}</li>)}
+                    </ul>
+                  </div>
                 </div>
-                <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">Injury</p>
-                    {opportunity.injuryContext?.providerMetadata?.dataStatus && (
-                      <FreshnessBadge status={opportunity.injuryContext.providerMetadata.dataStatus} lastUpdated={opportunity.injuryContext.providerMetadata.lastUpdated} />
+
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                  <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">Confidence</p>
+                    <p className="mt-3 text-sm leading-7 text-zinc-400">{explainability.confidenceExplanation}</p>
+                  </div>
+                  <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">Market</p>
+                    <p className="mt-3 text-sm leading-7 text-zinc-400">{explainability.marketExplanation}</p>
+                  </div>
+                  <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">Injury</p>
+                      {opportunity.injuryContext?.providerMetadata?.dataStatus && (
+                        <FreshnessBadge status={opportunity.injuryContext.providerMetadata.dataStatus} lastUpdated={opportunity.injuryContext.providerMetadata.lastUpdated} />
+                      )}
+                    </div>
+                    <p className="mt-3 text-sm leading-7 text-zinc-400">{explainability.injuryExplanation}</p>
+                  </div>
+                  <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">Weather</p>
+                      {weatherStatus?.dataStatus ? (
+                        <FreshnessBadge status={weatherStatus.dataStatus} lastUpdated={weatherStatus.lastUpdated} />
+                      ) : (
+                        <span className="text-[10px] text-zinc-600">Forecast not yet available</span>
+                      )}
+                    </div>
+                    <p className="mt-3 text-sm leading-7 text-zinc-400">{explainability.weatherExplanation}</p>
+                    {weatherStatus?.dataStatus === "UNAVAILABLE" && (
+                      <p className="mt-2 text-[11px] text-zinc-600">Game-time forecast not available yet — game may be outside the 16-day forecast window.</p>
                     )}
                   </div>
-                  <p className="mt-3 text-sm leading-7 text-zinc-400">{explainability.injuryExplanation}</p>
                 </div>
-                <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">Weather</p>
-                    {weatherStatus?.dataStatus ? (
-                      <FreshnessBadge status={weatherStatus.dataStatus} lastUpdated={weatherStatus.lastUpdated} />
-                    ) : (
-                      <span className="text-[10px] text-zinc-600">Forecast not yet available</span>
-                    )}
+
+                <div className="grid gap-4 lg:grid-cols-3">
+                  <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">Key reasons</p>
+                    <ul className="mt-4 space-y-2 text-sm text-zinc-400">
+                      {explainability.keyReasons.map((item) => <li key={item}>• {item}</li>)}
+                    </ul>
                   </div>
-                  <p className="mt-3 text-sm leading-7 text-zinc-400">{explainability.weatherExplanation}</p>
-                  {weatherStatus?.dataStatus === "UNAVAILABLE" && (
-                    <p className="mt-2 text-[11px] text-zinc-600">Game-time forecast not available yet — game may be outside the 16-day forecast window.</p>
-                  )}
+                  <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">What could improve</p>
+                    <ul className="mt-4 space-y-2 text-sm text-zinc-400">
+                      {explainability.whatCouldImprove.map((item) => <li key={item}>• {item}</li>)}
+                    </ul>
+                  </div>
+                  <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">Risk factors</p>
+                    <ul className="mt-4 space-y-2 text-sm text-zinc-400">
+                      {explainability.riskFactors.map((item) => <li key={item}>• {item}</li>)}
+                    </ul>
+                  </div>
                 </div>
               </div>
-
-              <div className="mt-6 grid gap-4 lg:grid-cols-3">
-                <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
-                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">Key reasons</p>
-                  <ul className="mt-4 space-y-2 text-sm text-zinc-400">
-                    {explainability.keyReasons.map((item) => (
-                      <li key={item}>• {item}</li>
-                    ))}
-                  </ul>
-                </div>
-                <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
-                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">What could improve</p>
-                  <ul className="mt-4 space-y-2 text-sm text-zinc-400">
-                    {explainability.whatCouldImprove.map((item) => (
-                      <li key={item}>• {item}</li>
-                    ))}
-                  </ul>
-                </div>
-                <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
-                  <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">Risk factors</p>
-                  <ul className="mt-4 space-y-2 text-sm text-zinc-400">
-                    {explainability.riskFactors.map((item) => (
-                      <li key={item}>• {item}</li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
-            </div>
-          )}
-
-          <div className="mt-4 grid gap-3 md:grid-cols-5">
-
-            <div className="rounded-xl border border-white/[0.07] bg-[#0D131C] p-4">
-              <p className="text-[10px] uppercase tracking-wider text-zinc-700">
-                Model Edge
-              </p>
-
-              <p className="mt-2 text-xl font-semibold">
-                {sportsScore.components.modelEdge.toFixed(
-                  0
-                )}
-              </p>
-
-              <p className="mt-1 text-xs text-zinc-600">
-                30% weight
-              </p>
-            </div>
-
-            <div className="rounded-xl border border-white/[0.07] bg-[#0D131C] p-4">
-              <p className="text-[10px] uppercase tracking-wider text-zinc-700">
-                Expected Value
-              </p>
-
-              <p className="mt-2 text-xl font-semibold">
-                {sportsScore.components.expectedValue.toFixed(
-                  0
-                )}
-              </p>
-
-              <p className="mt-1 text-xs text-zinc-600">
-                20% weight
-              </p>
-            </div>
-
-            <div className="rounded-xl border border-white/[0.07] bg-[#0D131C] p-4">
-              <p className="text-[10px] uppercase tracking-wider text-zinc-700">
-                Confidence
-              </p>
-
-              <p className="mt-2 text-xl font-semibold">
-                {sportsScore.components.confidence.toFixed(
-                  0
-                )}
-              </p>
-
-              <p className="mt-1 text-xs text-zinc-600">
-                20% weight
-              </p>
-            </div>
-
-            <div className="rounded-xl border border-white/[0.07] bg-[#0D131C] p-4">
-              <p className="text-[10px] uppercase tracking-wider text-zinc-700">
-                Market
-              </p>
-
-              <p className="mt-2 text-xl font-semibold">
-                {sportsScore.components.marketIntelligence.toFixed(
-                  0
-                )}
-              </p>
-
-              <p className="mt-1 text-xs text-zinc-600">
-                20% weight
-              </p>
-            </div>
-
-            <div className="rounded-xl border border-white/[0.07] bg-[#0D131C] p-4">
-              <p className="text-[10px] uppercase tracking-wider text-zinc-700">
-                Data Quality
-              </p>
-
-              <p className="mt-2 text-xl font-semibold">
-                {sportsScore.components.dataCompleteness.toFixed(
-                  0
-                )}
-              </p>
-
-              <p className="mt-1 text-xs text-zinc-600">
-                10% weight
-              </p>
-            </div>
+            )}
           </div>
+
         </section>
 
         {/* EXECUTIVE ANALYST */}
@@ -1600,62 +1710,108 @@ export default function OpportunityAnalysisPage() {
               </div>
             </div>
 
-            <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {/* Simplified 3-signal view */}
+            <div className="mt-6 grid gap-3 sm:grid-cols-3">
 
               <div className="rounded-xl border border-white/[0.06] bg-black/10 p-4">
                 <p className="text-[10px] uppercase tracking-wider text-zinc-700">
-                  Books Moving
+                  Sportsbooks Moving
                 </p>
-
                 <p className="mt-2 text-xl font-semibold">
-                  {
-                    market.booksMoving
-                  }{" "}
-                  /{" "}
-                  {
-                    market.booksTracked
-                  }
+                  {market.booksMoving} of {market.booksTracked}
                 </p>
               </div>
 
               <div className="rounded-xl border border-white/[0.06] bg-black/10 p-4">
                 <p className="text-[10px] uppercase tracking-wider text-zinc-700">
-                  Steam Books
+                  Market Agreement
                 </p>
-
                 <p className="mt-2 text-xl font-semibold">
-                  {
-                    market.steamBooks
-                  }
+                  {market.consensus >= 70 ? "Strong" : market.consensus >= 55 ? "Moderate" : "Mixed"}
                 </p>
               </div>
 
               <div className="rounded-xl border border-white/[0.06] bg-black/10 p-4">
                 <p className="text-[10px] uppercase tracking-wider text-zinc-700">
-                  Directional
-                  Consensus
+                  Sharp Movement
                 </p>
-
                 <p className="mt-2 text-xl font-semibold">
-                  {market.consensus.toFixed(
-                    0
-                  )}
-                  %
-                </p>
-              </div>
-
-              <div className="rounded-xl border border-white/[0.06] bg-black/10 p-4">
-                <p className="text-[10px] uppercase tracking-wider text-zinc-700">
-                  Snapshots
-                </p>
-
-                <p className="mt-2 text-xl font-semibold">
-                  {
-                    market.snapshots
-                  }
+                  {market.steamBooks >= 2 ? "Confirmed" : market.steamBooks === 1 ? "Limited" : "None detected"}
                 </p>
               </div>
             </div>
+
+            {/* Plain-English market score explanation */}
+            <p className="mt-4 text-sm leading-7 text-zinc-400">
+              {buildMarketScoreExplanation(market)}
+            </p>
+
+            {/* Toggle for full technical detail */}
+            <button
+              onClick={() => setShowMarketDetails((v) => !v)}
+              className="mt-4 flex items-center gap-2 text-xs text-zinc-500 transition hover:text-zinc-300"
+            >
+              {showMarketDetails ? "▲ Hide Market Details" : "▼ View Market Details"}
+            </button>
+
+            {showMarketDetails && (
+              <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="rounded-xl border border-white/[0.06] bg-black/10 p-4">
+                  <p className="text-[10px] uppercase tracking-wider text-zinc-700">
+                    Books Moving
+                    <Tooltip term="Books Moving" />
+                  </p>
+                  <p className="mt-2 text-xl font-semibold">
+                    {market.booksMoving} / {market.booksTracked}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-white/[0.06] bg-black/10 p-4">
+                  <p className="text-[10px] uppercase tracking-wider text-zinc-700">
+                    Sharp Steam Signals
+                    <Tooltip term="Steam Books" />
+                  </p>
+                  <p className="mt-2 text-xl font-semibold">{market.steamBooks}</p>
+                </div>
+                <div className="rounded-xl border border-white/[0.06] bg-black/10 p-4">
+                  <p className="text-[10px] uppercase tracking-wider text-zinc-700">
+                    Directional Consensus
+                    <Tooltip term="Directional Consensus" />
+                  </p>
+                  <p className="mt-2 text-xl font-semibold">{market.consensus.toFixed(0)}%</p>
+                </div>
+                <div className="rounded-xl border border-white/[0.06] bg-black/10 p-4">
+                  <p className="text-[10px] uppercase tracking-wider text-zinc-700">
+                    Market Updates
+                    <Tooltip term="Snapshots" />
+                  </p>
+                  <p className="mt-2 text-xl font-semibold">{market.snapshots}</p>
+                </div>
+                {market.supportingBooks > 0 || market.opposingBooks > 0 ? (
+                  <>
+                    <div className="rounded-xl border border-white/[0.06] bg-black/10 p-4">
+                      <p className="text-[10px] uppercase tracking-wider text-zinc-700">Supporting Books</p>
+                      <p className="mt-2 text-xl font-semibold">{market.supportingBooks}</p>
+                    </div>
+                    <div className="rounded-xl border border-white/[0.06] bg-black/10 p-4">
+                      <p className="text-[10px] uppercase tracking-wider text-zinc-700">Opposing Books</p>
+                      <p className="mt-2 text-xl font-semibold">{market.opposingBooks}</p>
+                    </div>
+                  </>
+                ) : null}
+                {market.largestPointMove > 0 && (
+                  <div className="rounded-xl border border-white/[0.06] bg-black/10 p-4">
+                    <p className="text-[10px] uppercase tracking-wider text-zinc-700">Largest Point Move</p>
+                    <p className="mt-2 text-xl font-semibold">{market.largestPointMove.toFixed(1)}</p>
+                  </div>
+                )}
+                {market.largestPriceMove > 0 && (
+                  <div className="rounded-xl border border-white/[0.06] bg-black/10 p-4">
+                    <p className="text-[10px] uppercase tracking-wider text-zinc-700">Largest Price Move</p>
+                    <p className="mt-2 text-xl font-semibold">{market.largestPriceMove.toFixed(0)}</p>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* SPORTSBOOK TABLE */}
