@@ -475,9 +475,10 @@ export default function Home() {
 
                     <Badge
                       variant="outline"
-                      className="border-white/[0.08] bg-white/[0.03] text-zinc-400"
+                      className="border-white/[0.08] bg-white/[0.03] text-zinc-400 inline-flex items-center gap-0.5"
                     >
                       Market {market.grade}
+                      <Tooltip term="Market Grade" />
                     </Badge>
                   </div>
 

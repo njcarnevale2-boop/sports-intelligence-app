@@ -992,9 +992,16 @@ def get_game_best_opportunity(event_id: str):
     if match.empty:
         return {"eventId": event_id, "opportunity": None}
 
+    # Identify the top-ranked market/side for this game
     match = match.sort_values("rank")
-    selected = match.iloc[0]
-    alternates = make_alternate_books(match, selected)
+    top_row = match.iloc[0]
+    top_market = top_row["market"]
+    top_side = top_row["side"]
+
+    # Select best available line for that market/side (same logic as main opportunities board)
+    group = match[(match["market"] == top_market) & (match["side"] == top_side)]
+    selected = best_line_for_group(group)
+    alternates = make_alternate_books(group, selected)
     market_snapshot = market_data_service.event_market_snapshot(event_id)
 
     opportunity = row_to_opportunity(

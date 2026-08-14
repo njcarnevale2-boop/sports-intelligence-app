@@ -51,18 +51,17 @@ export default function PerformancePage() {
     loadPerformance();
   }, []);
 
+  const hasSettled = (summary?.closingLinesCaptured ?? 0) > 0;
+
   const hasHistory = useMemo(() => {
-    if (!summary) return false;
+    if (!summary || !hasSettled) return false;
     return Boolean(
       summary.profitByMarket.length ||
         summary.profitBySportsbook.length ||
         summary.profitBySiScore.length ||
-        summary.profitByRecommendation.length ||
-        summary.overallROI !== 0 ||
-        summary.winRate !== 0 ||
-        summary.averageCLV !== null
+        summary.profitByRecommendation.length
     );
-  }, [summary]);
+  }, [summary, hasSettled]);
 
   const totalTracked = (summary?.closingLinesCaptured ?? 0) + (summary?.pendingClosingLines ?? 0);
 
@@ -102,22 +101,26 @@ export default function PerformancePage() {
         <section className="mt-10 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <div className="rounded-2xl border border-white/10 bg-[#0B1119] p-6">
             <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-700">Overall ROI</p>
-            <p className="mt-3 text-3xl font-semibold text-white">{summary?.overallROI ? formatPercent(summary.overallROI) : "—"}</p>
+            <p className="mt-3 text-3xl font-semibold text-white">{hasSettled && summary?.overallROI ? formatPercent(summary.overallROI) : "—"}</p>
+            <p className="mt-1 text-[10px] text-zinc-600">{hasSettled ? "settled bets" : "no settled bets yet"}</p>
           </div>
 
           <div className="rounded-2xl border border-white/10 bg-[#0B1119] p-6">
             <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-700">Win rate</p>
-            <p className="mt-3 text-3xl font-semibold text-white">{summary?.winRate ? formatPercent(summary.winRate) : "—"}</p>
+            <p className="mt-3 text-3xl font-semibold text-white">{hasSettled && summary?.winRate ? formatPercent(summary.winRate) : "—"}</p>
+            <p className="mt-1 text-[10px] text-zinc-600">{hasSettled ? "settled bets" : "no settled bets yet"}</p>
           </div>
 
           <div className="rounded-2xl border border-white/10 bg-[#0B1119] p-6">
             <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-700 inline-flex items-center">Closing line value<Tooltip term="CLV" /></p>
-            <p className="mt-3 text-3xl font-semibold text-white">{summary?.averageCLV != null ? `${summary.averageCLV > 0 ? "+" : ""}${summary.averageCLV.toFixed(2)}` : "—"}</p>
+            <p className="mt-3 text-3xl font-semibold text-white">{hasSettled && summary?.averageCLV != null ? `${summary.averageCLV > 0 ? "+" : ""}${summary.averageCLV.toFixed(2)}` : "—"}</p>
+            <p className="mt-1 text-[10px] text-zinc-600">{hasSettled ? "vs closing spread" : "no settled bets yet"}</p>
           </div>
 
           <div className="rounded-2xl border border-white/10 bg-[#0B1119] p-6">
             <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-700">Tracked bets</p>
             <p className="mt-3 text-3xl font-semibold text-white">{totalTracked}</p>
+            <p className="mt-1 text-[10px] text-zinc-600">{(summary?.closingLinesCaptured ?? 0) > 0 ? `${summary!.closingLinesCaptured} settled · ${summary!.pendingClosingLines} pending` : `${summary?.pendingClosingLines ?? 0} pending`}</p>
           </div>
         </section>
 

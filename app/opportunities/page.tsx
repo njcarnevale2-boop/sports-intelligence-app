@@ -882,12 +882,13 @@ export default function OpportunitiesPage() {
 
                         <Badge
                           variant="outline"
-                          className={`${appearance.border} ${appearance.text}`}
+                          className={`${appearance.border} ${appearance.text} inline-flex items-center gap-0.5`}
                         >
                           Market{" "}
                           {
                             market.grade
                           }
+                          <Tooltip term="Market Grade" />
                         </Badge>
                       </div>
 
@@ -1143,7 +1144,7 @@ export default function OpportunitiesPage() {
                           <p className="mt-2 text-2xl font-semibold">
                             {
                               opportunity.confidence
-                            }
+                            }<span className="text-base text-zinc-500">/100</span>
                           </p>
                         </div>
 

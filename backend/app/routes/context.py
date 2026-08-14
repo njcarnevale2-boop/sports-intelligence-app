@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pandas as pd
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
 router = APIRouter(prefix="/api", tags=["schedule-context"])
 
@@ -19,6 +19,26 @@ GAME_PROJECTIONS = (
     MODEL_ROOT / "outputs" / "current_game_projections.csv"
 )
 
+# Reverse lookup: full team name → 2-3 letter abbreviation
+_TEAM_NAME_TO_CODE: dict[str, str] = {
+    "Arizona Cardinals": "ARI", "Atlanta Falcons": "ATL", "Baltimore Ravens": "BAL",
+    "Buffalo Bills": "BUF", "Carolina Panthers": "CAR", "Chicago Bears": "CHI",
+    "Cincinnati Bengals": "CIN", "Cleveland Browns": "CLE", "Dallas Cowboys": "DAL",
+    "Denver Broncos": "DEN", "Detroit Lions": "DET", "Green Bay Packers": "GB",
+    "Houston Texans": "HOU", "Indianapolis Colts": "IND", "Jacksonville Jaguars": "JAX",
+    "Kansas City Chiefs": "KC", "Los Angeles Chargers": "LAC", "Los Angeles Rams": "LAR",
+    "Las Vegas Raiders": "LV", "Miami Dolphins": "MIA", "Minnesota Vikings": "MIN",
+    "New England Patriots": "NE", "New Orleans Saints": "NO", "New York Giants": "NYG",
+    "New York Jets": "NYJ", "Philadelphia Eagles": "PHI", "Pittsburgh Steelers": "PIT",
+    "Seattle Seahawks": "SEA", "San Francisco 49ers": "SF", "Tampa Bay Buccaneers": "TB",
+    "Tennessee Titans": "TEN", "Washington Commanders": "WAS",
+}
+
+
+def _to_code(name: str) -> str:
+    """Convert a full team name or existing abbreviation to schedule-context abbreviation."""
+    return _TEAM_NAME_TO_CODE.get(name, name)
+
 
 def get_event_matchup(event_id: str):
     # Use game_projections.csv (all 272 games) so context works even without a ranked opportunity
@@ -32,13 +52,14 @@ def get_event_matchup(event_id: str):
                 return {
                     "eventId": event_id,
                     "gameday": str(row["commence_time"])[:10],
-                    "awayTeam": str(row["away_team"]),
-                    "homeTeam": str(row["home_team"]),
+                    # Normalize full names to abbreviations for schedule_context lookup
+                    "awayTeam": _to_code(str(row["away_team"])),
+                    "homeTeam": _to_code(str(row["home_team"])),
                 }
         except Exception:
             pass
 
-    # Fallback: ranked_bet_board (opportunities only)
+    # Fallback: ranked_bet_board already uses abbreviations
     if RANKED_BET_BOARD.exists():
         df = pd.read_csv(RANKED_BET_BOARD)
         match = df[df["api_event_id"] == event_id]
@@ -51,10 +72,7 @@ def get_event_matchup(event_id: str):
                 "homeTeam": str(row["home_team"]),
             }
 
-    raise HTTPException(
-        status_code=404,
-        detail="Game not found",
-    )
+    return None
 
 
 def safe_float(value):
@@ -75,6 +93,20 @@ def safe_int(value):
 def get_game_context(event_id: str):
     event = get_event_matchup(event_id)
 
+    if event is None:
+        return {
+            "eventId": event_id,
+            "available": False,
+            "reason": "Game not found in schedule",
+        }
+
+    if not SCHEDULE_CONTEXT.exists():
+        return {
+            "eventId": event_id,
+            "available": False,
+            "reason": "Schedule context data not available",
+        }
+
     df = pd.read_csv(SCHEDULE_CONTEXT)
 
     match = df[
@@ -84,10 +116,13 @@ def get_game_context(event_id: str):
     ]
 
     if match.empty:
-        raise HTTPException(
-            status_code=404,
-            detail="Schedule context not found for this game",
-        )
+        return {
+            "eventId": event_id,
+            "available": False,
+            "reason": "Rest and travel context not yet available for this game",
+            "matchup": f'{event["awayTeam"]} @ {event["homeTeam"]}',
+            "gameday": event["gameday"],
+        }
 
     row = match.iloc[0]
 

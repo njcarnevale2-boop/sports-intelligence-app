@@ -13,6 +13,22 @@ function formatSigned(value: number) {
   return value >= 0 ? `+${value.toFixed(1)}` : value.toFixed(1);
 }
 
+function formatKickoff(iso: string | undefined | null): string {
+  if (!iso) return "Kickoff TBD";
+  // Normalize space-separated UTC timestamps: "2026-09-13 17:00:00" → Date
+  const normalized = iso.includes("T") ? iso : iso.replace(" ", "T") + "Z";
+  const d = new Date(normalized);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
+}
+
 export default function MyCardShell({ bets, onRemoveBet }: { bets: SavedBet[]; onRemoveBet: (idOrEventId: string) => void }) {
   const [selectedSportsbook, setSelectedSportsbook] = useState<string>("");
   const [reviewBet, setReviewBet] = useState<SavedBet | null>(bets[0] ? normalizeSavedBet(bets[0]) : null);
@@ -153,9 +169,9 @@ export default function MyCardShell({ bets, onRemoveBet }: { bets: SavedBet[]; o
         <section className="rounded-[32px] border border-white/[0.08] bg-[radial-gradient(circle_at_top_left,_rgba(16,185,129,0.18),_transparent_45%),linear-gradient(135deg,_rgba(255,255,255,0.04),_transparent)] p-8 shadow-2xl shadow-emerald-950/20">
           <div className="flex flex-col gap-8 lg:flex-row lg:items-end lg:justify-between">
             <div>
-              <p className="text-[11px] uppercase tracking-[0.24em] text-emerald-400">My Card v2</p>
-              <h1 className="mt-3 text-4xl font-semibold tracking-[-0.03em] md:text-6xl">Bet Card Command Center</h1>
-              <p className="mt-4 max-w-3xl text-base leading-7 text-zinc-400">A Bloomberg-style operating desk for your active positions, sportsbook comparisons, and portfolio readiness.</p>
+              <p className="text-[11px] uppercase tracking-[0.24em] text-emerald-400">My Card</p>
+              <h1 className="mt-3 text-4xl font-semibold tracking-[-0.03em] md:text-6xl">Bet Card</h1>
+              <p className="mt-4 max-w-3xl text-base leading-7 text-zinc-400">Review your saved bets, compare sportsbook lines, and track your picks.</p>
             </div>
             <div className="flex flex-wrap gap-3">
               <Button variant="outline" className="border-white/10 bg-white/[0.04] text-white hover:bg-white/[0.08]" onClick={exportJson}>Export JSON</Button>
@@ -230,6 +246,8 @@ export default function MyCardShell({ bets, onRemoveBet }: { bets: SavedBet[]; o
                       awayTeam: bet.awayTeam,
                       homeTeam: bet.homeTeam,
                       commenceTime: bet.commenceTime,
+                      kickoff: formatKickoff(bet.commenceTime),
+                      date: formatKickoff(bet.commenceTime),
                       sportsIntelligenceScore: bet.sportsIntelligenceScore?.score,
                       marketGrade: bet.sportsIntelligenceScore?.recommendation ?? bet.recommendation,
                       recommendation: bet.sportsIntelligenceScore?.recommendation ?? bet.recommendation,

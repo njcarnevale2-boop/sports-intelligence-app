@@ -685,9 +685,10 @@ export default function OpportunityAnalysisPage() {
 
             <Badge
               variant="outline"
-              className={`${marketStyle.border} ${marketStyle.text}`}
+              className={`${marketStyle.border} ${marketStyle.text} inline-flex items-center gap-0.5`}
             >
               Market {market.grade}
+              <Tooltip term="Market Grade" />
             </Badge>
           </div>
         </div>
@@ -753,7 +754,7 @@ export default function OpportunityAnalysisPage() {
                 <p className="mt-1 text-3xl font-semibold">
                   {
                     opportunity.confidence
-                  }
+                  }<span className="text-xl text-zinc-500">/100</span>
                 </p>
               </div>
 
@@ -1051,8 +1052,9 @@ export default function OpportunityAnalysisPage() {
           </section>
         )}
 
-        {/* DECISION TIMELINE */}
+        {/* DECISION TIMELINE — only shown when there is at least one meaningful event */}
 
+        {decisionTimeline && decisionTimeline.timeline.length > 0 && (
         <section className="mt-8 rounded-3xl border border-white/[0.08] bg-[#0B1119] p-8 lg:p-10">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
@@ -1060,33 +1062,28 @@ export default function OpportunityAnalysisPage() {
               <h2 className="mt-2 text-3xl font-semibold tracking-tight">Every meaningful change that shaped this recommendation</h2>
             </div>
             <div className="rounded-full border border-white/[0.08] bg-white/[0.04] px-3 py-1 text-sm text-zinc-400">
-              {decisionTimeline?.changeCount ?? 0} updates
+              {decisionTimeline.changeCount} updates
             </div>
           </div>
 
-          {decisionTimeline && decisionTimeline.timeline.length > 0 ? (
-            <div className="mt-8 space-y-4">
-              {decisionTimeline.timeline.map((entry, index) => (
-                <div key={`${entry.timestamp}-${entry.category}-${index}`} className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
-                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                    <div>
-                      <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-600">{entry.timestamp}</p>
-                      <h3 className="mt-2 text-lg font-semibold text-white">{entry.category}</h3>
-                      <p className="mt-2 text-sm leading-7 text-zinc-400">{entry.reason}</p>
-                    </div>
-                    <div className="rounded-2xl border border-white/[0.08] bg-black/20 px-4 py-3 text-sm text-zinc-300">
-                      <p>{String(entry.oldValue)} → {String(entry.newValue)}</p>
-                    </div>
+          <div className="mt-8 space-y-4">
+            {decisionTimeline.timeline.map((entry, index) => (
+              <div key={`${entry.timestamp}-${entry.category}-${index}`} className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
+                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                  <div>
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-600">{entry.timestamp}</p>
+                    <h3 className="mt-2 text-lg font-semibold text-white">{entry.category}</h3>
+                    <p className="mt-2 text-sm leading-7 text-zinc-400">{entry.reason}</p>
+                  </div>
+                  <div className="rounded-2xl border border-white/[0.08] bg-black/20 px-4 py-3 text-sm text-zinc-300">
+                    <p>{String(entry.oldValue)} → {String(entry.newValue)}</p>
                   </div>
                 </div>
-              ))}
-            </div>
-          ) : (
-            <div className="mt-8 rounded-2xl border border-dashed border-white/[0.1] bg-black/10 p-8 text-center text-sm text-zinc-400">
-              No meaningful changes have occurred yet.
-            </div>
-          )}
+              </div>
+            ))}
+          </div>
         </section>
+        )}
 
         {/* EXECUTIVE RECOMMENDATION */}
 

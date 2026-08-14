@@ -30,6 +30,8 @@ const GLOSSARY: Record<string, string> = {
     "Closing Line Value — the difference between the price captured when you added a bet and the market's final closing price before kickoff. Positive CLV means you received better odds than the market's closing consensus. CLV is widely used to assess long-term betting quality.",
   "Market Intelligence":
     "SIA's analysis of sportsbook pricing behavior, including how many books are moving, the magnitude of line moves, steam signals, and directional consensus. High Market Intelligence score means market data supports the model's position.",
+  "Market Grade":
+    "A letter grade (A–F) summarising how strongly sportsbook movement and market signals support the SIA recommendation. It is separate from the overall SI Score. A lower Market Grade means the broader market has not yet moved toward the model's position — this can reduce conviction, but a bet with a low Market Grade can still carry strong model edge and positive expected value.",
   "Data Completeness":
     "The percentage of relevant context available for this projection — including injury reports, weather data, and market information. Low completeness reduces model confidence in the assessment.",
 };

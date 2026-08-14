@@ -129,7 +129,7 @@ export default function BriefingPage() {
       try {
         const [gamesResult, oppsResult] = await Promise.allSettled([
           fetchJson<GamesResponse>("/api/games?week=1"),
-          fetchJson<OppsResponse>("/api/opportunities?limit=100"),
+          fetchJson<OppsResponse>("/api/opportunities?limit=100&week=1"),
         ]);
 
         if (gamesResult.status === "fulfilled") {
