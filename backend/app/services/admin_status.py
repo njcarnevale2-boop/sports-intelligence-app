@@ -13,7 +13,9 @@ from app.services.injury_history import get_injury_summary
 from app.services.odds_status import get_odds_status
 from app.services.recommendation_snapshot import get_clv_summary
 from app.services.refresh_orchestrator import get_refresh_status
+from app.services.social_history import get_query_usage_summary
 from app.services.social_intelligence import social_intelligence_service
+from app.services.social_sources import get_social_source_coverage_report
 from app.services.weather_history import get_weather_summary
 from database.models import PerformanceRecord
 from database.session import SessionLocal
@@ -43,6 +45,8 @@ class AdminStatusService:
         clv_summary = get_clv_summary()
         inj_summary = get_injury_summary()
         social_summary = social_intelligence_service.metadata()
+        social_coverage = get_social_source_coverage_report()
+        social_usage = get_query_usage_summary()
         wx_summary = get_weather_summary()
         inj_provider_meta = provider_metadata.get("injury", {})
         wx_provider_meta  = provider_metadata.get("weather", {})
@@ -103,6 +107,12 @@ class AdminStatusService:
             "socialOfficialSignals": social_summary.get("officialSignals", 0),
             "lastSocialIngestion": social_summary.get("lastIngestion"),
             "lastSocialError": (social_summary.get("errors") or [None])[0],
+            "socialCoveragePercent": social_coverage.get("coveragePercent", 0.0),
+            "socialTeamsComplete": social_coverage.get("teamsComplete", 0),
+            "socialTeamsPartial": social_coverage.get("teamsPartial", 0),
+            "socialTeamsMissing": social_coverage.get("teamsMissing", 0),
+            "socialQueriesExecuted": social_usage.get("queriesExecuted", 0),
+            "socialPostsRead": social_usage.get("postsRead", 0),
             # Weather status fields
             "weatherProvider":     wx_provider_meta.get("provider", "Open-Meteo (Free)"),
             "weatherIsLive":       wx_provider_meta.get("isLive", False),

@@ -15,7 +15,6 @@ from app.services.social_sources import (
     SOURCE_TYPE_TEAM_OFFICIAL,
     get_social_source_summary,
     get_social_sources,
-    get_sources_by_handle,
 )
 
 
@@ -66,10 +65,11 @@ class SocialIntelligenceService:
         persist_history: bool = True,
         now_provider: Optional[Callable[[], datetime]] = None,
     ) -> None:
-        self.registry = registry or get_social_sources(active_only=False)
+        self.registry = registry or get_social_sources(active_only=False, include_national=True)
         self.sources_by_handle = {
             str(source["handle"]): source
             for source in self.registry
+            if str(source.get("handle") or "").strip()
         }
         self.mock_templates = mock_templates or self._default_mock_templates()
         self.persist_history = persist_history
@@ -314,8 +314,10 @@ class SocialIntelligenceService:
                 "handle": source_handle or f"mock_{team.lower()}_source",
                 "sourceType": SOURCE_TYPE_OTHER_VERIFIED,
                 "credibilityScore": 55,
+                "tier": "WATCHLIST",
                 "priority": 99,
                 "active": True,
+                "verified": False,
             })
 
             timestamp = now - timedelta(hours=float(template.get("hoursAgo", 1) or 1))
@@ -417,10 +419,11 @@ class SocialIntelligenceService:
     def _resolve_status(self, group: Sequence[Dict[str, Any]]) -> str:
         statuses = {str(signal.get("status", "REPORTED")).upper() for signal in group}
         source_types = {str(signal.get("sourceType", "")).upper() for signal in group}
+        official_confirmation = any(bool(signal.get("officialConfirmation", False)) for signal in group)
 
         if "DISMISSED" in statuses:
             return "DISMISSED"
-        if "OFFICIAL" in statuses or SOURCE_TYPE_TEAM_OFFICIAL in source_types:
+        if official_confirmation or SOURCE_TYPE_TEAM_OFFICIAL in source_types:
             return "OFFICIAL"
         if len(group) >= 2:
             return "CORROBORATED"
@@ -557,6 +560,7 @@ class SocialIntelligenceService:
                 "sourceHandle": "mock_mia_official",
                 "textSummary": "Mock example: team communications noted a planned first-team left tackle rotation.",
                 "status": "OFFICIAL",
+                "officialConfirmation": True,
                 "hoursAgo": 3,
                 "estimatedPointImpact": 0.2,
                 "marketRelevance": "MEDIUM",
@@ -587,6 +591,7 @@ class SocialIntelligenceService:
                 "sourceHandle": "mock_kc_official",
                 "textSummary": "Mock example: official team messaging dismissed the earlier workload speculation.",
                 "status": "DISMISSED",
+                "officialConfirmation": True,
                 "hoursAgo": 1,
                 "estimatedPointImpact": 0.0,
                 "marketRelevance": "LOW",
@@ -602,6 +607,7 @@ class SocialIntelligenceService:
                 "sourceHandle": "mock_dal_official",
                 "textSummary": "Mock example: the club announced a backup quarterback would handle a package of first-team reps.",
                 "status": "OFFICIAL",
+                "officialConfirmation": True,
                 "hoursAgo": 5,
                 "estimatedPointImpact": 0.7,
                 "marketRelevance": "HIGH",

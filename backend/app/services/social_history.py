@@ -52,6 +52,27 @@ CREATE TABLE IF NOT EXISTS social_ingestion_runs (
     last_ingestion          VARCHAR,
     errors                  TEXT
 );
+
+CREATE TABLE IF NOT EXISTS social_seen_posts (
+    post_id                 VARCHAR   NOT NULL,
+    first_seen_at           TIMESTAMP NOT NULL,
+    last_seen_at            TIMESTAMP NOT NULL,
+    source_handle           VARCHAR,
+    team_scope              VARCHAR,
+    payload_hash            VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS social_query_usage (
+    executed_at             TIMESTAMP NOT NULL,
+    provider                VARCHAR,
+    team_scope              VARCHAR,
+    query_text              TEXT,
+    query_batch_index       INTEGER,
+    posts_read              INTEGER,
+    usage_units             DOUBLE,
+    estimated_cost          DOUBLE,
+    metadata                TEXT
+);
 """
 
 
@@ -211,4 +232,133 @@ def get_social_summary() -> Dict[str, Any]:
         "officialSignals": int(latest[6] or 0),
         "lastIngestion": latest[7],
         "lastError": errors,
+    }
+
+
+def has_seen_post(post_id: str) -> bool:
+    _ensure_schema()
+    if not _DB_PATH.exists() or not post_id:
+        return False
+
+    try:
+        con = _open_db(read_only=True)
+        row = con.execute(
+            "SELECT 1 FROM social_seen_posts WHERE post_id = ? LIMIT 1",
+            [post_id],
+        ).fetchone()
+        con.close()
+        return row is not None
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Could not check seen social post: %s", exc)
+        return False
+
+
+def store_seen_posts(posts: List[Dict[str, Any]]) -> int:
+    _ensure_schema()
+    if not _DB_PATH.exists() or not posts:
+        return 0
+
+    now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+    rows = []
+    for post in posts:
+        post_id = str(post.get("postId") or "").strip()
+        if not post_id:
+            continue
+        rows.append(
+            [
+                post_id,
+                now_naive,
+                now_naive,
+                post.get("sourceHandle"),
+                post.get("teamScope"),
+                post.get("payloadHash"),
+            ]
+        )
+
+    if not rows:
+        return 0
+
+    try:
+        con = _open_db()
+        for row in rows:
+            existing = con.execute(
+                "SELECT 1 FROM social_seen_posts WHERE post_id = ? LIMIT 1",
+                [row[0]],
+            ).fetchone()
+            if existing:
+                con.execute(
+                    "UPDATE social_seen_posts SET last_seen_at = ?, source_handle = ?, team_scope = ?, payload_hash = ? WHERE post_id = ?",
+                    [row[2], row[3], row[4], row[5], row[0]],
+                )
+            else:
+                con.execute(
+                    "INSERT INTO social_seen_posts VALUES (?,?,?,?,?,?)",
+                    row,
+                )
+        con.close()
+        return len(rows)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Could not store seen social posts: %s", exc)
+        return 0
+
+
+def store_query_usage(record: Dict[str, Any]) -> None:
+    _ensure_schema()
+    if not _DB_PATH.exists():
+        return
+
+    now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+    row = [
+        now_naive,
+        record.get("provider"),
+        record.get("teamScope"),
+        record.get("queryText"),
+        int(record.get("queryBatchIndex", 0) or 0),
+        int(record.get("postsRead", 0) or 0),
+        float(record.get("usageUnits", 0.0) or 0.0),
+        float(record.get("estimatedCost", 0.0) or 0.0),
+        json.dumps(record.get("metadata") or {}),
+    ]
+
+    try:
+        con = _open_db()
+        con.execute(
+            "INSERT INTO social_query_usage VALUES (?,?,?,?,?,?,?,?,?)",
+            row,
+        )
+        con.close()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Could not store social query usage: %s", exc)
+
+
+def get_query_usage_summary() -> Dict[str, Any]:
+    default = {
+        "queriesExecuted": 0,
+        "postsRead": 0,
+        "usageUnits": 0.0,
+        "estimatedCost": 0.0,
+    }
+
+    _ensure_schema()
+    if not _DB_PATH.exists():
+        return default
+
+    try:
+        con = _open_db(read_only=True)
+        row = con.execute(
+            "SELECT COUNT(*), COALESCE(SUM(posts_read), 0), COALESCE(SUM(usage_units), 0), COALESCE(SUM(estimated_cost), 0) FROM social_query_usage"
+        ).fetchone()
+        con.close()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Could not load social query usage summary: %s", exc)
+        return default
+
+    if row is None:
+        return default
+
+    return {
+        "queriesExecuted": int(row[0] or 0),
+        "postsRead": int(row[1] or 0),
+        "usageUnits": float(row[2] or 0.0),
+        "estimatedCost": float(row[3] or 0.0),
     }

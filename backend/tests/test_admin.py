@@ -25,6 +25,7 @@ def test_admin_status_endpoint_returns_metrics():
     assert "socialProvider" in payload
     assert "socialDataStatus" in payload
     assert "socialSourcesActive" in payload
+    assert "socialCoveragePercent" in payload
     # Scheduler fields
     assert "scheduler" in payload
     sched = payload["scheduler"]
@@ -53,3 +54,11 @@ def test_admin_refresh_endpoint_returns_summary():
     assert "timestamp" in payload
     assert "oddsRefresh" in payload
     assert "triggered" in payload["oddsRefresh"]
+
+
+def test_admin_social_sources_coverage_endpoint():
+    response = client.get("/api/admin/social-sources/coverage")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["teamsCovered"] == 32
+    assert "teams" in payload

@@ -69,6 +69,12 @@ type AdminStatus = {
   socialOfficialSignals?: number;
   lastSocialIngestion?: string | null;
   lastSocialError?: string | null;
+  socialCoveragePercent?: number;
+  socialTeamsComplete?: number;
+  socialTeamsPartial?: number;
+  socialTeamsMissing?: number;
+  socialQueriesExecuted?: number;
+  socialPostsRead?: number;
   // Weather status
   weatherProvider?: string;
   weatherIsLive?: boolean;
@@ -77,6 +83,27 @@ type AdminStatus = {
   weatherGamesUpdated?: number;
   weatherForecastsAvailable?: number;
   lastWeatherError?: string | null;
+};
+
+type SocialCoverageTeam = {
+  team: string;
+  sourcesActive: number;
+  verifiedSources: number;
+  tier1: number;
+  tier2: number;
+  tier3: number;
+  coverageStatus: "COMPLETE" | "PARTIAL" | "MISSING";
+};
+
+type SocialCoverageResponse = {
+  teamsCovered: number;
+  teamsComplete: number;
+  teamsPartial: number;
+  teamsMissing: number;
+  totalSources: number;
+  verifiedSources: number;
+  coveragePercent: number;
+  teams: SocialCoverageTeam[];
 };
 
 const metricCard = (label: string, value: string | number, accent = "text-white") => (
@@ -88,6 +115,7 @@ const metricCard = (label: string, value: string | number, accent = "text-white"
 
 export default function AdminPage() {
   const [status, setStatus] = useState<AdminStatus | null>(null);
+  const [socialCoverage, setSocialCoverage] = useState<SocialCoverageResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -95,8 +123,12 @@ export default function AdminPage() {
     try {
       setLoading(true);
       try {
-        const payload = await fetchJson<AdminStatus>("/api/admin/status");
+        const [payload, coverage] = await Promise.all([
+          fetchJson<AdminStatus>("/api/admin/status"),
+          fetchJson<SocialCoverageResponse>("/api/admin/social-sources/coverage"),
+        ]);
         setStatus(payload);
+        setSocialCoverage(coverage);
       } catch {
         setStatus({
           apiHealth: "degraded",
@@ -110,6 +142,7 @@ export default function AdminPage() {
           queueStatus: "idle",
           errorLog: [{ timestamp: new Date().toISOString(), message: "Unable to fetch admin status" }],
         });
+        setSocialCoverage(null);
       }
     } catch (error) {
       console.error(error);
@@ -125,6 +158,7 @@ export default function AdminPage() {
         queueStatus: "idle",
         errorLog: [{ timestamp: new Date().toISOString(), message: "Unable to fetch admin status" }],
       });
+      setSocialCoverage(null);
     } finally {
       setLoading(false);
     }
@@ -397,12 +431,95 @@ export default function AdminPage() {
                   <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Official Signals</p>
                   <p className="mt-1 font-medium text-emerald-400">{status.socialOfficialSignals ?? 0}</p>
                 </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Coverage</p>
+                  <p className="mt-1 font-medium text-white">{status.socialCoveragePercent != null ? `${status.socialCoveragePercent}%` : "0%"}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Queries Prepared</p>
+                  <p className="mt-1 font-medium text-white">{status.socialQueriesExecuted ?? 0}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Posts Read</p>
+                  <p className="mt-1 font-medium text-white">{status.socialPostsRead ?? 0}</p>
+                </div>
                 <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm col-span-full">
                   <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Last Error</p>
                   <p className="mt-1 text-xs font-medium text-amber-400 break-words">
                     {status.lastSocialError ?? "None"}
                   </p>
                 </div>
+              </div>
+            </section>
+
+            <section className="mt-6 rounded-3xl border border-white/10 bg-[#0B1119] p-6">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-lg font-semibold">Social Sources</h2>
+                  <p className="mt-1 text-sm text-zinc-500">Internal coverage tracking for future real NFL source onboarding.</p>
+                </div>
+                <div className="text-right text-sm text-zinc-400">
+                  <p>{socialCoverage?.teamsCovered ?? 0} teams represented</p>
+                  <p>{socialCoverage?.coveragePercent ?? 0}% coverage</p>
+                </div>
+              </div>
+
+              <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Complete</p>
+                  <p className="mt-1 font-medium text-emerald-400">{socialCoverage?.teamsComplete ?? 0}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Partial</p>
+                  <p className="mt-1 font-medium text-amber-300">{socialCoverage?.teamsPartial ?? 0}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Missing</p>
+                  <p className="mt-1 font-medium text-red-300">{socialCoverage?.teamsMissing ?? 0}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Verified Sources</p>
+                  <p className="mt-1 font-medium text-white">{socialCoverage?.verifiedSources ?? 0}</p>
+                </div>
+              </div>
+
+              <div className="mt-4 overflow-x-auto rounded-2xl border border-white/10">
+                <table className="min-w-full divide-y divide-white/10 text-sm">
+                  <thead className="bg-black/20 text-zinc-500">
+                    <tr>
+                      <th className="px-4 py-3 text-left font-medium">Team</th>
+                      <th className="px-4 py-3 text-left font-medium">Sources Active</th>
+                      <th className="px-4 py-3 text-left font-medium">Verified Sources</th>
+                      <th className="px-4 py-3 text-left font-medium">Tier 1</th>
+                      <th className="px-4 py-3 text-left font-medium">Tier 2</th>
+                      <th className="px-4 py-3 text-left font-medium">Tier 3</th>
+                      <th className="px-4 py-3 text-left font-medium">Coverage Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/10 bg-[#0D131C] text-zinc-300">
+                    {(socialCoverage?.teams ?? []).map((team) => (
+                      <tr key={team.team}>
+                        <td className="px-4 py-3 font-medium text-white">{team.team}</td>
+                        <td className="px-4 py-3">{team.sourcesActive}</td>
+                        <td className="px-4 py-3">{team.verifiedSources}</td>
+                        <td className="px-4 py-3">{team.tier1}</td>
+                        <td className="px-4 py-3">{team.tier2}</td>
+                        <td className="px-4 py-3">{team.tier3}</td>
+                        <td className="px-4 py-3">
+                          <span className={`rounded-full border px-2.5 py-1 text-xs ${
+                            team.coverageStatus === "COMPLETE"
+                              ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-400"
+                              : team.coverageStatus === "PARTIAL"
+                                ? "border-amber-400/20 bg-amber-400/10 text-amber-300"
+                                : "border-red-400/20 bg-red-400/10 text-red-300"
+                          }`}>
+                            {team.coverageStatus}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </section>
 

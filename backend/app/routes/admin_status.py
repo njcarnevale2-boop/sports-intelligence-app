@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from app.services.admin_status import get_admin_status_service
 from app.services.data_refresh import refresh_all_data
 from app.services.refresh_orchestrator import trigger_now, get_refresh_status
+from app.services.social_sources import get_social_source_coverage_report
 
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -17,6 +18,11 @@ def get_admin_status():
 @router.get("/refresh-status")
 def get_odds_refresh_status():
     return get_refresh_status()
+
+
+@router.get("/social-sources/coverage")
+def get_social_sources_coverage():
+    return get_social_source_coverage_report()
 
 
 @router.post("/refresh")

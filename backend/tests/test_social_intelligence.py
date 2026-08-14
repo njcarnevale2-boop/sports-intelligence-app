@@ -6,6 +6,15 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.services.social_intelligence import SocialIntelligenceService
+from app.services.social_sources import (
+    SOURCE_TIER_1,
+    SOURCE_TIER_2,
+    SOURCE_TIER_3,
+    SOURCE_TIER_WATCHLIST,
+    get_social_source_coverage_report,
+    infer_source_tier,
+)
+from app.services.x_query_builder import build_query_batches
 
 
 client = TestClient(app)
@@ -323,6 +332,37 @@ def test_mock_provider_labeling() -> None:
     assert game_context["dataStatus"] == "MOCK"
 
 
+def test_source_tier_behavior() -> None:
+    assert infer_source_tier(95) == SOURCE_TIER_1
+    assert infer_source_tier(83) == SOURCE_TIER_2
+    assert infer_source_tier(74) == SOURCE_TIER_3
+    assert infer_source_tier(60) == SOURCE_TIER_WATCHLIST
+
+
+def test_official_requires_official_confirmation_or_team_source() -> None:
+    service = _service(
+        [
+            {
+                "team": "BUF",
+                "player": "Mock WR",
+                "position": "WR",
+                "category": "PRACTICE_STATUS",
+                "severity": "MODERATE",
+                "sourceHandle": "buf_nat",
+                "textSummary": "Mock example: national reporter used strong language.",
+                "status": "OFFICIAL",
+                "hoursAgo": 1,
+                "estimatedPointImpact": 0.3,
+                "marketRelevance": "MEDIUM",
+                "gameImpact": -0.1,
+            }
+        ]
+    )
+
+    signal = service.ingest_mock_signals(force=True)[0]
+    assert signal["status"] == "REPORTED"
+
+
 def test_social_api_endpoint_returns_mock_payload() -> None:
     games_response = client.get("/api/games")
     assert games_response.status_code == 200
@@ -334,3 +374,28 @@ def test_social_api_endpoint_returns_mock_payload() -> None:
     assert payload["provider"] == "MOCK"
     assert payload["isLive"] is False
     assert "keySignals" in payload
+
+
+def test_query_batching_excludes_inactive_unverified_and_duplicate_handles() -> None:
+    sources = [
+        {"handle": "alpha", "active": True, "verified": True, "tier": SOURCE_TIER_1, "priority": 1, "credibilityScore": 95},
+        {"handle": "alpha", "active": True, "verified": True, "tier": SOURCE_TIER_1, "priority": 1, "credibilityScore": 95},
+        {"handle": "beta", "active": False, "verified": True, "tier": SOURCE_TIER_1, "priority": 2, "credibilityScore": 93},
+        {"handle": "gamma", "active": True, "verified": False, "tier": SOURCE_TIER_2, "priority": 3, "credibilityScore": 84},
+        {"handle": "delta", "active": True, "verified": True, "tier": SOURCE_TIER_WATCHLIST, "priority": 4, "credibilityScore": 60},
+        {"handle": "epsilon", "active": True, "verified": True, "tier": SOURCE_TIER_2, "priority": 5, "credibilityScore": 82},
+    ]
+
+    batches = build_query_batches(sources, keywords=["injury"], max_query_length=80, max_sources_per_batch=1)
+    assert len(batches) == 2
+    assert "from:alpha" in batches[0]["query"]
+    assert "from:epsilon" in batches[1]["query"]
+    assert "from:beta" not in " ".join(batch["query"] for batch in batches)
+    assert "from:gamma" not in " ".join(batch["query"] for batch in batches)
+    assert "from:delta" not in " ".join(batch["query"] for batch in batches)
+
+
+def test_32_teams_represented_in_registry() -> None:
+    coverage = get_social_source_coverage_report()
+    assert coverage["teamsCovered"] == 32
+    assert len(coverage["teams"]) == 32
