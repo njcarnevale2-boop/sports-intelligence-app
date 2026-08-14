@@ -146,6 +146,18 @@ def test_repeated_capture_is_idempotent(db_path):
     assert len(rows) == 1 and rows[0][0] == "AVAILABLE"
 
 
+def test_already_captured_line_is_skipped(db_path):
+    """AVAILABLE snapshots are not reprocessed by later capture runs."""
+    kickoff = _naive(_utc(-1))
+    _insert_snap(db_path, "evt3b", "spreads", "home", -3.5, -110.0, "FD", kickoff, status="AVAILABLE")
+    _insert_odds(db_path, "evt3b", "spreads", "home", -2.5, -110.0, "FD", _naive(_utc(-1.5)))
+    counts = _run_capture(db_path)
+    assert counts["eligible"] == 0
+    assert counts["captured"] == 0
+    rows = _fetch(db_path, "evt3b")
+    assert len(rows) == 1 and rows[0][0] == "AVAILABLE"
+
+
 def test_no_eligible_pre_kick_snapshot_marks_not_captured(db_path):
     """All odds snaps fall within the 2-min cutoff -> NOT_CAPTURED."""
     kickoff = _naive(_utc(-1))
@@ -210,13 +222,17 @@ def test_different_sportsbooks_captured_separately(db_path):
 
 
 def test_get_refresh_status_includes_clv_fields(tmp_path):
-    """get_refresh_status() always returns the three CLV counter keys."""
+    """get_refresh_status() always returns the closing-capture scheduler keys."""
     from app.services import refresh_orchestrator as orch
     with patch.object(orch, "_STATE_FILE", tmp_path / "state.json"):
         status = orch.get_refresh_status()
+    assert "closingCaptureLastRun" in status
+    assert "closingCaptureEligible" in status
     assert "closingLinesCapturedThisRun" in status
     assert "closingLinesStillPending"    in status
     assert "closingLinesMissing"         in status
+    assert "closingCaptureErrors"        in status
+    assert "lastClosingCaptureError"     in status
 
 
 def test_trigger_now_response_includes_clv_fields(tmp_path):
@@ -225,9 +241,12 @@ def test_trigger_now_response_includes_clv_fields(tmp_path):
     state_file = tmp_path / "state.json"
     state_file.write_text(json.dumps({
         "lastRefreshAt": "2026-08-12T00:00:00+00:00",
+        "closingCaptureLastRun": "2026-08-12T00:30:00+00:00",
+        "closingCaptureEligible": 4,
         "closingLinesCapturedThisRun": 3,
         "closingLinesStillPending": 1,
         "closingLinesMissing": 0,
+        "closingCaptureErrors": 0,
         "isRunning": False,
         "consecutiveFailures": 0,
     }))
@@ -236,4 +255,41 @@ def test_trigger_now_response_includes_clv_fields(tmp_path):
         patch.object(orch, "_run_once", return_value=True),
     ):
         result = orch.trigger_now()
+    assert "closingCaptureLastRun" in result
+    assert "closingCaptureEligible" in result
     assert "closingLinesCapturedThisRun" in result
+    assert "closingCaptureErrors" in result
+
+
+def test_closing_capture_failure_does_not_break_refresh(tmp_path):
+    """Refresh survives closing-capture failure and records the error state."""
+    from types import SimpleNamespace
+    from app.services import refresh_orchestrator as orch
+
+    state_file = tmp_path / "state.json"
+    success = SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+    with (
+        patch.object(orch, "_STATE_FILE", state_file),
+        patch.object(orch.subprocess, "run", side_effect=[success, success]),
+        patch("app.services.recommendation_snapshot.capture_closing_lines", side_effect=RuntimeError("capture blew up")),
+        patch("app.services.performance.get_performance_service") as perf_factory,
+        patch("app.services.injuries.InjuryAnalyzer") as injury_analyzer,
+        patch("app.services.injury_history.get_injury_summary", return_value={"playersTracked": 0, "teamsUpdated": 0}),
+        patch("app.services.weather_history.get_weather_summary", return_value={"forecastsAvailable": 0}),
+        patch.object(orch, "_read_quota_from_db", return_value=None),
+    ):
+        perf_factory.return_value.get_performance_summary.return_value = {
+            "closingLinesCaptured": 0,
+            "pendingClosingLines": 0,
+            "missingClosingLines": 0,
+            "averageCLV": None,
+        }
+        injury_analyzer.return_value.analyze.return_value = None
+        injury_analyzer.return_value._data_status = "LIVE"
+        assert orch._run_once() is True
+
+    status = json.loads(state_file.read_text())
+    assert status["lastError"] is None
+    assert status["closingCaptureErrors"] == 1
+    assert status["lastClosingCaptureError"] == "capture blew up"

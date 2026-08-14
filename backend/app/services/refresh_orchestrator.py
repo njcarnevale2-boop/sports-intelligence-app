@@ -114,9 +114,13 @@ _EMPTY_STATE: Dict[str, Any] = {
     "consecutiveFailures": 0,
     "quotaRemaining": None,
     # CLV closing-capture stats (updated each run)
+    "closingCaptureLastRun": None,
+    "closingCaptureEligible": 0,
     "closingLinesCapturedThisRun": 0,
     "closingLinesStillPending": 0,
     "closingLinesMissing": 0,
+    "closingCaptureErrors": 0,
+    "lastClosingCaptureError": None,
     # Injury refresh stats (updated each run)
     "injuryPlayersUpdated": 0,
     "injuryTeamsUpdated": 0,
@@ -193,19 +197,40 @@ def _run_once() -> bool:
 
         # Step 3: capture closing lines for PENDING recommendations post-kickoff.
         # Already-captured (AVAILABLE) records are never touched (idempotent).
-        clv_counts: Dict[str, int] = {"captured": 0, "pending": 0, "missing": 0}
+        clv_counts: Dict[str, int] = {"eligible": 0, "captured": 0, "pending": 0, "missing": 0, "errors": 0}
+        closing_capture_error: Optional[str] = None
+        closing_started = datetime.now(timezone.utc)
         try:
-            from app.services.recommendation_snapshot import capture_closing_lines, _open_db as _snap_db, _DB_PATH as _snap_db_path
+            from app.services.recommendation_snapshot import capture_closing_lines
+            log.info("Closing capture starting")
             clv_counts = capture_closing_lines()
+            closing_duration = round((datetime.now(timezone.utc) - closing_started).total_seconds(), 3)
             log.info(
-                "Closing line capture: captured=%d pending=%d missing=%d",
-                clv_counts["captured"], clv_counts["pending"], clv_counts["missing"],
+                "Closing capture finished: eligible=%d captured=%d pending=%d missing=%d errors=%d duration=%.3fs",
+                clv_counts["eligible"],
+                clv_counts["captured"],
+                clv_counts["pending"],
+                clv_counts["missing"],
+                clv_counts["errors"],
+                closing_duration,
             )
-            # Log detail for each newly captured record
-            if clv_counts["captured"] > 0:
-                _log_captured_records()
         except Exception as exc:
+            closing_capture_error = str(exc)[:300]
             log.warning("Closing line capture step failed (non-fatal): %s", exc)
+
+        # Step 4: refresh performance metrics after CLV capture (non-fatal).
+        try:
+            from app.services.performance import get_performance_service
+            perf_summary = get_performance_service().get_performance_summary()
+            log.info(
+                "Performance refresh: closing_captured=%s pending=%s missing=%s average_clv=%s",
+                perf_summary.get("closingLinesCaptured"),
+                perf_summary.get("pendingClosingLines"),
+                perf_summary.get("missingClosingLines"),
+                perf_summary.get("averageCLV"),
+            )
+        except Exception as exc:
+            log.warning("Performance refresh step failed (non-fatal): %s", exc)
 
         duration = round((datetime.now(timezone.utc) - started).total_seconds(), 2)
         log.info("Odds refresh finished in %.2fs", duration)
@@ -214,11 +239,15 @@ def _run_once() -> bool:
         state["lastRefreshAt"] = started.isoformat()
         state["lastError"] = None
         state["consecutiveFailures"] = 0
+        state["closingCaptureLastRun"] = datetime.now(timezone.utc).isoformat()
+        state["closingCaptureEligible"] = clv_counts["eligible"]
         state["closingLinesCapturedThisRun"] = clv_counts["captured"]
         state["closingLinesStillPending"]    = clv_counts["pending"]
         state["closingLinesMissing"]         = clv_counts["missing"]
+        state["closingCaptureErrors"]        = max(clv_counts["errors"], 1 if closing_capture_error else 0)
+        state["lastClosingCaptureError"]     = closing_capture_error
 
-        # Step 4: refresh injury data (non-fatal – never blocks odds refresh)
+        # Step 5: refresh injury data (non-fatal – never blocks odds refresh)
         try:
             from app.services.injuries import InjuryAnalyzer
             from app.services.injury_history import get_injury_summary
@@ -238,7 +267,7 @@ def _run_once() -> bool:
             log.warning("Injury refresh step failed (non-fatal): %s", exc)
             state["lastInjuryError"] = str(exc)[:300]
 
-        # Step 5: refresh weather forecasts for upcoming games (non-fatal)
+        # Step 6: refresh weather forecasts for upcoming games (non-fatal)
         try:
             from app.services.weather import WeatherAnalyzer
             from app.services.weather_history import get_weather_summary
@@ -421,9 +450,13 @@ def trigger_now() -> Dict[str, Any]:
         "lastRefreshAt": state.get("lastRefreshAt"),
         "lastError": state.get("lastError"),
         "quotaRemaining": state.get("quotaRemaining"),
+        "closingCaptureLastRun": state.get("closingCaptureLastRun"),
+        "closingCaptureEligible": state.get("closingCaptureEligible", 0),
         "closingLinesCapturedThisRun": state.get("closingLinesCapturedThisRun", 0),
         "closingLinesStillPending":    state.get("closingLinesStillPending",    0),
         "closingLinesMissing":         state.get("closingLinesMissing",         0),
+        "closingCaptureErrors":        state.get("closingCaptureErrors",        0),
+        "lastClosingCaptureError":     state.get("lastClosingCaptureError"),
     }
 
 
@@ -444,9 +477,13 @@ def get_refresh_status() -> Dict[str, Any]:
         "quotaRemaining": quota,
         "quotaPaused": effective is None,
         "provider": "The Odds API",
+        "closingCaptureLastRun": state.get("closingCaptureLastRun"),
+        "closingCaptureEligible": int(state.get("closingCaptureEligible") or 0),
         "closingLinesCapturedThisRun": int(state.get("closingLinesCapturedThisRun") or 0),
         "closingLinesStillPending":    int(state.get("closingLinesStillPending")    or 0),
         "closingLinesMissing":         int(state.get("closingLinesMissing")         or 0),
+        "closingCaptureErrors":        int(state.get("closingCaptureErrors")        or 0),
+        "lastClosingCaptureError":     state.get("lastClosingCaptureError"),
         "injuryPlayersUpdated": int(state.get("injuryPlayersUpdated") or 0),
         "injuryTeamsUpdated":   int(state.get("injuryTeamsUpdated")   or 0),
         "lastInjuryError":      state.get("lastInjuryError"),

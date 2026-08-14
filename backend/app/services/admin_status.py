@@ -67,6 +67,10 @@ class AdminStatusService:
             # Scheduler fields
             "scheduler": refresh_status,
             # CLV / closing line fields
+            "closingCaptureLastRun": refresh_status.get("closingCaptureLastRun"),
+            "closingLinesCapturedThisRun": refresh_status.get("closingLinesCapturedThisRun", 0),
+            "closingCaptureErrors": refresh_status.get("closingCaptureErrors", 0),
+            "lastClosingCaptureError": refresh_status.get("lastClosingCaptureError"),
             "closingLinesCaptured": clv_summary["closingLinesCaptured"],
             "pendingClosingLines":  clv_summary["pendingClosingLines"],
             "missingClosingLines":  clv_summary["missingClosingLines"],

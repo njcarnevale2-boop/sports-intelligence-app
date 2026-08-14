@@ -10,12 +10,16 @@ DuckDB table: recommendation_snapshots (in the NFL Analytics OS database)
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.services.closing_line import calculate_clv, get_closing_line
+
+
+log = logging.getLogger("recommendation_snapshot")
 
 _DB_PATH = Path.home() / "Downloads" / "NFL_Analytics_OS_v1_9" / "database" / "nfl_model.duckdb"
 _SCHEDULE_CSV = Path.home() / "Downloads" / "NFL_Analytics_OS_v1_9" / "outputs" / "current_game_projections.csv"
@@ -137,13 +141,14 @@ def capture_closing_lines() -> Dict[str, int]:
     Scan PENDING snapshots.  For games that have kicked off, attempt to
     resolve a closing line from DuckDB odds_snapshots and compute CLV.
 
-    Returns counts: {captured, pending, missing}.
+    Returns counts: {eligible, captured, pending, missing, errors}.
     """
     _ensure_schema()
     if not _DB_PATH.exists():
-        return {"captured": 0, "pending": 0, "missing": 0}
+        return {"eligible": 0, "captured": 0, "pending": 0, "missing": 0, "errors": 0}
 
     now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+    started = datetime.now(timezone.utc)
 
     con = _open_db()
     try:
@@ -153,12 +158,16 @@ def capture_closing_lines() -> Dict[str, int]:
         ).fetchall()
     except Exception:
         con.close()
-        return {"captured": 0, "pending": 0, "missing": 0}
+        return {"eligible": 0, "captured": 0, "pending": 0, "missing": 0, "errors": 0}
     con.close()
 
+    log.info("Closing capture started: pending_snapshots=%d", len(pending))
+
+    eligible = 0
     captured = 0
     still_pending = 0
     missing = 0
+    errors = 0
 
     for row in pending:
         snap_id, event_id, market, side, rec_point, rec_price, sportsbook, commence_raw = row
@@ -185,62 +194,93 @@ def capture_closing_lines() -> Dict[str, int]:
             continue
 
         # Game has kicked off – attempt closing line capture
-        kickoff_aware = kickoff.replace(tzinfo=timezone.utc)
-        closing = get_closing_line(
-            event_id=event_id,
-            bookmaker_key=sportsbook or "",
-            market_key=market,
-            outcome_code=side,
-            kickoff_utc=kickoff_aware,
-        )
+        eligible += 1
 
-        if closing.closing_status != "AVAILABLE":
-            missing += 1
-            _update_status(snap_id, "NOT_CAPTURED")
-            continue
+        try:
+            kickoff_aware = kickoff.replace(tzinfo=timezone.utc)
+            closing = get_closing_line(
+                event_id=event_id,
+                bookmaker_key=sportsbook or "",
+                market_key=market,
+                outcome_code=side,
+                kickoff_utc=kickoff_aware,
+            )
 
-        clv = calculate_clv(
-            recommended_point=float(rec_point) if rec_point is not None else None,
-            recommended_price=float(rec_price) if rec_price is not None else None,
-            closing_point=closing.closing_point,
-            closing_price=closing.closing_price,
-            market=market,
-            side=side,
-        )
+            if closing.closing_status != "AVAILABLE":
+                missing += 1
+                _update_status(snap_id, "NOT_CAPTURED")
+                continue
 
-        closing_ts = closing.closing_timestamp
-        if isinstance(closing_ts, datetime) and closing_ts.tzinfo is not None:
-            closing_ts = closing_ts.replace(tzinfo=None)
+            clv = calculate_clv(
+                recommended_point=float(rec_point) if rec_point is not None else None,
+                recommended_price=float(rec_price) if rec_price is not None else None,
+                closing_point=closing.closing_point,
+                closing_price=closing.closing_price,
+                market=market,
+                side=side,
+            )
 
-        con = _open_db()
-        con.execute(
-            """
-            UPDATE recommendation_snapshots SET
-                closing_status     = 'AVAILABLE',
-                closing_point      = ?,
-                closing_price      = ?,
-                closing_sportsbook = ?,
-                closing_at         = ?,
-                clv_points         = ?,
-                clv_probability    = ?,
-                clv_percent        = ?
-            WHERE snapshot_id = ?
-            """,
-            [
-                closing.closing_point,
-                closing.closing_price,
-                sportsbook,
-                closing_ts,
-                clv.clv_points,
-                clv.clv_probability,
-                clv.clv_percent,
+            closing_ts = closing.closing_timestamp
+            if isinstance(closing_ts, datetime) and closing_ts.tzinfo is not None:
+                closing_ts = closing_ts.replace(tzinfo=None)
+
+            con = _open_db()
+            con.execute(
+                """
+                UPDATE recommendation_snapshots SET
+                    closing_status     = 'AVAILABLE',
+                    closing_point      = ?,
+                    closing_price      = ?,
+                    closing_sportsbook = ?,
+                    closing_at         = ?,
+                    clv_points         = ?,
+                    clv_probability    = ?,
+                    clv_percent        = ?
+                WHERE snapshot_id = ?
+                """,
+                [
+                    closing.closing_point,
+                    closing.closing_price,
+                    sportsbook,
+                    closing_ts,
+                    clv.clv_points,
+                    clv.clv_probability,
+                    clv.clv_percent,
+                    snap_id,
+                ],
+            )
+            con.close()
+            captured += 1
+        except Exception as exc:
+            errors += 1
+            still_pending += 1
+            log.warning(
+                "Closing capture failed for snapshot=%s event=%s market=%s side=%s: %s",
                 snap_id,
-            ],
-        )
-        con.close()
-        captured += 1
+                event_id,
+                market,
+                side,
+                exc,
+            )
 
-    return {"captured": captured, "pending": still_pending, "missing": missing}
+    duration = round((datetime.now(timezone.utc) - started).total_seconds(), 3)
+    log.info(
+        "Closing capture finished: eligible=%d captured=%d pending=%d missing=%d errors=%d duration=%.3fs",
+        eligible,
+        captured,
+        still_pending,
+        missing,
+        errors,
+        duration,
+    )
+
+    return {
+        "eligible": eligible,
+        "captured": captured,
+        "pending": still_pending,
+        "missing": missing,
+        "errors": errors,
+    }
 
 
 def _update_status(snapshot_id: str, status: str) -> None:
