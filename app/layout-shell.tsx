@@ -4,11 +4,11 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 import {
+  CalendarDays,
   ChartNoAxesCombined,
   CircleGauge,
   ClipboardList,
   CreditCard,
-  Gamepad2,
   LogIn,
   LogOut,
   MoreHorizontal,
@@ -31,13 +31,13 @@ const primaryNav = [
 // Bottom nav shows 4 primary items + "More"
 const mobileBottomNav = [
   { label: "Home", href: "/", icon: CircleGauge },
-  { label: "Games", href: "/games", icon: Gamepad2 },
+  { label: "Games", href: "/games", icon: CalendarDays },
   { label: "Plays", href: "/opportunities", icon: Trophy },
   { label: "My Card", href: "/my-card", icon: CreditCard },
 ];
 
 const researchNav = [
-  { label: "Games", href: "/games", icon: Gamepad2 },
+  { label: "Games", href: "/games", icon: CalendarDays },
   { label: "Line Movement", href: "/line-movement", icon: TrendingUp },
   { label: "Fantasy", href: "/fantasy", icon: ClipboardList },
   { label: "Performance", href: "/performance", icon: ChartNoAxesCombined },
