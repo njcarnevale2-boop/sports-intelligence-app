@@ -22,6 +22,9 @@ def test_admin_status_endpoint_returns_metrics():
     assert "oddsProvider" in payload
     assert "oddsDataStatus" in payload
     assert "snapshotCount" in payload
+    assert "socialProvider" in payload
+    assert "socialDataStatus" in payload
+    assert "socialSourcesActive" in payload
     # Scheduler fields
     assert "scheduler" in payload
     sched = payload["scheduler"]

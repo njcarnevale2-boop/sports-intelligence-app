@@ -13,6 +13,7 @@ from app.services.injury_history import get_injury_summary
 from app.services.odds_status import get_odds_status
 from app.services.recommendation_snapshot import get_clv_summary
 from app.services.refresh_orchestrator import get_refresh_status
+from app.services.social_intelligence import social_intelligence_service
 from app.services.weather_history import get_weather_summary
 from database.models import PerformanceRecord
 from database.session import SessionLocal
@@ -41,6 +42,7 @@ class AdminStatusService:
         refresh_status = get_refresh_status()
         clv_summary = get_clv_summary()
         inj_summary = get_injury_summary()
+        social_summary = social_intelligence_service.metadata()
         wx_summary = get_weather_summary()
         inj_provider_meta = provider_metadata.get("injury", {})
         wx_provider_meta  = provider_metadata.get("weather", {})
@@ -55,7 +57,15 @@ class AdminStatusService:
             "weatherLoaded": weather_loaded,
             "databaseStatus": database_status,
             "queueStatus": "running" if refresh_status["isRunning"] else "idle",
-            "providerMetadata": provider_metadata,
+            "providerMetadata": {
+                **provider_metadata,
+                "social": {
+                    "provider": social_summary.get("provider", "MOCK"),
+                    "lastUpdated": social_summary.get("lastIngestion"),
+                    "isLive": social_summary.get("isLive", False),
+                    "status": social_summary.get("dataStatus", "MOCK").title(),
+                },
+            },
             "errorLog": error_log,
             # Live odds fields
             "oddsProvider": odds_status["oddsProvider"],
@@ -83,6 +93,16 @@ class AdminStatusService:
             "injuryPlayersTracked": inj_summary.get("playersTracked", 0),
             "injuryTeamsUpdated": inj_summary.get("teamsUpdated", 0),
             "lastInjuryError":    inj_summary.get("lastInjuryError") or refresh_status.get("lastInjuryError"),
+            # Social status fields
+            "socialProvider": social_summary.get("provider", "MOCK"),
+            "socialIsLive": social_summary.get("isLive", False),
+            "socialDataStatus": social_summary.get("dataStatus", "MOCK"),
+            "socialSourcesActive": social_summary.get("sourcesActive", 0),
+            "socialSignalsDetected": social_summary.get("signalsDetected", 0),
+            "socialCorroboratedSignals": social_summary.get("corroboratedSignals", 0),
+            "socialOfficialSignals": social_summary.get("officialSignals", 0),
+            "lastSocialIngestion": social_summary.get("lastIngestion"),
+            "lastSocialError": (social_summary.get("errors") or [None])[0],
             # Weather status fields
             "weatherProvider":     wx_provider_meta.get("provider", "Open-Meteo (Free)"),
             "weatherIsLive":       wx_provider_meta.get("isLive", False),

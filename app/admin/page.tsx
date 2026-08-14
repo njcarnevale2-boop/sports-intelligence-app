@@ -34,6 +34,7 @@ type AdminStatus = {
     injury?: { provider?: string; lastUpdated?: string; isLive?: boolean; status?: string };
     weather?: { provider?: string; lastUpdated?: string; isLive?: boolean; status?: string };
     odds?: { provider?: string; lastUpdated?: string; isLive?: boolean; status?: string };
+    social?: { provider?: string; lastUpdated?: string; isLive?: boolean; status?: string };
   };
   errorLog: Array<{ timestamp: string; message: string }>;
   // Live odds fields
@@ -58,6 +59,16 @@ type AdminStatus = {
   injuryPlayersTracked?: number;
   injuryTeamsUpdated?: number;
   lastInjuryError?: string | null;
+  // Social status
+  socialProvider?: string;
+  socialIsLive?: boolean;
+  socialDataStatus?: string;
+  socialSourcesActive?: number;
+  socialSignalsDetected?: number;
+  socialCorroboratedSignals?: number;
+  socialOfficialSignals?: number;
+  lastSocialIngestion?: string | null;
+  lastSocialError?: string | null;
   // Weather status
   weatherProvider?: string;
   weatherIsLive?: boolean;
@@ -340,6 +351,56 @@ export default function AdminPage() {
                   <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Average CLV (pts)</p>
                   <p className={`mt-1 font-medium ${(status.averageCLV ?? 0) > 0 ? "text-emerald-400" : (status.averageCLV ?? 0) < 0 ? "text-red-400" : "text-zinc-400"}`}>
                     {status.averageCLV != null ? (status.averageCLV > 0 ? `+${status.averageCLV}` : status.averageCLV) : "—"}
+                  </p>
+                </div>
+              </div>
+            </section>
+
+            <section className="mt-6 rounded-3xl border border-white/10 bg-[#0B1119] p-6">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold">Social Intelligence Status</h2>
+                <span className={`rounded-full border px-3 py-1 text-xs ${
+                  status.socialDataStatus === "LIVE"
+                    ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-400"
+                    : status.socialDataStatus === "MOCK"
+                      ? "border-amber-400/20 bg-amber-400/10 text-amber-400"
+                      : "border-zinc-700 bg-zinc-800 text-zinc-400"
+                }`}>
+                  {status.socialDataStatus ?? "MOCK"}
+                </span>
+              </div>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Social Provider</p>
+                  <p className="mt-1 font-medium text-white">{status.socialProvider ?? "MOCK"}</p>
+                  <p className="text-[10px] text-zinc-600">{status.socialIsLive ? "Live" : "Mock ingestion only"}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Last Ingestion</p>
+                  <p className="mt-1 font-medium text-white">
+                    {status.lastSocialIngestion ? new Date(status.lastSocialIngestion).toLocaleString() : "n/a"}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Sources Active</p>
+                  <p className="mt-1 font-medium text-white">{status.socialSourcesActive ?? 0}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Signals Detected</p>
+                  <p className="mt-1 font-medium text-white">{status.socialSignalsDetected ?? 0}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Corroborated Signals</p>
+                  <p className="mt-1 font-medium text-sky-400">{status.socialCorroboratedSignals ?? 0}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Official Signals</p>
+                  <p className="mt-1 font-medium text-emerald-400">{status.socialOfficialSignals ?? 0}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm col-span-full">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Last Error</p>
+                  <p className="mt-1 text-xs font-medium text-amber-400 break-words">
+                    {status.lastSocialError ?? "None"}
                   </p>
                 </div>
               </div>

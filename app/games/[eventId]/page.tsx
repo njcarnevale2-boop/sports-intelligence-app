@@ -97,6 +97,53 @@ type Opportunity = {
 
 type WeatherStatus = { dataStatus?: string; lastUpdated?: string | null };
 
+type SocialSignal = {
+  signalId: string;
+  timestamp: string;
+  team: string;
+  player?: string | null;
+  position?: string | null;
+  category: string;
+  severity: string;
+  sourceName: string;
+  sourceHandle: string;
+  sourceType: string;
+  sourceCredibility: number;
+  textSummary: string;
+  corroborationCount: number;
+  confidence: number;
+  status: string;
+  estimatedPointImpact: number;
+  marketRelevance: string;
+  gameImpact: number;
+  eventId?: string | null;
+  provider: string;
+  isLive: boolean;
+};
+
+type SocialGameContext = {
+  available?: boolean;
+  eventId: string;
+  awayTeam?: string;
+  homeTeam?: string;
+  awaySocialScore?: number;
+  homeSocialScore?: number;
+  netSocialAdvantage?: number;
+  keySignals: SocialSignal[];
+  confidence?: number;
+  summary?: string;
+  provider: string;
+  isLive: boolean;
+  dataStatus: string;
+  sourcesActive?: number;
+  signalsDetected?: number;
+  corroboratedSignals?: number;
+  officialSignals?: number;
+  lastIngestion?: string | null;
+  errors?: string[];
+  reason?: string;
+};
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -134,6 +181,7 @@ export default function GameIntelligencePage() {
   const [opportunity, setOpportunity] = useState<Opportunity | null>(null);
   const [weather, setWeather] = useState<WeatherStatus | null>(null);
   const [injury, setInjury] = useState<InjuryContext | null>(null);
+  const [social, setSocial] = useState<SocialGameContext | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [added, setAdded] = useState(false);
@@ -161,17 +209,19 @@ export default function GameIntelligencePage() {
         } catch { /* ignore */ }
 
         // Parallel non-fatal requests
-        const [ctxResult, oppResult, weatherResult, injuryResult] = await Promise.allSettled([
+        const [ctxResult, oppResult, weatherResult, injuryResult, socialResult] = await Promise.allSettled([
           fetchJson<ScheduleContext>(`/api/games/${eventId}/context`),
           fetchJson<{ eventId: string; opportunity: Opportunity | null }>(`/api/games/${eventId}/opportunity`),
           fetchJson<WeatherStatus>(`/api/games/${eventId}/weather`),
           fetchJson<{ injuryContext: InjuryContext }>(`/api/games/${eventId}/injuries`),
+          fetchJson<SocialGameContext>(`/api/games/${eventId}/social-intelligence`),
         ]);
 
         if (ctxResult.status === "fulfilled") setContext(ctxResult.value);
         if (oppResult.status === "fulfilled") setOpportunity(oppResult.value.opportunity);
         if (weatherResult.status === "fulfilled") setWeather(weatherResult.value);
         if (injuryResult.status === "fulfilled") setInjury(injuryResult.value.injuryContext);
+        if (socialResult.status === "fulfilled") setSocial(socialResult.value);
       } catch (err) {
         const msg = err instanceof Error ? err.message : "";
         setError(msg.includes("404") ? "Game not found." : "Unable to load game intelligence.");
@@ -227,6 +277,7 @@ export default function GameIntelligencePage() {
   const travelMiles = formatTravelMiles(context?.travel);
   const travelShift = formatTravelShift(context?.travel);
   const injuryFreshness = getInjuryFreshness(injury);
+  const topSocialSignals = social?.keySignals?.slice(0, 3) ?? [];
 
   return (
     <main className="min-h-screen bg-[#070A0F] text-white">
@@ -477,6 +528,85 @@ export default function GameIntelligencePage() {
               )}
             </div>
           </div>
+        </section>
+
+        {/* SOCIAL INTELLIGENCE */}
+        <section className="rounded-[32px] border border-white/[0.08] bg-[#0B1119] p-8">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.2em] text-zinc-600">Social Intelligence</p>
+              <p className="mt-2 max-w-3xl text-sm text-zinc-500">
+                {social?.summary ?? social?.reason ?? "No social intelligence is currently attached to this matchup."}
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <Badge variant="outline" className="border-amber-400/20 bg-amber-400/[0.08] text-amber-300">
+                {social?.dataStatus ?? "MOCK"}
+              </Badge>
+              <Badge variant="outline" className="border-white/10 bg-white/[0.03] text-zinc-400">
+                {social?.provider ?? "MOCK"}
+              </Badge>
+            </div>
+          </div>
+
+          {social?.available !== false && topSocialSignals.length > 0 ? (
+            <>
+              <div className="mt-5 grid gap-3 sm:grid-cols-3 text-xs text-zinc-500">
+                <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                  <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Signals</p>
+                  <p className="mt-2 text-xl font-semibold text-white">{social?.signalsDetected ?? topSocialSignals.length}</p>
+                </div>
+                <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                  <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Corroborated</p>
+                  <p className="mt-2 text-xl font-semibold text-sky-300">{social?.corroboratedSignals ?? 0}</p>
+                </div>
+                <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                  <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Confidence</p>
+                  <p className="mt-2 text-xl font-semibold text-white">{social?.confidence?.toFixed(0) ?? "0"}/100</p>
+                </div>
+              </div>
+
+              <div className="mt-5 space-y-3">
+                {topSocialSignals.map((signal) => (
+                  <article key={signal.signalId} className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">
+                          {signal.team} · {signal.category.replaceAll("_", " ")}
+                        </p>
+                        <p className="mt-2 text-base font-semibold text-white">
+                          {signal.player ? `${signal.player}${signal.position ? ` (${signal.position})` : ""}` : "Team-level signal"}
+                        </p>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <Badge variant="outline" className="border-white/10 bg-black/20 text-zinc-300">{signal.status}</Badge>
+                        <Badge variant="outline" className="border-white/10 bg-black/20 text-zinc-400">Confidence {signal.confidence.toFixed(0)}</Badge>
+                      </div>
+                    </div>
+
+                    <p className="mt-3 text-sm leading-6 text-zinc-400">{signal.textSummary}</p>
+
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-xs text-zinc-500">
+                      <span>Source: {signal.sourceName}</span>
+                      <span>Credibility: {signal.sourceCredibility}/100</span>
+                      <span>Impact: {signal.estimatedPointImpact.toFixed(2)} pts</span>
+                      <span>Corroboration: {signal.corroborationCount}</span>
+                    </div>
+                  </article>
+                ))}
+              </div>
+
+              <p className="mt-4 text-xs text-zinc-600">
+                Mock-only Phase 1 social signals are shown for architecture validation and do not change recommendations or SI Score yet.
+              </p>
+            </>
+          ) : (
+            <div className="mt-5 rounded-2xl border border-dashed border-white/[0.08] p-6 text-sm text-zinc-500">
+              {social?.reason ?? "No social signals detected for this matchup."}
+            </div>
+          )}
         </section>
       </div>
     </main>

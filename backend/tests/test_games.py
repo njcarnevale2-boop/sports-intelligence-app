@@ -84,3 +84,17 @@ def test_games_include_games_without_opportunity_enrichment() -> None:
     games = response.json()["games"]
     assert any(item.get("bestOpportunity") is None for item in games)
     assert any(item.get("sportsIntelligenceScore") is None for item in games)
+
+
+def test_game_social_intelligence_endpoint_returns_mock_safe_payload() -> None:
+    baseline = client.get("/api/games")
+    assert baseline.status_code == 200
+
+    event_id = baseline.json()["games"][0]["eventId"]
+    response = client.get(f"/api/games/{event_id}/social-intelligence")
+    assert response.status_code == 200
+
+    payload = response.json()
+    assert payload["provider"] == "MOCK"
+    assert payload["isLive"] is False
+    assert "keySignals" in payload
