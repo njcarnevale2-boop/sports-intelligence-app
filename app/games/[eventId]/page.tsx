@@ -8,6 +8,15 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { fetchJson } from "../../lib/api";
 import { addToCard as addToCardHelper } from "@/lib/add-to-card";
+import {
+  formatTravelMiles,
+  formatTravelShift,
+  getInjuryFreshness,
+  getRestLabel,
+  hasScheduleContext,
+  type InjuryContext,
+  type ScheduleContext,
+} from "@/app/lib/page-context";
 import Tooltip from "@/components/ui/tooltip";
 
 // ---------------------------------------------------------------------------
@@ -24,27 +33,6 @@ type GameProjection = {
   model: { marginHome: number; total: number; projectedScore: { away: number; home: number } };
   market: { marginHome: number; homeSpread: number; total: number };
   spreadAnalysis: { edgePoints: number; homeCoverProbability: number; homeCoverFairOdds: number };
-};
-
-type ScheduleContext = {
-  eventId: string;
-  season: number;
-  week: number;
-  gameday: string;
-  matchup: string;
-  awayTeam: string;
-  homeTeam: string;
-  rest: {
-    homeDays: number | null;
-    awayDays: number | null;
-    label: string;
-    shortRestHome: boolean;
-    shortRestAway: boolean;
-  };
-  travel: {
-    awayMiles: number | null;
-    awayTimezoneShiftHours: number | null;
-  };
 };
 
 type MarketIntelligence = {
@@ -104,15 +92,10 @@ type Opportunity = {
   rank: number;
   marketIntelligence: MarketIntelligence;
   sportsIntelligenceScore: SportsIntelligenceScore;
-  injuryContext?: unknown;
+  injuryContext?: InjuryContext;
 };
 
 type WeatherStatus = { dataStatus?: string; lastUpdated?: string | null };
-type InjuryContext = {
-  awayInjuryScore?: number;
-  homeInjuryScore?: number;
-  providerMetadata?: { dataStatus?: string; isLive?: boolean };
-};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -239,6 +222,11 @@ export default function GameIntelligencePage() {
 
   const si = opportunity?.sportsIntelligenceScore;
   const mi = opportunity?.marketIntelligence;
+  const hasContext = hasScheduleContext(context);
+  const restLabel = getRestLabel(context?.rest);
+  const travelMiles = formatTravelMiles(context?.travel);
+  const travelShift = formatTravelShift(context?.travel);
+  const injuryFreshness = getInjuryFreshness(injury);
 
   return (
     <main className="min-h-screen bg-[#070A0F] text-white">
@@ -249,7 +237,7 @@ export default function GameIntelligencePage() {
           <Link href="/games" className="text-sm text-zinc-500 transition hover:text-white">
             ← Games
           </Link>
-          {context && (
+          {typeof context?.week === "number" && typeof context?.season === "number" && (
             <Badge variant="outline" className="border-white/10 bg-white/[0.03] text-zinc-400">
               Week {context.week} · {context.season} Season
             </Badge>
@@ -435,21 +423,20 @@ export default function GameIntelligencePage() {
             {/* Schedule / Rest */}
             <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
               <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Rest & Travel</p>
-              {context ? (
+              {hasContext ? (
                 <div className="mt-2 space-y-1 text-sm text-zinc-400">
-                  <p>{context.rest.label}</p>
-                  {context.rest.shortRestHome && <p className="text-amber-400">⚠ Short rest — home</p>}
-                  {context.rest.shortRestAway && <p className="text-amber-400">⚠ Short rest — away</p>}
-                  {context.travel.awayMiles != null && (
-                    <p>Travel: {context.travel.awayMiles.toLocaleString()} mi</p>
+                  <p>{restLabel}</p>
+                  {context?.rest?.shortRestHome === true && <p className="text-amber-400">⚠ Short rest — home</p>}
+                  {context?.rest?.shortRestAway === true && <p className="text-amber-400">⚠ Short rest — away</p>}
+                  {travelMiles && (
+                    <p>Travel: {travelMiles}</p>
                   )}
-                  {context.travel.awayTimezoneShiftHours != null && (
-                    <p>Time zone shift: {context.travel.awayTimezoneShiftHours > 0 ? "+" : ""}
-                      {context.travel.awayTimezoneShiftHours}h</p>
+                  {travelShift && (
+                    <p>Time zone shift: {travelShift}</p>
                   )}
                 </div>
               ) : (
-                <p className="mt-2 text-sm text-zinc-600">Unavailable</p>
+                <p className="mt-2 text-sm text-zinc-600">{context?.reason ?? "Unavailable"}</p>
               )}
             </div>
 
@@ -465,7 +452,7 @@ export default function GameIntelligencePage() {
                     <p>Home injury score: {injury.homeInjuryScore.toFixed(1)}</p>
                   )}
                   <p className="text-xs text-zinc-600">
-                    {injury.providerMetadata?.isLive ? "LIVE" : "CACHED"} · ESPN
+                    {injuryFreshness?.isLive ? "LIVE" : "CACHED"} · ESPN
                   </p>
                 </div>
               ) : (

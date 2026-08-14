@@ -11,6 +11,17 @@ import SportsIntelligenceScoreCard from "@/components/sports-intelligence-score-
 import { fetchJson } from "../../lib/api";
 import { trackAnalyticsEvent } from "../../lib/analytics";
 import { addToCard as addToCardWithSnapshot } from "@/lib/add-to-card";
+import {
+  formatRestAdvantage,
+  formatRestDays,
+  getContextReason,
+  getInjuryFreshness,
+  getRestLabel,
+  hasScheduleContext,
+  isContextFlagEnabled,
+  type InjuryContext,
+  type ScheduleContext,
+} from "@/app/lib/page-context";
 import FreshnessBadge from "@/components/ui/freshness-badge";
 import Tooltip from "@/components/ui/tooltip";
 
@@ -103,14 +114,7 @@ type Opportunity = {
 
   alternateBooks?: AlternateBook[];
 
-  injuryContext?: {
-    awayInjuryScore?: number;
-    homeInjuryScore?: number;
-    severity?: string;
-    summary?: string;
-    keyInjuries?: string[];
-    providerMetadata?: { dataStatus?: string; isLive?: boolean; lastUpdated?: string | null };
-  } | null;
+  injuryContext?: InjuryContext;
 };
 
 type DecisionTimeline = {
@@ -169,34 +173,6 @@ type GameProjection = {
     edgePoints: number;
     homeCoverProbability: number;
     homeCoverFairOdds: number;
-  };
-};
-
-type ScheduleContext = {
-  eventId: string;
-  gameId: string;
-  season: number;
-  week: number;
-  gameday: string;
-  matchup: string;
-  awayTeam: string;
-  homeTeam: string;
-
-  rest: {
-    homeDays: number | null;
-    awayDays: number | null;
-    advantageHomeDays: number | null;
-    label: string;
-    weekOneNeutralized: boolean;
-    shortRestHome: boolean;
-    shortRestAway: boolean;
-    longRestHome: boolean;
-    longRestAway: boolean;
-  };
-
-  travel: {
-    awayMiles: number | null;
-    awayTimezoneShiftHours: number | null;
   };
 };
 
@@ -645,6 +621,12 @@ export default function OpportunityAnalysisPage() {
     marketAppearance(
       market.score
     );
+  const hasContext = hasScheduleContext(context);
+  const restLabel = getRestLabel(context?.rest);
+  const injuryFreshness = getInjuryFreshness(opportunity.injuryContext);
+  const contextWeek = context?.week;
+  const contextAwayTeam = context?.awayTeam ?? opportunity.awayTeam;
+  const contextHomeTeam = context?.homeTeam ?? opportunity.homeTeam;
 
   return (
     <main className="min-h-screen bg-[#070A0F] text-white">
@@ -931,8 +913,8 @@ export default function OpportunityAnalysisPage() {
                   <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-5">
                     <div className="flex items-center justify-between gap-2">
                       <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">Injury</p>
-                      {opportunity.injuryContext?.providerMetadata?.dataStatus && (
-                        <FreshnessBadge status={opportunity.injuryContext.providerMetadata.dataStatus} lastUpdated={opportunity.injuryContext.providerMetadata.lastUpdated} />
+                      {injuryFreshness?.dataStatus && (
+                        <FreshnessBadge status={injuryFreshness.dataStatus} lastUpdated={injuryFreshness.lastUpdated} />
                       )}
                     </div>
                     <p className="mt-3 text-sm leading-7 text-zinc-400">{explainability.injuryExplanation}</p>
@@ -1478,7 +1460,7 @@ export default function OpportunityAnalysisPage() {
             </p>
           )}
 
-          {context && (
+          {hasContext ? (
             <>
               <div className="mt-5 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
 
@@ -1488,10 +1470,7 @@ export default function OpportunityAnalysisPage() {
                   </p>
 
                   <p className="mt-3 text-xl font-semibold">
-                    {
-                      context.rest
-                        .label
-                    }
+                    {restLabel}
                   </p>
                 </div>
 
@@ -1501,8 +1480,7 @@ export default function OpportunityAnalysisPage() {
                   </p>
 
                   <p className="mt-3 text-2xl font-semibold">
-                    {context.travel.awayMiles !==
-                    null
+                    {context?.travel?.awayMiles != null
                       ? `${context.travel.awayMiles.toFixed(
                           0
                         )} mi`
@@ -1516,8 +1494,7 @@ export default function OpportunityAnalysisPage() {
                   </p>
 
                   <p className="mt-3 text-2xl font-semibold">
-                    {context.travel.awayTimezoneShiftHours !==
-                    null
+                    {context?.travel?.awayTimezoneShiftHours != null
                       ? `${context.travel.awayTimezoneShiftHours.toFixed(
                           1
                         )} hr`
@@ -1531,7 +1508,7 @@ export default function OpportunityAnalysisPage() {
                   </p>
 
                   <p className="mt-3 text-2xl font-semibold">
-                    {context.week}
+                    {contextWeek ?? "N/A"}
                   </p>
                 </div>
               </div>
@@ -1548,31 +1525,23 @@ export default function OpportunityAnalysisPage() {
 
                     <div className="flex justify-between">
                       <span className="text-sm text-zinc-500">
-                        {
-                          context.awayTeam
-                        }{" "}
+                        {contextAwayTeam}{" "}
                         rest
                       </span>
 
                       <span>
-                        {context.rest.weekOneNeutralized
-                          ? "Offseason"
-                          : `${context.rest.awayDays ?? "N/A"} days`}
+                        {formatRestDays(context?.rest, "away")}
                       </span>
                     </div>
 
                     <div className="flex justify-between">
                       <span className="text-sm text-zinc-500">
-                        {
-                          context.homeTeam
-                        }{" "}
+                        {contextHomeTeam}{" "}
                         rest
                       </span>
 
                       <span>
-                        {context.rest.weekOneNeutralized
-                          ? "Offseason"
-                          : `${context.rest.homeDays ?? "N/A"} days`}
+                        {formatRestDays(context?.rest, "home")}
                       </span>
                     </div>
 
@@ -1582,14 +1551,7 @@ export default function OpportunityAnalysisPage() {
                       </span>
 
                       <span>
-                        {context.rest.weekOneNeutralized
-                          ? "Neutral"
-                          : `${formatSignedNumber(
-                              context
-                                .rest
-                                .advantageHomeDays ??
-                                0
-                            )} days`}
+                        {formatRestAdvantage(context?.rest)}
                       </span>
                     </div>
                   </div>
@@ -1609,7 +1571,7 @@ export default function OpportunityAnalysisPage() {
                       </p>
 
                       <p className="mt-2 font-semibold">
-                        {context.rest.shortRestAway
+                        {isContextFlagEnabled(context?.rest?.shortRestAway)
                           ? "Yes"
                           : "No"}
                       </p>
@@ -1621,7 +1583,7 @@ export default function OpportunityAnalysisPage() {
                       </p>
 
                       <p className="mt-2 font-semibold">
-                        {context.rest.shortRestHome
+                        {isContextFlagEnabled(context?.rest?.shortRestHome)
                           ? "Yes"
                           : "No"}
                       </p>
@@ -1633,7 +1595,7 @@ export default function OpportunityAnalysisPage() {
                       </p>
 
                       <p className="mt-2 font-semibold">
-                        {context.rest.longRestAway
+                        {isContextFlagEnabled(context?.rest?.longRestAway)
                           ? "Yes"
                           : "No"}
                       </p>
@@ -1645,7 +1607,7 @@ export default function OpportunityAnalysisPage() {
                       </p>
 
                       <p className="mt-2 font-semibold">
-                        {context.rest.longRestHome
+                        {isContextFlagEnabled(context?.rest?.longRestHome)
                           ? "Yes"
                           : "No"}
                       </p>
@@ -1654,6 +1616,10 @@ export default function OpportunityAnalysisPage() {
                 </article>
               </div>
             </>
+          ) : (
+            <div className="mt-5 rounded-3xl border border-white/[0.08] bg-[#0D131C] p-7">
+              <p className="text-sm text-zinc-500">{getContextReason(context)}</p>
+            </div>
           )}
         </section>
 

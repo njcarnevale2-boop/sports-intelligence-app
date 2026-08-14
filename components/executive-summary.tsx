@@ -1,3 +1,10 @@
+import {
+  getRestLabel,
+  hasScheduleContext,
+  isContextFlagEnabled,
+  type ScheduleContext,
+} from "@/app/lib/page-context";
+
 type OpportunitySummary = {
   matchup: string;
   pick: string;
@@ -32,26 +39,10 @@ type GameProjectionSummary = {
   };
 };
 
-type ScheduleContextSummary = {
-  week: number;
-  awayTeam: string;
-  homeTeam: string;
-  rest: {
-    label: string;
-    weekOneNeutralized: boolean;
-    shortRestHome: boolean;
-    shortRestAway: boolean;
-  };
-  travel: {
-    awayMiles: number | null;
-    awayTimezoneShiftHours: number | null;
-  };
-};
-
 type ExecutiveSummaryProps = {
   opportunity: OpportunitySummary;
   projection?: GameProjectionSummary | null;
-  context?: ScheduleContextSummary | null;
+  context?: ScheduleContext | null;
 };
 
 function formatOdds(price: number) {
@@ -147,23 +138,23 @@ export default function ExecutiveSummary({
   }
 
   if (context) {
-    if (context.rest.weekOneNeutralized) {
+    if (hasScheduleContext(context) && context.rest?.weekOneNeutralized && typeof context.week === "number") {
       sentences.push(
         `Rest is treated as neutral because this is Week ${context.week} following the offseason.`
       );
-    } else {
+    } else if (hasScheduleContext(context) && context.rest) {
       sentences.push(
-        `The schedule model currently classifies the rest situation as ${context.rest.label.toLowerCase()}.`
+        `The schedule model currently classifies the rest situation as ${getRestLabel(context.rest).toLowerCase()}.`
       );
     }
 
-    if (context.travel.awayMiles !== null) {
+    if (context.travel?.awayMiles !== null && context.travel?.awayMiles != null) {
       sentences.push(
         `${describeTravel(
           context.travel.awayMiles
         )}${
-          context.travel.awayTimezoneShiftHours !==
-          null
+          context.travel.awayTimezoneShiftHours !== null &&
+          context.travel.awayTimezoneShiftHours != null
             ? ` with a ${context.travel.awayTimezoneShiftHours.toFixed(
                 1
               )}-hour timezone shift`
@@ -173,16 +164,16 @@ export default function ExecutiveSummary({
     }
 
     if (
-      context.rest.shortRestAway ||
-      context.rest.shortRestHome
+      isContextFlagEnabled(context.rest?.shortRestAway) ||
+      isContextFlagEnabled(context.rest?.shortRestHome)
     ) {
       const shortRestTeams: string[] = [];
 
-      if (context.rest.shortRestAway) {
+      if (isContextFlagEnabled(context.rest?.shortRestAway) && context.awayTeam) {
         shortRestTeams.push(context.awayTeam);
       }
 
-      if (context.rest.shortRestHome) {
+      if (isContextFlagEnabled(context.rest?.shortRestHome) && context.homeTeam) {
         shortRestTeams.push(context.homeTeam);
       }
 
