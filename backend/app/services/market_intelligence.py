@@ -479,7 +479,7 @@ def calculate_group_intelligence(group):
     }
 
 
-def build_market_intelligence_lookup(event_ids=None):
+def build_market_intelligence_lookup(event_ids=None, selection_keys=None):
     global _cached_lookups
     global _cached_modified_time
 
@@ -496,11 +496,24 @@ def build_market_intelligence_lookup(event_ids=None):
     normalized_ids = None
     if event_ids is not None:
         normalized_ids = tuple(sorted(str(event_id) for event_id in event_ids if str(event_id).strip()))
+    normalized_selection_keys = None
+    if selection_keys is not None:
+        normalized_selection_keys = tuple(
+            sorted(
+                (
+                    str(event_id),
+                    normalize_market(market),
+                    str(side).lower(),
+                )
+                for event_id, market, side in selection_keys
+                if str(event_id).strip()
+            )
+        )
     if _cached_modified_time != modified_time:
         _cached_lookups = {}
         _cached_modified_time = modified_time
 
-    cache_key = normalized_ids
+    cache_key = (normalized_ids, normalized_selection_keys)
 
     cached_lookup = _cached_lookups.get(cache_key)
     if cached_lookup is not None:
@@ -526,6 +539,17 @@ def build_market_intelligence_lookup(event_ids=None):
 
     df["normalized_market"] = df["market"].apply(normalize_market)
     df["normalized_side"] = df["side"].astype(str).str.lower()
+    if normalized_selection_keys is not None:
+        selection_index = pd.MultiIndex.from_tuples(
+            normalized_selection_keys,
+            names=["api_event_id", "normalized_market", "normalized_side"],
+        )
+        current_index = pd.MultiIndex.from_frame(df[["api_event_id", "normalized_market", "normalized_side"]])
+        df = df[current_index.isin(selection_index)]
+    if df.empty:
+        _cached_lookups[cache_key] = {}
+        return {}
+
     df["point_move"] = pd.to_numeric(df["point_move"], errors="coerce")
     df["price_move"] = pd.to_numeric(df["price_move"], errors="coerce")
     df["snapshots"] = pd.to_numeric(df["snapshots"], errors="coerce")

@@ -119,6 +119,9 @@ def derive_game_status(kickoff: datetime, now_utc: datetime) -> str:
 class GamesService:
     def __init__(self) -> None:
         self.provider_manager = ProviderManager()
+        self._schedule_context_cache: Dict[Tuple[str, str, str], Tuple[int, int]] = {}
+        self._schedule_context_mtime: Optional[float] = None
+        self._opportunities_cache: Dict[Tuple[Optional[float], Optional[Tuple[str, ...]]], Dict[str, Dict[str, Any]]] = {}
 
     def list_games(self, week: Optional[int] = None, game_date: Optional[str] = None) -> Dict[str, Any]:
         market_meta = market_data_service.metadata()
@@ -297,6 +300,14 @@ class GamesService:
             return {}
 
         try:
+            modified_time = SCHEDULE_CONTEXT.stat().st_mtime
+        except OSError:
+            return {}
+
+        if self._schedule_context_mtime == modified_time and self._schedule_context_cache:
+            return self._schedule_context_cache
+
+        try:
             context_df = pd.read_csv(SCHEDULE_CONTEXT)
         except (OSError, pd.errors.EmptyDataError):
             return {}
@@ -320,6 +331,8 @@ class GamesService:
 
             lookup[(game_day, away_team, home_team)] = (season, week)
 
+        self._schedule_context_cache = lookup
+        self._schedule_context_mtime = modified_time
         return lookup
 
     def _season_and_week_for_game(
@@ -352,6 +365,20 @@ class GamesService:
             return {}
 
         try:
+            modified_time = RANKED_BET_BOARD.stat().st_mtime
+        except OSError:
+            modified_time = None
+
+        normalized_ids: Optional[Tuple[str, ...]] = None
+        if event_ids is not None:
+            normalized_ids = tuple(sorted(str(event_id) for event_id in event_ids if str(event_id).strip()))
+
+        cache_key = (modified_time, normalized_ids)
+        cached_lookup = self._opportunities_cache.get(cache_key)
+        if cached_lookup is not None:
+            return cached_lookup
+
+        try:
             board_df = pd.read_csv(RANKED_BET_BOARD)
         except (OSError, pd.errors.EmptyDataError):
             return {}
@@ -377,14 +404,28 @@ class GamesService:
             event_ids = {str(event_id) for event_id in event_ids}
             board_df = board_df[board_df["api_event_id"].isin(event_ids)]
         if board_df.empty:
+            self._opportunities_cache[cache_key] = {}
             return {}
 
         board_df = board_df.sort_values("rank")
-        market_intelligence_lookup = build_market_intelligence_lookup(event_ids=event_ids)
-
-        output: Dict[str, Dict[str, Any]] = {}
+        best_rows_by_event: List[Tuple[str, pd.Series, pd.DataFrame]] = []
+        selection_keys: set[Tuple[str, str, str]] = set()
         for event_id, group in board_df.groupby("api_event_id", sort=False):
             best = group.iloc[0]
+            market = str(best.get("market", "")).strip().lower()
+            side = str(best.get("side", "")).strip().lower()
+
+            best_rows_by_event.append((event_id, best, group))
+            selection_keys.add((str(event_id), market, side))
+
+        lookup_event_ids = {event_id for event_id, _, _ in best_rows_by_event}
+        market_intelligence_lookup = build_market_intelligence_lookup(
+            event_ids=lookup_event_ids,
+            selection_keys=selection_keys,
+        )
+
+        output: Dict[str, Dict[str, Any]] = {}
+        for event_id, best, group in best_rows_by_event:
             market = str(best.get("market", "")).strip().lower()
             side = str(best.get("side", "")).strip().lower()
 
@@ -416,6 +457,7 @@ class GamesService:
                 "moneyline": moneyline,
             }
 
+        self._opportunities_cache[cache_key] = output
         return output
 
     def _extract_moneyline(self, event_rows: pd.DataFrame) -> Optional[Dict[str, float]]:
