@@ -1,22 +1,32 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { X } from "lucide-react";
+import { X, ExternalLink } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import GameIntelligenceCard from "@/components/game-intelligence-card";
 import { buildCardSummary, buildPortfolioRiskWarnings, createExportPayload, getBestLineAndPriceOffers, getEdgeValue, normalizeSavedBet, type RiskWarning, type SavedBet } from "@/lib/my-card-helpers";
 import Tooltip from "@/components/ui/tooltip";
-
-const sportsbookOptions = ["DraftKings", "FanDuel", "BetMGM", "Caesars", "ESPN BET", "Fanatics", "bet365"];
+import { getSportsbookConfig } from "@/lib/sportsbook-config";
 
 function formatSigned(value: number) {
   return value >= 0 ? `+${value.toFixed(1)}` : value.toFixed(1);
 }
 
 export default function MyCardShell({ bets, onRemoveBet }: { bets: SavedBet[]; onRemoveBet: (idOrEventId: string) => void }) {
-  const [selectedSportsbook, setSelectedSportsbook] = useState(sportsbookOptions[0]);
+  const [selectedSportsbook, setSelectedSportsbook] = useState<string>("");
   const [reviewBet, setReviewBet] = useState<SavedBet | null>(bets[0] ? normalizeSavedBet(bets[0]) : null);
+
+  // Get available sportsbooks for the current reviewBet
+  const availableSportsbooks = useMemo(() => {
+    if (!reviewBet) return [];
+    const books = new Set<string>();
+    books.add(reviewBet.book); // Always include primary SIA book
+    if (reviewBet.alternateBooks) {
+      reviewBet.alternateBooks.forEach((alt) => books.add(alt.book));
+    }
+    return Array.from(books).sort();
+  }, [reviewBet]);
 
   // Keep reviewBet valid when the bet list changes (CLV enrichment or removals)
   useEffect(() => {
@@ -33,8 +43,73 @@ export default function MyCardShell({ bets, onRemoveBet }: { bets: SavedBet[]; o
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bets]);
 
+  // When reviewBet changes, reset selectedSportsbook to the primary book
+  useEffect(() => {
+    if (reviewBet?.book) {
+      setSelectedSportsbook(reviewBet.book);
+    }
+  }, [reviewBet?.id]);
+
   const summary = useMemo(() => buildCardSummary(bets), [bets]);
   const warnings = useMemo(() => buildPortfolioRiskWarnings(bets), [bets]);
+
+  // Get the selected sportsbook's line and odds (or fallback to SIA recommendation)
+  const selectedBookLineData = useMemo(() => {
+    if (!reviewBet || !selectedSportsbook) return null;
+
+    // If selected book is the SIA recommendation, return those values
+    if (selectedSportsbook === reviewBet.book) {
+      return {
+        book: reviewBet.book,
+        point: reviewBet.point,
+        price: reviewBet.price,
+      };
+    }
+
+    // Otherwise, find in alternateBooks
+    if (reviewBet.alternateBooks) {
+      const found = reviewBet.alternateBooks.find((alt) => alt.book === selectedSportsbook);
+      if (found) {
+        return {
+          book: found.book,
+          point: found.point,
+          price: found.price,
+        };
+      }
+    }
+
+    // If not found, return null (shouldn't happen if availableSportsbooks is correct)
+    return null;
+  }, [reviewBet, selectedSportsbook]);
+
+  // Check if selected book has a worse line than SIA recommended
+  const hasWorseLineAtSelected = useMemo(() => {
+    if (!reviewBet || !selectedBookLineData || selectedSportsbook === reviewBet.book) {
+      return false;
+    }
+
+    // For spreads: lower absolute value is better for the bettor
+    // For totals: similar logic applies
+    // For moneyline: higher odds (closer to 0, less negative) is better
+
+    const siaPoint = reviewBet.point ?? 0;
+    const selectedPoint = selectedBookLineData.point ?? 0;
+    const siaPrice = reviewBet.price ?? 0;
+    const selectedPrice = selectedBookLineData.price ?? 0;
+
+    // Same point, compare price
+    if (siaPoint === selectedPoint) {
+      return selectedPrice < siaPrice; // Lower price is worse
+    }
+
+    // Different points: check if selected is worse for bettor
+    // For spread/total: bettor wants lower absolute value
+    if (Math.abs(selectedPoint) > Math.abs(siaPoint)) {
+      return true; // Worse spread/total
+    }
+
+    return false;
+  }, [reviewBet, selectedBookLineData, selectedSportsbook]);
 
   // Remove a bet; parent updates state and localStorage atomically
   const removeBet = (betId: string | undefined) => {
@@ -220,25 +295,38 @@ export default function MyCardShell({ bets, onRemoveBet }: { bets: SavedBet[]; o
                     <p className="mt-1 text-base font-semibold text-white">{reviewBet.pick}</p>
                     <p className="text-sm text-zinc-500">{reviewBet.matchup}</p>
                   </div>
-                  {/* Sportsbook + line */}
-                  <div className="rounded-2xl border border-white/[0.08] bg-black/20 p-4">
-                    <p className="text-[10px] uppercase tracking-widest text-zinc-600">Sportsbook</p>
-                    <select
-                      value={selectedSportsbook}
-                      onChange={(e) => setSelectedSportsbook(e.target.value)}
-                      className="mt-2 w-full rounded-xl border border-white/[0.08] bg-[#05070A] px-3 py-2 text-sm text-white outline-none"
-                    >
-                      {sportsbookOptions.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
-                    </select>
-                  </div>
-                  {/* Odds + sizing */}
+
+                  {/* Sportsbook selector - dynamic from available books */}
+                  {availableSportsbooks.length > 0 && (
+                    <div className="rounded-2xl border border-white/[0.08] bg-black/20 p-4">
+                      <div className="flex items-center justify-between">
+                        <p className="text-[10px] uppercase tracking-widest text-zinc-600">Sportsbook</p>
+                        {selectedSportsbook === reviewBet.book && (
+                          <span className="text-[9px] font-semibold text-emerald-400">SIA Recommended</span>
+                        )}
+                      </div>
+                      <select
+                        value={selectedSportsbook}
+                        onChange={(e) => setSelectedSportsbook(e.target.value)}
+                        className="mt-2 w-full rounded-xl border border-white/[0.08] bg-[#05070A] px-3 py-2 text-sm text-white outline-none"
+                      >
+                        {availableSportsbooks.map((book) => (
+                          <option key={book} value={book}>
+                            {book}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  {/* Odds + sizing with hydrated values from selected sportsbook */}
                   <div className="grid grid-cols-2 gap-3">
                     <div className="rounded-2xl border border-white/[0.08] bg-black/20 p-4">
                       <p className="text-[10px] uppercase tracking-widest text-zinc-600">Line / Odds</p>
                       <p className="mt-1 font-semibold text-white">
-                        {reviewBet.point != null ? (reviewBet.point > 0 ? `+${reviewBet.point}` : reviewBet.point) : "—"}{" "}
+                        {selectedBookLineData?.point != null ? (selectedBookLineData.point > 0 ? `+${selectedBookLineData.point}` : selectedBookLineData.point) : "—"}{" "}
                         <span className="text-zinc-400">
-                          {reviewBet.price != null ? (reviewBet.price > 0 ? `+${reviewBet.price}` : reviewBet.price) : "—"}
+                          {selectedBookLineData?.price != null ? (selectedBookLineData.price > 0 ? `+${selectedBookLineData.price}` : selectedBookLineData.price) : "—"}
                         </span>
                       </p>
                     </div>
@@ -261,28 +349,91 @@ export default function MyCardShell({ bets, onRemoveBet }: { bets: SavedBet[]; o
                       </p>
                     </div>
                   </div>
-                  {/* Best line comparison */}
+
+                  {/* Line difference warning */}
+                  {hasWorseLineAtSelected && (
+                    <div className="rounded-2xl border border-amber-400/20 bg-amber-400/[0.06] p-4 text-sm">
+                      <p className="font-semibold text-amber-400">Line Difference</p>
+                      <div className="mt-2 space-y-1 text-amber-300">
+                        <p className="text-xs">
+                          <span className="font-medium">SIA analyzed:</span> {reviewBet.pick} {reviewBet.point != null ? (reviewBet.point > 0 ? `+${reviewBet.point}` : reviewBet.point) : "—"} at {reviewBet.price != null ? (reviewBet.price > 0 ? `+${reviewBet.price}` : reviewBet.price) : "—"}
+                        </p>
+                        <p className="text-xs">
+                          <span className="font-medium">Current {selectedSportsbook}:</span> {reviewBet.pick} {selectedBookLineData?.point != null ? (selectedBookLineData.point > 0 ? `+${selectedBookLineData.point}` : selectedBookLineData.point) : "—"} at {selectedBookLineData?.price != null ? (selectedBookLineData.price > 0 ? `+${selectedBookLineData.price}` : selectedBookLineData.price) : "—"}
+                        </p>
+                        <p className="mt-2 text-xs">The available price differs from the line SIA analyzed. Verify current odds at the sportsbook.</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Better line comparison (if any other book has better line) */}
                   {(() => {
                     const best = getBestLineAndPriceOffers(reviewBet).bestLine;
-                    if (!best || best.book === reviewBet.book) return null;
+                    if (!best || best.book === selectedSportsbook) return null;
                     return (
                       <div className="rounded-2xl border border-sky-400/15 bg-sky-400/[0.04] p-4 text-sm">
                         <p className="text-sky-400 font-medium">Better line available</p>
-                        <p className="mt-1 text-zinc-400">{best.book} offers {best.point != null ? (best.point > 0 ? `+${best.point}` : best.point) : "—"} at {best.price != null ? (best.price > 0 ? `+${best.price}` : best.price) : "—"}</p>
+                        <p className="mt-1 text-zinc-400">
+                          {best.book} offers {best.point != null ? (best.point > 0 ? `+${best.point}` : best.point) : "—"} at {best.price != null ? (best.price > 0 ? `+${best.price}` : best.price) : "—"}
+                        </p>
                       </div>
                     );
                   })()}
-                  {/* Copy action */}
-                  <button
-                    onClick={() => {
-                      const text = `${reviewBet.pick} — ${selectedSportsbook}\nLine: ${reviewBet.point != null ? (reviewBet.point > 0 ? `+${reviewBet.point}` : reviewBet.point) : "—"} at ${reviewBet.price != null ? (reviewBet.price > 0 ? `+${reviewBet.price}` : reviewBet.price) : "—"}\nStake: ${reviewBet.kelly20 != null ? `${(reviewBet.kelly20 * 100).toFixed(1)}% Kelly` : "—"} | EV: ${reviewBet.evPerDollar != null ? `+$${reviewBet.evPerDollar.toFixed(3)}` : "—"}/$ \nSI Score: ${reviewBet.sportsIntelligenceScore?.score ?? "—"}`;
-                      void navigator.clipboard?.writeText(text);
-                    }}
-                    className="w-full rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2.5 text-sm text-zinc-300 transition hover:bg-white/[0.07]"
-                  >
-                    Copy Bet Details
-                  </button>
-                  <p className="text-[10px] text-zinc-700 text-center">No bet is placed. This is a preparation slip only.</p>
+
+                  {/* Copy and Open Sportsbook actions */}
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => {
+                        const siScoreStr = reviewBet.sportsIntelligenceScore?.score
+                          ? reviewBet.sportsIntelligenceScore.score.toFixed(1)
+                          : "—";
+                        const confidenceStr = reviewBet.confidence
+                          ? reviewBet.confidence.toFixed(0)
+                          : "—";
+                        const edgeStr = typeof reviewBet.edge === "number"
+                          ? `${reviewBet.edge.toFixed(1)}%`
+                          : String(reviewBet.edge);
+                        const evStr = reviewBet.evPerDollar
+                          ? `+$${reviewBet.evPerDollar.toFixed(3)}`
+                          : "—";
+                        const kellyStr = reviewBet.kelly20
+                          ? `${(reviewBet.kelly20 * 100).toFixed(1)}%`
+                          : "—";
+                        const lineStr = selectedBookLineData?.point
+                          ? (selectedBookLineData.point > 0 ? `+${selectedBookLineData.point}` : selectedBookLineData.point)
+                          : "—";
+                        const oddsStr = selectedBookLineData?.price
+                          ? (selectedBookLineData.price > 0 ? `+${selectedBookLineData.price}` : selectedBookLineData.price)
+                          : "—";
+
+                        const text = `SIA BET\n${reviewBet.pick}\nvs ${reviewBet.matchup}\n${selectedSportsbook} • ${lineStr} ${oddsStr}\nSI Score: ${siScoreStr} | Confidence: ${confidenceStr}%\nEdge: ${edgeStr} | EV: ${evStr}/$ | Kelly 20%: ${kellyStr}`;
+                        void navigator.clipboard?.writeText(text);
+                      }}
+                      className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2.5 text-xs font-medium text-zinc-300 transition hover:bg-white/[0.07]"
+                    >
+                      Copy Bet Details
+                    </button>
+
+                    {selectedSportsbook && (() => {
+                      const config = getSportsbookConfig(selectedSportsbook);
+                      if (!config) return null;
+                      return (
+                        <a
+                          href={config.baseUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center justify-center gap-1.5 rounded-xl border border-emerald-400/30 bg-emerald-400/[0.08] px-3 py-2.5 text-xs font-medium text-emerald-400 transition hover:bg-emerald-400/[0.15]"
+                        >
+                          Open {selectedSportsbook}
+                          <ExternalLink size={12} />
+                        </a>
+                      );
+                    })()}
+                  </div>
+
+                  <p className="text-[10px] text-zinc-700 text-center">
+                    No bet is placed. Verify current line and odds at the sportsbook.
+                  </p>
                 </div>
               ) : (
                 <div className="mt-4 rounded-2xl border border-dashed border-white/[0.08] p-6 text-sm text-zinc-500">
