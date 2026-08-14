@@ -104,14 +104,50 @@ export default function GamesPage() {
   const [week, setWeek] = useState<number | null>(null);
   const [selectedDate, setSelectedDate] = useState<string>("All");
 
+  // Initialize: fetch metadata and set initial week once on mount
+  useEffect(() => {
+    async function initializeMetadata() {
+      try {
+        const data = await fetchJson<GamesResponse>(
+          `/api/games`,
+          undefined,
+          GAMES_REQUEST_TIMEOUT_MS
+        );
+
+        setAvailableWeeks(data.availableWeeks ?? []);
+        setAvailableDates(data.availableDates ?? []);
+        setMarketStatus(data.dataStatus?.marketIntelligence ?? null);
+
+        if (data.availableWeeks?.length) {
+          setWeek(data.availableWeeks[0]);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "";
+        setError(
+          msg === "Request timed out"
+            ? "Game data is taking longer than expected — try again."
+            : "Unable to load the NFL slate right now."
+        );
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    void initializeMetadata();
+  }, []); // Run only on mount
+
+  // Fetch games when week/date changes
   useEffect(() => {
     async function load() {
+      // Skip if week hasn't been initialized yet
+      if (week === null) return;
+
       try {
         setLoading(true);
         setError("");
 
         const q = new URLSearchParams();
-        if (week !== null) q.set("week", String(week));
+        q.set("week", String(week));
         if (selectedDate !== "All") q.set("date", selectedDate);
 
         const data = await fetchJson<GamesResponse>(
@@ -121,16 +157,7 @@ export default function GamesPage() {
         );
 
         setGames(data.games ?? []);
-        setAvailableWeeks((prev) => {
-          const next = data.availableWeeks ?? [];
-          return next.length >= prev.length ? next : prev;
-        });
-        setAvailableDates(data.availableDates ?? []);
-        setMarketStatus(data.dataStatus?.marketIntelligence ?? null);
 
-        if (week === null && data.availableWeeks?.length) {
-          setWeek(data.availableWeeks[0]);
-        }
         if (selectedDate !== "All" && data.availableDates && !data.availableDates.includes(selectedDate)) {
           setSelectedDate("All");
         }
