@@ -207,7 +207,29 @@ export default function OpportunitiesPage() {
     setWeek(w);
   }
 
+  // Initialize: use fast /api/games endpoint to get available weeks, then set initial week
   useEffect(() => {
+    async function initializeWeek() {
+      try {
+        const data = await fetchJson<{ availableWeeks?: number[] }>("/api/games");
+        const weeks = data.availableWeeks ?? [];
+        if (weeks.length) {
+          setAvailableWeeks(weeks);
+          setWeek(weeks[0]);
+        }
+      } catch {
+        // init failure will show after main effect also fails
+        setLoading(false);
+        setError("Unable to load model opportunities.");
+      }
+    }
+    void initializeWeek();
+  }, []); // Run only on mount
+
+  // Fetch opportunities when week changes
+  useEffect(() => {
+    if (week === null) return;
+
     async function loadOpportunities() {
       try {
         setLoading(true);
@@ -215,8 +237,7 @@ export default function OpportunitiesPage() {
 
         void trackAnalyticsEvent("OpportunitiesViewed", { page: "opportunities" });
 
-        const query = new URLSearchParams({ limit: "100" });
-        if (week !== null) query.set("week", String(week));
+        const query = new URLSearchParams({ limit: "100", week: String(week) });
 
         const data = await fetchJson<OpportunitiesResponse>(
           `/api/opportunities?${query.toString()}`
@@ -224,10 +245,6 @@ export default function OpportunitiesPage() {
 
         setOpportunities(data.opportunities);
         setFreshness({ dataStatus: data.dataStatus, lastUpdated: data.lastUpdated });
-        if (data.availableWeeks?.length) {
-          setAvailableWeeks((prev) => data.availableWeeks!.length >= prev.length ? data.availableWeeks! : prev);
-        }
-        if (week === null && data.week != null) setWeek(data.week);
         if (data.weekScheduledGames != null) setWeekScheduledGames(data.weekScheduledGames);
         if (data.weekQualifiedOpportunities != null) setWeekQualifiedOpportunities(data.weekQualifiedOpportunities);
 
