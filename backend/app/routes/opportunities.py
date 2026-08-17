@@ -16,6 +16,8 @@ from app.services.explainability import generate_explainability
 from app.services.decision_change_engine import build_decision_timeline
 from app.services.weather import WeatherAnalyzer
 from app.services.market_data import market_data_service, select_best_line_row
+from app.services.fair_price import build_fair_price_result
+from app.config import settings
 
 
 router = APIRouter(
@@ -356,6 +358,8 @@ def row_to_opportunity(
     include_alternates=None,
     market_snapshot=None,
     injury_ctx=None,
+    group_rows=None,
+    game_projection_row=None,
 ):
     away_code = normalize_team_code(row.get("away_team", ""))
     home_code = normalize_team_code(row.get("home_team", ""))
@@ -600,6 +604,32 @@ def row_to_opportunity(
         )
     )
 
+    fair_price_result = build_fair_price_result(
+        row=row,
+        group_rows=group_rows,
+        game_projection_row=game_projection_row,
+        minimum_playable_ev=settings.MIN_PLAYABLE_EV,
+    )
+
+    result["fairPrice"] = fair_price_result.fair_price
+    result["fairLine"] = fair_price_result.fair_line
+    result["truePlayableTo"] = fair_price_result.true_playable_to
+    result["truePlayableToStatus"] = fair_price_result.true_playable_to_status
+    result["truePlayableToReason"] = fair_price_result.true_playable_to_reason
+    result["worstObservedPlayablePrice"] = fair_price_result.worst_observed_playable_price
+    result["worstObservedPlayablePriceStatus"] = fair_price_result.worst_observed_playable_price_status
+    result["worstObservedPlayablePriceReason"] = fair_price_result.worst_observed_playable_price_reason
+    result["playableTo"] = fair_price_result.playable_to
+    result["playableToStatus"] = fair_price_result.playable_to_status
+    result["playableToReason"] = fair_price_result.playable_to_reason
+    result["currentWinProbability"] = fair_price_result.current_win_probability
+    result["currentPushProbability"] = fair_price_result.current_push_probability
+    result["currentLossProbability"] = fair_price_result.current_loss_probability
+    result["currentEV"] = fair_price_result.current_ev
+    result["minimumPlayableEV"] = fair_price_result.minimum_playable_ev
+    result["bestAvailablePrice"] = fair_price_result.best_available_price
+    result["bestAvailableLine"] = fair_price_result.best_available_line
+
     if (
         include_alternates
         is not None
@@ -609,6 +639,19 @@ def row_to_opportunity(
         ] = include_alternates
 
     return result
+
+
+def load_game_projection_lookup() -> dict[str, pd.Series]:
+    if not GAME_PROJECTIONS.exists():
+        return {}
+
+    df = pd.read_csv(GAME_PROJECTIONS)
+    if "api_event_id" not in df.columns:
+        return {}
+
+    df = df.copy()
+    df["api_event_id"] = df["api_event_id"].astype(str)
+    return {str(row["api_event_id"]): row for _, row in df.iterrows()}
 
 
 # ---------------------------------------------------------
@@ -815,16 +858,19 @@ def get_opportunities(
     )
 
     market_snapshots = market_data_service.all_event_snapshots()
+    projection_lookup = load_game_projection_lookup()
 
     # Collect best pandas rows per group; track group's minimum rank for correct ordering
     raw_best_rows = []
     raw_alternates_map = {}
+    raw_group_map = {}
     raw_group_min_rank: dict[int, int] = {}
     for group_key, group in grouped:
         selected = best_line_for_group(group)
         group_min_rank = int(group["rank"].min())
         raw_best_rows.append(selected)
         raw_alternates_map[id(selected)] = make_alternate_books(group, selected)
+        raw_group_map[id(selected)] = group
         raw_group_min_rank[id(selected)] = group_min_rank
 
     # Sort by group's minimum model rank (preserves rank-1 intent even if that row was replaced)
@@ -838,6 +884,8 @@ def get_opportunities(
             include_alternates=raw_alternates_map[id(selected)],
             market_snapshot=market_snapshots.get(str(selected["api_event_id"])),
             injury_ctx=shared_injury_ctx,
+            group_rows=raw_group_map[id(selected)],
+            game_projection_row=projection_lookup.get(str(selected["api_event_id"])),
         )
         # weekRank is sequential position on the filtered week board; rank is the model's row rank
         item["weekRank"] = week_rank
@@ -922,6 +970,8 @@ def get_opportunity_analysis(
         )
     )
 
+    projection_lookup = load_game_projection_lookup()
+
     opportunity = (
         row_to_opportunity(
             selected,
@@ -929,14 +979,14 @@ def get_opportunity_analysis(
                 alternates
             ),
             market_snapshot=market_data_service.event_market_snapshot(str(selected["api_event_id"])),
+            group_rows=match,
+            game_projection_row=projection_lookup.get(str(selected["api_event_id"])),
         )
     )
 
     market_intelligence = (
         get_market_intelligence(
-            event_id=(
-                opportunity["eventId"]
-            ),
+            event_id=opportunity["eventId"],
             market=opportunity[
                 "market"
             ],
@@ -1182,6 +1232,8 @@ def get_game_best_opportunity(event_id: str):
         include_alternates=alternates,
         market_snapshot=market_snapshot,
         injury_ctx=InjuryMatchupContext(),
+        group_rows=group,
+        game_projection_row=game_row,
     )
     return {
         "eventId": event_id,

@@ -19,10 +19,18 @@ type Opportunity = {
   id: string;
   rank: number;
   eventId: string;
+  market: string;
+  side: string;
   pick: string;
   book: string;
   point: number;
   price: number;
+  truePlayableTo?: number | null;
+  truePlayableToStatus?: "AVAILABLE" | "UNAVAILABLE";
+  truePlayableToReason?: string | null;
+  currentWinProbability?: number | null;
+  currentEV?: number | null;
+  kelly20?: number | null;
   modelProbability: number;
   impliedProbability: number;
   edge: number;
@@ -41,6 +49,39 @@ type ApiResponse = {
 
 function formatPrice(n: number) {
   return n > 0 ? `+${n}` : `${n}`;
+}
+
+function formatLine(point: number) {
+  return point > 0 ? `+${point}` : `${point}`;
+}
+
+function formatBestPrice(opp: Opportunity) {
+  if (opp.market === "spread" || opp.market === "total") {
+    return `${formatLine(opp.point)} ${formatPrice(opp.price)} · ${opp.book}`;
+  }
+  return `${formatPrice(opp.price)} · ${opp.book}`;
+}
+
+function formatPlayableTo(opp: Opportunity) {
+  if (opp.truePlayableToStatus !== "AVAILABLE" || opp.truePlayableTo == null) {
+    return "Not available yet";
+  }
+
+  if (opp.market === "spread" || opp.market === "total") {
+    return formatLine(opp.truePlayableTo);
+  }
+
+  return formatPrice(opp.truePlayableTo);
+}
+
+function displayWinProbability(opp: Opportunity) {
+  if (opp.currentWinProbability == null) return opp.modelProbability;
+  return opp.currentWinProbability * 100;
+}
+
+function suggestedBet(opp: Opportunity) {
+  if (opp.kelly20 == null) return "Unavailable";
+  return `${(opp.kelly20 * 100).toFixed(1)}% bankroll`;
 }
 
 function statusLabel(opp: Opportunity) {
@@ -161,10 +202,23 @@ export default function Home() {
                   <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-600">#{idx + 1}</p>
                   <h3 className="mt-2 text-2xl font-semibold text-white">{opp.pick}</h3>
                   <p className="mt-2 text-sm text-zinc-300">{opp.sportsIntelligenceScore.score.toFixed(1)} · {statusLabel(opp)}</p>
-                  <p className="mt-1 text-sm text-zinc-400">Best: {opp.point > 0 ? `+${opp.point}` : opp.point} {formatPrice(opp.price)} · {opp.book}</p>
-                  <p className="mt-3 text-sm text-zinc-400 leading-6">
-                    {opp.sportsIntelligenceScore.reasons?.[0] ?? "SIA sees meaningful value versus the current market."}
-                  </p>
+                  <div className="mt-4 space-y-2 text-sm">
+                    <p className="text-zinc-400">
+                      <span className="text-zinc-500">BET:</span> <span className="text-zinc-200">{opp.pick}</span>
+                    </p>
+                    <p className="text-zinc-400">
+                      <span className="text-zinc-500">BEST PRICE:</span> <span className="text-zinc-200">{formatBestPrice(opp)}</span>
+                    </p>
+                    <p className="text-zinc-400">
+                      <span className="text-zinc-500">PLAYABLE TO:</span> <span className="text-zinc-200">{formatPlayableTo(opp)}</span>
+                    </p>
+                    <p className="text-zinc-400">
+                      <span className="text-zinc-500">SI SCORE:</span> <span className="text-zinc-200">{opp.sportsIntelligenceScore.score.toFixed(1)}</span>
+                    </p>
+                    <p className="text-zinc-400">
+                      <span className="text-zinc-500">SUGGESTED BET:</span> <span className="text-zinc-200">{suggestedBet(opp)}</span>
+                    </p>
+                  </div>
                   <div className="mt-4 flex gap-2">
                     <Link href={`/opportunities/${opp.id}`}>
                       <Button className="h-9 bg-white px-4 text-black hover:bg-zinc-200">WHY?</Button>
@@ -183,11 +237,11 @@ export default function Home() {
           {opportunities.slice(0, 3).map((opp) => (
             <div key={`${opp.id}-secondary`} className="rounded-2xl border border-white/[0.07] bg-[#0B1119] p-5">
               <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-700">SIA Win/Cover Probability</p>
-              <p className="mt-2 text-2xl font-semibold text-white">{Math.round(opp.modelProbability)}%</p>
+              <p className="mt-2 text-2xl font-semibold text-white">{Math.round(displayWinProbability(opp))}%</p>
               <p className="mt-2 text-[10px] uppercase tracking-[0.16em] text-zinc-700">Market Implied</p>
               <p className="mt-1 text-xl font-semibold text-zinc-300">{Math.round(opp.impliedProbability)}%</p>
               <p className="mt-2 text-[10px] uppercase tracking-[0.16em] text-zinc-700">Difference</p>
-              <p className="mt-1 text-lg font-semibold text-emerald-400">+{Math.round(opp.modelProbability - opp.impliedProbability)} percentage points</p>
+              <p className="mt-1 text-lg font-semibold text-emerald-400">+{Math.round(displayWinProbability(opp) - opp.impliedProbability)} percentage points</p>
             </div>
           ))}
         </section>

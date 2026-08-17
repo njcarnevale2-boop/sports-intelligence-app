@@ -114,6 +114,39 @@ def test_game_opportunity_endpoint_always_returns_intelligence_report() -> None:
     payload = response.json()
     assert payload["eventId"] == event_id
     assert "intelligenceReport" in payload
+    assert "opportunity" in payload
+
+    opportunity = payload["opportunity"]
+    if opportunity is not None:
+        assert "fairPrice" in opportunity
+        assert "fairLine" in opportunity
+        assert "truePlayableTo" in opportunity
+        assert "truePlayableToStatus" in opportunity
+        assert "truePlayableToReason" in opportunity
+        assert "worstObservedPlayablePrice" in opportunity
+        assert "worstObservedPlayablePriceStatus" in opportunity
+        assert "worstObservedPlayablePriceReason" in opportunity
+        assert "playableTo" in opportunity
+        assert "playableToStatus" in opportunity
+        assert "playableToReason" in opportunity
+        assert "currentWinProbability" in opportunity
+        assert "currentPushProbability" in opportunity
+        assert "currentLossProbability" in opportunity
+        assert "currentEV" in opportunity
+        assert "minimumPlayableEV" in opportunity
+        assert "bestAvailablePrice" in opportunity
+        assert "bestAvailableLine" in opportunity
+        assert opportunity["playableToStatus"] in {"AVAILABLE", "UNAVAILABLE"}
+        assert opportunity["truePlayableToStatus"] in {"AVAILABLE", "UNAVAILABLE"}
+        assert opportunity.get("playableTo") == opportunity.get("worstObservedPlayablePrice")
+        if opportunity.get("currentWinProbability") is not None:
+            total_prob = (
+                float(opportunity.get("currentWinProbability") or 0)
+                + float(opportunity.get("currentPushProbability") or 0)
+                + float(opportunity.get("currentLossProbability") or 0)
+            )
+            assert abs(total_prob - 1.0) < 1e-6
+
     report = payload["intelligenceReport"]
     assert report["betStatus"] in {"STRONG BET", "QUALIFIED", "LEAN", "NO QUALIFIED BET", "INSUFFICIENT DATA"}
     assert "qualificationStatus" in report

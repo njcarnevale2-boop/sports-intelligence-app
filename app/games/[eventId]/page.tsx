@@ -49,6 +49,7 @@ type SportsIntelligenceScore = {
 
 type Opportunity = {
   id: string;
+  market: string;
   pick: string;
   book: string;
   point: number;
@@ -57,6 +58,17 @@ type Opportunity = {
   impliedProbability: number;
   edge: number;
   evPerDollar: number;
+  currentWinProbability?: number | null;
+  currentPushProbability?: number | null;
+  currentLossProbability?: number | null;
+  currentEV?: number | null;
+  fairLine?: number | null;
+  truePlayableTo?: number | null;
+  truePlayableToStatus?: "AVAILABLE" | "UNAVAILABLE";
+  truePlayableToReason?: string | null;
+  worstObservedPlayablePrice?: number | null;
+  worstObservedPlayablePriceStatus?: "AVAILABLE" | "UNAVAILABLE";
+  minimumPlayableEV?: number | null;
   confidence: number;
   kelly20: number;
   marketIntelligence: MarketIntelligence;
@@ -110,6 +122,28 @@ function formatKickoff(iso: string) {
 
 function signed(value: number) {
   return value > 0 ? `+${value}` : `${value}`;
+}
+
+function formatBestPrice(opp: Opportunity | null) {
+  if (!opp) return "Actionable price not currently available";
+  if (opp.market === "spread" || opp.market === "total") {
+    return `${opp.pick} ${signed(opp.point)} (${signed(opp.price)}) · ${opp.book}`;
+  }
+  return `${opp.pick} ${signed(opp.price)} · ${opp.book}`;
+}
+
+function formatTruePlayableTo(opp: Opportunity | null) {
+  if (!opp) return "Not available yet";
+  if (opp.truePlayableToStatus !== "AVAILABLE" || opp.truePlayableTo == null) {
+    return "Not available yet";
+  }
+  return opp.market === "spread" || opp.market === "total" ? `${opp.pick.split(" ")[0]} ${signed(opp.truePlayableTo)}` : signed(opp.truePlayableTo);
+}
+
+function displayWinProbability(opp: Opportunity | null) {
+  if (!opp) return null;
+  if (opp.currentWinProbability == null) return opp.modelProbability;
+  return opp.currentWinProbability * 100;
 }
 
 function betStatusLabel(report: IntelligenceReport | null, opp: Opportunity | null) {
@@ -243,8 +277,10 @@ export default function GameIntelligencePage() {
     }
 
     const factors: string[] = [];
-    factors.push(`Model vs Market: SIA probability ${Math.round(opportunity.modelProbability)}% vs market ${Math.round(opportunity.impliedProbability)}%.`);
-    factors.push(`Price / Value: ${opportunity.pick} at ${signed(opportunity.price)} returns +$${opportunity.evPerDollar.toFixed(3)} EV per $1.`);
+    const winPct = displayWinProbability(opportunity);
+    const ev = opportunity.currentEV ?? opportunity.evPerDollar;
+    factors.push(`Model vs Market: SIA probability ${Math.round(winPct ?? 0)}% vs market ${Math.round(opportunity.impliedProbability)}%.`);
+    factors.push(`Price / Value: ${opportunity.pick} at ${signed(opportunity.price)} returns +$${ev.toFixed(3)} EV per $1 (push-aware).`);
     factors.push(`Confidence: ${opportunity.confidence}/100 with market support ${opportunity.marketIntelligence.booksMoving}/${opportunity.marketIntelligence.booksTracked} books moving.`);
     if (opportunity.marketIntelligence.steamBooks > 0) {
       factors.push(`Supporting signal: ${opportunity.marketIntelligence.steamBooks} steam books aligned.`);
@@ -316,9 +352,12 @@ export default function GameIntelligencePage() {
             </div>
             <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
               <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Best Price</p>
-              <p className="mt-2 text-lg font-semibold">
-                {opportunity ? `${opportunity.pick} ${signed(opportunity.price)} · ${opportunity.book}` : "Actionable price not currently available"}
-              </p>
+              <p className="mt-2 text-lg font-semibold">{formatBestPrice(opportunity)}</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+              <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Playable To</p>
+              <p className="mt-2 text-lg font-semibold">{formatTruePlayableTo(opportunity)}</p>
+              <p className="mt-1 text-xs text-zinc-500">Uses true line-specific threshold only.</p>
             </div>
             <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
               <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Suggested Bet</p>
@@ -371,15 +410,23 @@ export default function GameIntelligencePage() {
               </div>
               <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
                 <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Probabilities</p>
-                <p className="mt-2 text-sm text-zinc-300">SIA win/cover: {opportunity ? `${Math.round(opportunity.modelProbability)}%` : "Unavailable"}</p>
+                <p className="mt-2 text-sm text-zinc-300">SIA win probability: {opportunity && displayWinProbability(opportunity) != null ? `${Math.round(displayWinProbability(opportunity) as number)}%` : "Unavailable"}</p>
+                <p className="mt-1 text-sm text-zinc-300">Push probability: {opportunity?.currentPushProbability != null ? `${(opportunity.currentPushProbability * 100).toFixed(1)}%` : "Unavailable"}</p>
+                <p className="mt-1 text-sm text-zinc-300">Loss probability: {opportunity?.currentLossProbability != null ? `${(opportunity.currentLossProbability * 100).toFixed(1)}%` : "Unavailable"}</p>
                 <p className="mt-1 text-sm text-zinc-300">Market implied: {opportunity ? `${Math.round(opportunity.impliedProbability)}%` : "Unavailable"}</p>
-                <p className="mt-1 text-sm text-emerald-400">Difference: {opportunity ? `+${Math.round(opportunity.modelProbability - opportunity.impliedProbability)} pp` : "Unavailable"}</p>
               </div>
               <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
                 <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Value & Risk</p>
-                <p className="mt-2 text-sm text-zinc-300">EV: {opportunity ? `+$${opportunity.evPerDollar.toFixed(3)} per $1` : "Unavailable"}</p>
+                <p className="mt-2 text-sm text-zinc-300">Push-aware EV: {opportunity?.currentEV != null ? `+$${opportunity.currentEV.toFixed(3)} per $1` : "Unavailable"}</p>
                 <p className="mt-1 text-sm text-zinc-300">Confidence: {opportunity ? `${opportunity.confidence}/100` : "Unavailable"}</p>
                 <p className="mt-1 text-sm text-zinc-300">Kelly (advanced): {opportunity ? `${(opportunity.kelly20 * 100).toFixed(1)}%` : "Unavailable"}</p>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Pricing Boundaries</p>
+                <p className="mt-2 text-sm text-zinc-300">Fair line: {opportunity?.fairLine != null ? signed(opportunity.fairLine) : "Unavailable"}</p>
+                <p className="mt-1 text-sm text-zinc-300">True Playable-To: {formatTruePlayableTo(opportunity)}</p>
+                <p className="mt-1 text-sm text-zinc-300">Worst currently available playable price: {opportunity?.worstObservedPlayablePrice != null ? signed(opportunity.worstObservedPlayablePrice) : "Unavailable"}</p>
+                <p className="mt-1 text-sm text-zinc-300">Minimum required EV: {opportunity?.minimumPlayableEV != null ? `${(opportunity.minimumPlayableEV * 100).toFixed(1)}%` : "Unavailable"}</p>
               </div>
               <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
                 <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Market Intelligence</p>
