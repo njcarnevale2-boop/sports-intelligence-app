@@ -193,12 +193,14 @@ function formatSignedNumber(value: number) {
 function formatPoint(
   market: string,
   side: string,
-  point: number
+  point: number,
+  awayTeam?: string,
+  homeTeam?: string
 ) {
   if (market === "spread") {
-    return point > 0
-      ? `+${point}`
-      : `${point}`;
+    const team = side === "home" ? homeTeam : awayTeam;
+    const label = team ? team.toUpperCase() : side.toUpperCase();
+    return `${label} ${point > 0 ? `+${point}` : point}`;
   }
 
   if (market === "total") {
@@ -1399,11 +1401,11 @@ export default function OpportunityAnalysisPage() {
                     </p>
 
                     <p className="mt-3 text-2xl font-semibold">
-                      {formatSignedNumber(
+                      {`${opportunity.homeTeam.toUpperCase()} ${formatSignedNumber(
                         projection
                           .market
                           .homeSpread
-                      )}
+                      )}`}
                     </p>
                   </div>
 
@@ -1819,7 +1821,9 @@ export default function OpportunityAnalysisPage() {
                 {formatPoint(
                   opportunity.market,
                   opportunity.side,
-                  opportunity.point
+                      opportunity.point,
+                      opportunity.awayTeam,
+                      opportunity.homeTeam
                 )}
               </span>
 
@@ -1851,7 +1855,9 @@ export default function OpportunityAnalysisPage() {
                     {formatPoint(
                       opportunity.market,
                       opportunity.side,
-                      book.point
+                      book.point,
+                      opportunity.awayTeam,
+                      opportunity.homeTeam
                     )}
                   </span>
 

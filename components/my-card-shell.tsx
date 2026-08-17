@@ -5,6 +5,7 @@ import { X, ExternalLink } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import GameIntelligenceCard from "@/components/game-intelligence-card";
+import TeamLogo from "@/components/team-logo";
 import { buildCardSummary, buildPortfolioRiskWarnings, createExportPayload, getBestLineAndPriceOffers, getEdgeValue, normalizeSavedBet, type RiskWarning, type SavedBet } from "@/lib/my-card-helpers";
 import Tooltip from "@/components/ui/tooltip";
 import { getSportsbookConfig } from "@/lib/sportsbook-config";
@@ -29,7 +30,7 @@ function formatKickoff(iso: string | undefined | null): string {
   });
 }
 
-export default function MyCardShell({ bets, onRemoveBet }: { bets: SavedBet[]; onRemoveBet: (idOrEventId: string) => void }) {
+export default function MyCardShell({ bets, onRemoveBet, bankroll }: { bets: SavedBet[]; onRemoveBet: (idOrEventId: string) => void; bankroll?: number | null }) {
   const [selectedSportsbook, setSelectedSportsbook] = useState<string>("");
   const [reviewBet, setReviewBet] = useState<SavedBet | null>(bets[0] ? normalizeSavedBet(bets[0]) : null);
 
@@ -68,6 +69,58 @@ export default function MyCardShell({ bets, onRemoveBet }: { bets: SavedBet[]; o
 
   const summary = useMemo(() => buildCardSummary(bets), [bets]);
   const warnings = useMemo(() => buildPortfolioRiskWarnings(bets), [bets]);
+
+  function shortTeamLabel(team?: string, fallback = "TEAM") {
+    if (!team) return fallback;
+    const parts = team.trim().split(/\s+/);
+    if (parts.length === 1) return parts[0].slice(0, 3).toUpperCase();
+    return parts[parts.length - 1].slice(0, 3).toUpperCase();
+  }
+
+  function formatSpreadWithTeam(bet: SavedBet | null, point: number | undefined) {
+    if (!bet || point == null) return "—";
+    if (bet.market !== "spread") return point > 0 ? `+${point}` : `${point}`;
+    const team = bet.side === "home"
+      ? (bet.homeAbbreviation || shortTeamLabel(bet.homeTeam, "HOME"))
+      : (bet.awayAbbreviation || shortTeamLabel(bet.awayTeam, "AWAY"));
+    return `${team} ${point > 0 ? `+${point}` : point}`;
+  }
+
+  const selectedSideTeam = useMemo(() => {
+    if (!reviewBet) return null;
+    if (reviewBet.side === "home") {
+      return {
+        label: reviewBet.homeAbbreviation || shortTeamLabel(reviewBet.homeTeam, "HOME"),
+        name: reviewBet.homeTeam || "Home",
+        logo: reviewBet.homeLogo,
+      };
+    }
+    if (reviewBet.side === "away") {
+      return {
+        label: reviewBet.awayAbbreviation || shortTeamLabel(reviewBet.awayTeam, "AWAY"),
+        name: reviewBet.awayTeam || "Away",
+        logo: reviewBet.awayLogo,
+      };
+    }
+    return null;
+  }, [reviewBet]);
+
+  const suggestedBetSize = useMemo(() => {
+    if (!reviewBet || reviewBet.kelly20 == null) return null;
+    const bankrollPercent = reviewBet.kelly20 * 100;
+    if (bankroll && bankroll > 0) {
+      return {
+        percentLabel: `${bankrollPercent.toFixed(1)}%`,
+        amountLabel: `$${(reviewBet.kelly20 * bankroll).toFixed(0)}`,
+        detailLabel: `${bankrollPercent.toFixed(1)}% of $${bankroll.toLocaleString()} bankroll`,
+      };
+    }
+    return {
+      percentLabel: `${bankrollPercent.toFixed(1)}%`,
+      amountLabel: null,
+      detailLabel: `${bankrollPercent.toFixed(1)}% of bankroll`,
+    };
+  }, [bankroll, reviewBet]);
 
   // Get the selected sportsbook's line and odds (or fallback to SIA recommendation)
   const selectedBookLineData = useMemo(() => {
@@ -245,6 +298,8 @@ export default function MyCardShell({ bets, onRemoveBet }: { bets: SavedBet[]; o
                       matchup: bet.matchup,
                       awayTeam: bet.awayTeam,
                       homeTeam: bet.homeTeam,
+                      awayLogo: bet.awayLogo,
+                      homeLogo: bet.homeLogo,
                       commenceTime: bet.commenceTime,
                       kickoff: formatKickoff(bet.commenceTime),
                       date: formatKickoff(bet.commenceTime),
@@ -310,7 +365,14 @@ export default function MyCardShell({ bets, onRemoveBet }: { bets: SavedBet[]; o
                   {/* Selection */}
                   <div className="rounded-2xl border border-white/[0.08] bg-black/20 p-4">
                     <p className="text-[10px] uppercase tracking-widest text-zinc-600">Selection</p>
-                    <p className="mt-1 text-base font-semibold text-white">{reviewBet.pick}</p>
+                    {selectedSideTeam ? (
+                      <div className="mt-2 flex items-center gap-2">
+                        <TeamLogo src={selectedSideTeam.logo} alt={selectedSideTeam.label} size={24} />
+                        <p className="text-base font-semibold text-white">{reviewBet.pick}</p>
+                      </div>
+                    ) : (
+                      <p className="mt-1 text-base font-semibold text-white">{reviewBet.pick}</p>
+                    )}
                     <p className="text-sm text-zinc-500">{reviewBet.matchup}</p>
                   </div>
 
@@ -342,17 +404,26 @@ export default function MyCardShell({ bets, onRemoveBet }: { bets: SavedBet[]; o
                     <div className="rounded-2xl border border-white/[0.08] bg-black/20 p-4">
                       <p className="text-[10px] uppercase tracking-widest text-zinc-600">Line / Odds</p>
                       <p className="mt-1 font-semibold text-white">
-                        {selectedBookLineData?.point != null ? (selectedBookLineData.point > 0 ? `+${selectedBookLineData.point}` : selectedBookLineData.point) : "—"}{" "}
+                        {formatSpreadWithTeam(reviewBet, selectedBookLineData?.point)}{" "}
                         <span className="text-zinc-400">
                           {selectedBookLineData?.price != null ? (selectedBookLineData.price > 0 ? `+${selectedBookLineData.price}` : selectedBookLineData.price) : "—"}
                         </span>
                       </p>
                     </div>
                     <div className="rounded-2xl border border-white/[0.08] bg-black/20 p-4">
-                      <p className="text-[10px] uppercase tracking-widest text-zinc-600">Suggested Stake</p>
-                      <p className="mt-1 font-semibold text-white">
-                        {reviewBet.kelly20 != null ? `${(reviewBet.kelly20 * 100).toFixed(1)}% Kelly` : "—"}
-                      </p>
+                      <p className="text-[10px] uppercase tracking-widest text-zinc-600 inline-flex items-center">Suggested Bet Size<Tooltip term="Bet Size Recommendation" /></p>
+                      {suggestedBetSize ? (
+                        <>
+                          {suggestedBetSize.amountLabel && (
+                            <p className="mt-1 font-semibold text-white">{suggestedBetSize.amountLabel}</p>
+                          )}
+                          <p className={`${suggestedBetSize.amountLabel ? "mt-0.5" : "mt-1"} text-sm font-medium text-zinc-300`}>
+                            {suggestedBetSize.detailLabel}
+                          </p>
+                        </>
+                      ) : (
+                        <p className="mt-1 font-semibold text-white">—</p>
+                      )}
                     </div>
                     <div className="rounded-2xl border border-white/[0.08] bg-black/20 p-4">
                       <p className="text-[10px] uppercase tracking-widest text-zinc-600">SI Score</p>
@@ -374,10 +445,10 @@ export default function MyCardShell({ bets, onRemoveBet }: { bets: SavedBet[]; o
                       <p className="font-semibold text-amber-400">Line Difference</p>
                       <div className="mt-2 space-y-1 text-amber-300">
                         <p className="text-xs">
-                          <span className="font-medium">SIA analyzed:</span> {reviewBet.pick} {reviewBet.point != null ? (reviewBet.point > 0 ? `+${reviewBet.point}` : reviewBet.point) : "—"} at {reviewBet.price != null ? (reviewBet.price > 0 ? `+${reviewBet.price}` : reviewBet.price) : "—"}
+                          <span className="font-medium">SIA analyzed:</span> {reviewBet.pick} {formatSpreadWithTeam(reviewBet, reviewBet.point)} at {reviewBet.price != null ? (reviewBet.price > 0 ? `+${reviewBet.price}` : reviewBet.price) : "—"}
                         </p>
                         <p className="text-xs">
-                          <span className="font-medium">Current {selectedSportsbook}:</span> {reviewBet.pick} {selectedBookLineData?.point != null ? (selectedBookLineData.point > 0 ? `+${selectedBookLineData.point}` : selectedBookLineData.point) : "—"} at {selectedBookLineData?.price != null ? (selectedBookLineData.price > 0 ? `+${selectedBookLineData.price}` : selectedBookLineData.price) : "—"}
+                          <span className="font-medium">Current {selectedSportsbook}:</span> {reviewBet.pick} {formatSpreadWithTeam(reviewBet, selectedBookLineData?.point)} at {selectedBookLineData?.price != null ? (selectedBookLineData.price > 0 ? `+${selectedBookLineData.price}` : selectedBookLineData.price) : "—"}
                         </p>
                         <p className="mt-2 text-xs">The available price differs from the line SIA analyzed. Verify current odds at the sportsbook.</p>
                       </div>
@@ -417,14 +488,12 @@ export default function MyCardShell({ bets, onRemoveBet }: { bets: SavedBet[]; o
                         const kellyStr = reviewBet.kelly20
                           ? `${(reviewBet.kelly20 * 100).toFixed(1)}%`
                           : "—";
-                        const lineStr = selectedBookLineData?.point
-                          ? (selectedBookLineData.point > 0 ? `+${selectedBookLineData.point}` : selectedBookLineData.point)
-                          : "—";
+                        const lineStr = formatSpreadWithTeam(reviewBet, selectedBookLineData?.point);
                         const oddsStr = selectedBookLineData?.price
                           ? (selectedBookLineData.price > 0 ? `+${selectedBookLineData.price}` : selectedBookLineData.price)
                           : "—";
 
-                        const text = `SIA BET\n${reviewBet.pick}\nvs ${reviewBet.matchup}\n${selectedSportsbook} • ${lineStr} ${oddsStr}\nSI Score: ${siScoreStr} | Confidence: ${confidenceStr}%\nEdge: ${edgeStr} | EV: ${evStr}/$ | Kelly 20%: ${kellyStr}`;
+                        const text = `SIA BET\n${reviewBet.pick}\nvs ${reviewBet.matchup}\n${selectedSportsbook} • ${lineStr} ${oddsStr}\nSI Score: ${siScoreStr} | Confidence: ${confidenceStr}%\nEdge: ${edgeStr} | EV: ${evStr}/$ | Suggested size: ${kellyStr} of bankroll`;
                         void navigator.clipboard?.writeText(text);
                       }}
                       className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2.5 text-xs font-medium text-zinc-300 transition hover:bg-white/[0.07]"

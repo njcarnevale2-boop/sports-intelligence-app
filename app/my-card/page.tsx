@@ -44,10 +44,15 @@ type PortfolioResponse = {
   portfolio: PortfolioBet[];
 };
 
+type CurrentUser = {
+  bankroll?: number;
+};
+
 const CARD_KEY = "sports-intelligence-card";
 
 export default function MyCardPage() {
   const [bets, setBets] = useState<SavedBet[]>([]);
+  const [bankroll, setBankroll] = useState<number | null>(null);
 
   // Owned here so CLV enrichment and removals share a single state reference
   const removeBet = useCallback((idOrEventId: string) => {
@@ -122,7 +127,28 @@ export default function MyCardPage() {
     loadPortfolio();
   }, []);
 
-  return <MyCardShell bets={bets} onRemoveBet={removeBet} />;
+  useEffect(() => {
+    async function loadBankroll() {
+      try {
+        const token = localStorage.getItem("access_token");
+        if (!token) return;
+        const user = await fetchJson<CurrentUser>("/api/auth/me", {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+        if (typeof user.bankroll === "number" && Number.isFinite(user.bankroll) && user.bankroll > 0) {
+          setBankroll(user.bankroll);
+        }
+      } catch {
+        setBankroll(null);
+      }
+    }
+
+    void loadBankroll();
+  }, []);
+
+  return <MyCardShell bets={bets} onRemoveBet={removeBet} bankroll={bankroll} />;
 }
 
 async function enrichWithClv(bets: SavedBet[]): Promise<SavedBet[]> {

@@ -31,6 +31,8 @@ def test_games_endpoint_returns_complete_slate_with_required_fields() -> None:
         "awayTeam",
         "homeTeam",
         "status",
+        "betStatus",
+        "qualificationStatus",
     }
     assert required_fields.issubset(set(games[0].keys()))
 
@@ -98,3 +100,22 @@ def test_game_social_intelligence_endpoint_returns_mock_safe_payload() -> None:
     assert payload["provider"] == "MOCK"
     assert payload["isLive"] is False
     assert "keySignals" in payload
+
+
+def test_game_opportunity_endpoint_always_returns_intelligence_report() -> None:
+    games_response = client.get("/api/games")
+    assert games_response.status_code == 200
+
+    event_id = games_response.json()["games"][0]["eventId"]
+    response = client.get(f"/api/games/{event_id}/opportunity")
+    assert response.status_code == 200
+
+    payload = response.json()
+    assert payload["eventId"] == event_id
+    assert "intelligenceReport" in payload
+    report = payload["intelligenceReport"]
+    assert report["betStatus"] in {"STRONG BET", "QUALIFIED", "LEAN", "NO QUALIFIED BET", "INSUFFICIENT DATA"}
+    assert "qualificationStatus" in report
+    assert isinstance(report.get("qualificationReasons", []), list)
+    assert report.get("betTrigger", {}).get("available") is False
+    assert report.get("betTrigger", {}).get("message") == "Actionable price not currently available"

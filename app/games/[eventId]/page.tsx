@@ -95,6 +95,28 @@ type Opportunity = {
   injuryContext?: InjuryContext;
 };
 
+type IntelligenceReport = {
+  eventId: string;
+  betStatus: string;
+  qualificationStatus: string;
+  qualificationReasons: string[];
+  currentLean: string;
+  confidence?: number | null;
+  currentMarket?: {
+    spread?: string | number | null;
+    total?: number | null;
+    sportsbook?: string | null;
+    price?: number | null;
+  };
+  whySummary: string;
+  betTrigger: {
+    available: boolean;
+    message: string;
+    monitor?: string | null;
+    qualifiedAt?: string | null;
+  };
+};
+
 type WeatherStatus = { dataStatus?: string; lastUpdated?: string | null };
 
 type SocialSignal = {
@@ -161,6 +183,11 @@ function signedOdds(n: number) {
   return n > 0 ? `+${n}` : `${n}`;
 }
 
+function formatHomeSpreadLabel(homeTeam: string, spread: number | null | undefined) {
+  if (spread == null) return "Unavailable";
+  return `${homeTeam} ${spread > 0 ? `+${spread}` : spread}`;
+}
+
 function scoreTone(score?: number | null) {
   if (score == null) return "text-zinc-400";
   if (score >= 85) return "text-emerald-400";
@@ -182,6 +209,7 @@ export default function GameIntelligencePage() {
   const [weather, setWeather] = useState<WeatherStatus | null>(null);
   const [injury, setInjury] = useState<InjuryContext | null>(null);
   const [social, setSocial] = useState<SocialGameContext | null>(null);
+  const [intelligenceReport, setIntelligenceReport] = useState<IntelligenceReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [added, setAdded] = useState(false);
@@ -211,14 +239,19 @@ export default function GameIntelligencePage() {
         // Parallel non-fatal requests
         const [ctxResult, oppResult, weatherResult, injuryResult, socialResult] = await Promise.allSettled([
           fetchJson<ScheduleContext>(`/api/games/${eventId}/context`),
-          fetchJson<{ eventId: string; opportunity: Opportunity | null }>(`/api/games/${eventId}/opportunity`),
+          fetchJson<{ eventId: string; opportunity: Opportunity | null; intelligenceReport?: IntelligenceReport }>(`/api/games/${eventId}/opportunity`),
           fetchJson<WeatherStatus>(`/api/games/${eventId}/weather`),
           fetchJson<{ injuryContext: InjuryContext }>(`/api/games/${eventId}/injuries`),
           fetchJson<SocialGameContext>(`/api/games/${eventId}/social-intelligence`),
         ]);
 
         if (ctxResult.status === "fulfilled") setContext(ctxResult.value);
-        if (oppResult.status === "fulfilled") setOpportunity(oppResult.value.opportunity);
+        if (oppResult.status === "fulfilled") {
+          setOpportunity(oppResult.value.opportunity);
+          if (oppResult.value.intelligenceReport) {
+            setIntelligenceReport(oppResult.value.intelligenceReport);
+          }
+        }
         if (weatherResult.status === "fulfilled") setWeather(weatherResult.value);
         if (injuryResult.status === "fulfilled") setInjury(injuryResult.value.injuryContext);
         if (socialResult.status === "fulfilled") setSocial(socialResult.value);
@@ -278,6 +311,7 @@ export default function GameIntelligencePage() {
   const travelShift = formatTravelShift(context?.travel);
   const injuryFreshness = getInjuryFreshness(injury);
   const topSocialSignals = social?.keySignals?.slice(0, 3) ?? [];
+  const topNoBetReasons = intelligenceReport?.qualificationReasons?.slice(0, 3) ?? [];
 
   return (
     <main className="min-h-screen bg-[#070A0F] text-white">
@@ -330,11 +364,9 @@ export default function GameIntelligencePage() {
             <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
               <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Spread</p>
               <p className="mt-2 text-lg font-semibold">
-                {projection.market.homeSpread != null
-                  ? signedOdds(projection.market.homeSpread)
-                  : "Unavailable"}
+                {formatHomeSpreadLabel(projection.homeTeam, projection.market.homeSpread)}
               </p>
-              <p className="mt-1 text-xs text-zinc-600">Home</p>
+              <p className="mt-1 text-xs text-zinc-600">Current market spread</p>
             </div>
             <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
               <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Total</p>
@@ -349,6 +381,46 @@ export default function GameIntelligencePage() {
                 {projection.spreadAnalysis.edgePoints.toFixed(1)} pts
               </p>
             </div>
+          </div>
+        </section>
+
+        {/* SIA GAME INTELLIGENCE SUMMARY */}
+        <section className="rounded-[32px] border border-white/[0.08] bg-[#0B1119] p-8">
+          <p className="text-[11px] uppercase tracking-[0.2em] text-zinc-600">SIA Game Intelligence</p>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Matchup</p>
+              <p className="mt-2 text-base font-semibold text-white">{projection.awayTeam} @ {projection.homeTeam}</p>
+              <p className="mt-1 text-xs text-zinc-500">{formatKickoff(projection.commenceTime)}</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Current Lean</p>
+              <p className="mt-2 text-base font-semibold text-white">{intelligenceReport?.currentLean ?? "NO LEAN"}</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Bet Status</p>
+              <p className="mt-2 text-base font-semibold text-white">{intelligenceReport?.betStatus ?? (opportunity ? "QUALIFIED" : "NO QUALIFIED BET")}</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">SI Score</p>
+              <p className={`mt-2 text-2xl font-semibold ${scoreTone(si?.score)}`}>{si?.score?.toFixed(1) ?? "Pending"}</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Confidence</p>
+              <p className="mt-2 text-2xl font-semibold text-white">{intelligenceReport?.confidence != null ? `${intelligenceReport.confidence}%` : (opportunity ? `${opportunity.confidence}%` : "Pending")}</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Current Market</p>
+              <p className="mt-2 text-base font-semibold text-white">
+                {formatHomeSpreadLabel(projection.homeTeam, projection.market.homeSpread)} · O/U {projection.market.total?.toFixed(1) ?? "—"}
+              </p>
+            </div>
+          </div>
+          <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+            <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Why SIA Sees It This Way</p>
+            <p className="mt-2 text-sm leading-6 text-zinc-400">
+              {intelligenceReport?.whySummary ?? "SIA is awaiting enough model and market context to publish a complete intelligence summary for this game."}
+            </p>
           </div>
         </section>
 
@@ -434,10 +506,48 @@ export default function GameIntelligencePage() {
               )}
             </>
           ) : (
-            <div className="mt-4 rounded-2xl border border-dashed border-white/[0.08] p-6 text-sm text-zinc-500">
-              No qualifying SIA opportunity for this game.
+            <div className="mt-4 space-y-3">
+              <div className="rounded-2xl border border-dashed border-white/[0.08] p-6 text-sm text-zinc-500">
+                {intelligenceReport?.betStatus === "INSUFFICIENT DATA"
+                  ? "Insufficient data to publish a qualified bet recommendation."
+                  : "No qualified SIA bet at current prices."}
+              </div>
+              {topNoBetReasons.length > 0 && (
+                <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+                  <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Why No Qualified Bet</p>
+                  <ul className="mt-2 space-y-1 text-sm text-zinc-400">
+                    {topNoBetReasons.map((reason) => (
+                      <li key={reason}>• {reason}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+                <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Bet Trigger</p>
+                <p className="mt-2 text-sm text-zinc-400">{intelligenceReport?.betTrigger?.message ?? "Actionable price not currently available"}</p>
+              </div>
             </div>
           )}
+        </section>
+
+        {/* MARKET ANALYSIS */}
+        <section className="rounded-[32px] border border-white/[0.08] bg-[#0B1119] p-8">
+          <p className="text-[11px] uppercase tracking-[0.2em] text-zinc-600">Market Analysis</p>
+          <div className="mt-4 grid gap-3 sm:grid-cols-3 text-sm">
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Spread</p>
+              <p className="mt-2 font-semibold text-white">{formatHomeSpreadLabel(projection.homeTeam, projection.market.homeSpread)}</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Total</p>
+              <p className="mt-2 font-semibold text-white">{projection.market.total?.toFixed(1) ?? "Unavailable"}</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Line Movement</p>
+              <p className="mt-2 font-semibold text-white">Pending</p>
+              <p className="mt-1 text-xs text-zinc-600">Actionable line-movement trigger is not currently available for this game.</p>
+            </div>
+          </div>
         </section>
 
         {/* MODEL PROJECTION */}
@@ -526,6 +636,29 @@ export default function GameIntelligencePage() {
               ) : (
                 <p className="mt-2 text-sm text-zinc-600">Unavailable</p>
               )}
+            </div>
+          </div>
+        </section>
+
+        {/* KEY MATCHUP FACTORS */}
+        <section className="rounded-[32px] border border-white/[0.08] bg-[#0B1119] p-8">
+          <p className="text-[11px] uppercase tracking-[0.2em] text-zinc-600">Key Matchup Factors</p>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-sm text-zinc-400">
+              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Rest / Travel</p>
+              <p className="mt-2">{hasContext ? restLabel : "Pending"}</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-sm text-zinc-400">
+              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Injury Intelligence</p>
+              <p className="mt-2">{injury?.summary ?? "Pending"}</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-sm text-zinc-400">
+              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Weather</p>
+              <p className="mt-2">{weather?.dataStatus ?? "Pending"}</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-sm text-zinc-400">
+              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Social Intelligence</p>
+              <p className="mt-2">{social?.summary ?? social?.reason ?? "Pending"}</p>
             </div>
           </div>
         </section>

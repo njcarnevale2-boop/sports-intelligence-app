@@ -22,12 +22,20 @@ const GLOSSARY: Record<string, string> = {
     "A conservative bankroll-sizing guideline derived from the Kelly Criterion, capped at 20% of the full Kelly recommendation to limit volatility. This is a rough sizing signal — not financial advice. Actual stake decisions rest with you.",
   "Kelly":
     "Kelly Criterion — a mathematical formula for sizing bets in proportion to your estimated edge. SIA shows the '20% Kelly' figure, a conservative fractional version that limits variance compared to full Kelly.",
+  "Bet Size Recommendation":
+    "SIA sizes bets based on estimated edge, confidence, and bankroll risk. Bet sizing is a recommendation, not a guarantee.",
   "Fair Odds":
     "The sportsbook price that would correspond exactly to SIA's estimated probability. If fair odds are -120 and the posted price is -105, the bet carries positive expected value at the current market price.",
   "Steam":
     "Rapid, coordinated line movement across multiple sportsbooks in a short window — often interpreted as a signal that sharp or influential bettors have acted on one side. Steam does not guarantee a correct outcome.",
   "CLV":
     "Closing Line Value — the difference between the price captured when you added a bet and the market's final closing price before kickoff. Positive CLV means you received better odds than the market's closing consensus. CLV is widely used to assess long-term betting quality.",
+  "Implied Probability":
+    "The win probability implied by the current sportsbook odds. This is market pricing, not SIA's model view.",
+  "Hold/Vig":
+    "The sportsbook's built-in margin embedded in prices. Higher hold means less favorable pricing for bettors.",
+  "Reverse Line Movement":
+    "When the line moves opposite the majority of public tickets, often interpreted as sharper money influencing the market.",
   "Market Intelligence":
     "SIA's analysis of sportsbook pricing behavior, including how many books are moving, the magnitude of line moves, steam signals, and directional consensus. High Market Intelligence score means market data supports the model's position.",
   "Market Grade":

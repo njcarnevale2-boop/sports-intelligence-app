@@ -232,6 +232,25 @@ class GamesService:
             sports_score = enrichment.get("sportsIntelligenceScore") if enrichment else None
             market_snapshot = market_lookup.get(event_id, {})
 
+            qualification_status = "QUALIFIED" if enrichment else "NOT_QUALIFIED"
+            bet_status = "NO QUALIFIED BET"
+            qualification_reasons = ["Current edge and confidence do not meet SIA qualification thresholds."]
+            recommendation_label = enrichment.get("recommendationLabel") if enrichment else None
+
+            if enrichment:
+                recommendation_upper = str(recommendation_label or "").upper()
+                if "STRONG" in recommendation_upper or "ELITE" in recommendation_upper:
+                    bet_status = "STRONG BET"
+                elif "LEAN" in recommendation_upper:
+                    bet_status = "LEAN"
+                else:
+                    bet_status = "QUALIFIED"
+                qualification_reasons = ["Current model edge and confidence meet SIA qualification thresholds."]
+            elif market_snapshot.get("booksTracked", 0) == 0:
+                qualification_status = "INSUFFICIENT_DATA"
+                bet_status = "INSUFFICIENT DATA"
+                qualification_reasons = ["Insufficient market data to evaluate a qualified bet."]
+
             best_away_spread = market_snapshot.get("bestAwaySpread")
             best_home_spread = market_snapshot.get("bestHomeSpread")
             best_over = market_snapshot.get("bestOver")
@@ -279,6 +298,10 @@ class GamesService:
                     "marketDataStatus": market_snapshot.get("dataStatus", "UNAVAILABLE"),
                     "injuryContext": None,
                     "weatherContext": None,
+                    "recommendation": recommendation_label,
+                    "qualificationStatus": qualification_status,
+                    "qualificationReasons": qualification_reasons,
+                    "betStatus": bet_status,
                 }
             )
 
@@ -438,6 +461,7 @@ class GamesService:
             else:
                 market_intelligence_payload = market_intelligence
 
+
             score_payload = calculate_sports_intelligence_score(
                 opportunity={
                     "edge": float(best.get("edge_pp", 0.0)) * 100.0,
@@ -452,11 +476,11 @@ class GamesService:
 
             output[event_id] = {
                 "bestOpportunity": self._format_best_opportunity(best),
+                "recommendationLabel": str(best.get("recommendation", "")).strip() or None,
                 "sportsIntelligenceScore": float(score_payload.get("score", 0.0)),
                 "marketIntelligence": market_intelligence_payload,
                 "moneyline": moneyline,
             }
-
         self._opportunities_cache[cache_key] = output
         return output
 

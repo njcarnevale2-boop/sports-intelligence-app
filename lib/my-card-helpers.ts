@@ -4,6 +4,10 @@ export type SavedBet = {
   matchup: string;
   awayTeam?: string;
   homeTeam?: string;
+  awayAbbreviation?: string;
+  homeAbbreviation?: string;
+  awayLogo?: string;
+  homeLogo?: string;
   pick: string;
   book: string;
   market?: string;
@@ -59,6 +63,10 @@ export function normalizeSavedBet(bet: Record<string, unknown> & Partial<SavedBe
     matchup: typeof bet.matchup === 'string' ? bet.matchup : 'Unknown matchup',
     awayTeam: typeof bet.awayTeam === 'string' ? bet.awayTeam : undefined,
     homeTeam: typeof bet.homeTeam === 'string' ? bet.homeTeam : undefined,
+    awayAbbreviation: typeof bet.awayAbbreviation === 'string' ? bet.awayAbbreviation : undefined,
+    homeAbbreviation: typeof bet.homeAbbreviation === 'string' ? bet.homeAbbreviation : undefined,
+    awayLogo: typeof bet.awayLogo === 'string' ? bet.awayLogo : undefined,
+    homeLogo: typeof bet.homeLogo === 'string' ? bet.homeLogo : undefined,
     pick: typeof bet.pick === 'string' ? bet.pick : 'Market edge',
     book: typeof bet.book === 'string' ? bet.book : 'Primary sportsbook',
     market: typeof bet.market === 'string' ? bet.market : undefined,

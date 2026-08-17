@@ -181,6 +181,153 @@ def format_pick(row):
     )
 
 
+def classify_bet_status(recommendation: str | None) -> str:
+    label = str(recommendation or "").strip().upper()
+    if not label:
+        return "NO QUALIFIED BET"
+    if "STRONG" in label or "ELITE" in label:
+        return "STRONG BET"
+    if "LEAN" in label:
+        return "LEAN"
+    return "QUALIFIED"
+
+
+def derive_game_lean(game_row: pd.Series | None) -> str:
+    if game_row is None:
+        return "NO LEAN"
+
+    away_team = str(game_row.get("away_team", "")).strip()
+    home_team = str(game_row.get("home_team", "")).strip()
+    model_margin_home = safe_float(game_row.get("model_margin_home"))
+    market_home_spread = safe_float(game_row.get("market_home_spread"))
+    model_total = safe_float(game_row.get("model_total_baseline"))
+    market_total = safe_float(game_row.get("market_total"))
+
+    if model_margin_home is not None and abs(model_margin_home) >= 0.25:
+        team = home_team if model_margin_home > 0 else away_team
+        return f"{team} SIDE"
+
+    if model_total is not None and market_total is not None:
+        total_diff = model_total - market_total
+        if abs(total_diff) >= 0.75:
+            return "TOTAL OVER" if total_diff > 0 else "TOTAL UNDER"
+
+    if market_home_spread is not None:
+        if market_home_spread < 0:
+            return f"{home_team} SIDE"
+        if market_home_spread > 0:
+            return f"{away_team} SIDE"
+
+    return "NO LEAN"
+
+
+def build_intelligence_report(
+    event_id: str,
+    opportunity: dict | None,
+    game_row: pd.Series | None,
+    market_snapshot: dict | None,
+) -> dict:
+    books_tracked = int((market_snapshot or {}).get("booksTracked") or 0)
+    consensus_spread = (market_snapshot or {}).get("consensusSpread")
+    if consensus_spread is None and game_row is not None:
+        consensus_spread = safe_float(game_row.get("market_home_spread"))
+    consensus_total = (market_snapshot or {}).get("consensusTotal")
+    if consensus_total is None and game_row is not None:
+        consensus_total = safe_float(game_row.get("market_total"))
+
+    if opportunity is not None:
+        recommendation = opportunity.get("recommendation")
+        return {
+            "eventId": event_id,
+            "betStatus": classify_bet_status(recommendation),
+            "qualificationStatus": "QUALIFIED",
+            "qualificationReasons": ["Current model edge and confidence meet SIA qualification thresholds."],
+            "currentLean": str(opportunity.get("pick") or "NO LEAN").upper(),
+            "confidence": opportunity.get("confidence"),
+            "currentMarket": {
+                "spread": opportunity.get("pick") if opportunity.get("market") == "spread" else None,
+                "total": consensus_total,
+                "sportsbook": opportunity.get("book"),
+                "price": opportunity.get("price"),
+            },
+            "whySummary": "SIA identified a qualified edge based on model probability, price, and confidence.",
+            "betTrigger": {
+                "available": False,
+                "message": "Actionable price not currently available",
+                "monitor": None,
+                "qualifiedAt": None,
+            },
+        }
+
+    if game_row is None:
+        return {
+            "eventId": event_id,
+            "betStatus": "INSUFFICIENT DATA",
+            "qualificationStatus": "INSUFFICIENT_DATA",
+            "qualificationReasons": ["Game projection data is unavailable for this matchup."],
+            "currentLean": "NO LEAN",
+            "confidence": None,
+            "currentMarket": {
+                "spread": None,
+                "total": None,
+                "sportsbook": None,
+                "price": None,
+            },
+            "whySummary": "SIA cannot determine a qualified bet without a complete game projection.",
+            "betTrigger": {
+                "available": False,
+                "message": "Actionable price not currently available",
+                "monitor": None,
+                "qualifiedAt": None,
+            },
+        }
+
+    if books_tracked == 0:
+        return {
+            "eventId": event_id,
+            "betStatus": "INSUFFICIENT DATA",
+            "qualificationStatus": "INSUFFICIENT_DATA",
+            "qualificationReasons": ["Insufficient market data to evaluate a qualified bet."],
+            "currentLean": derive_game_lean(game_row),
+            "confidence": None,
+            "currentMarket": {
+                "spread": consensus_spread,
+                "total": consensus_total,
+                "sportsbook": None,
+                "price": None,
+            },
+            "whySummary": "SIA has not received enough market coverage to publish a qualified bet recommendation.",
+            "betTrigger": {
+                "available": False,
+                "message": "Actionable price not currently available",
+                "monitor": None,
+                "qualifiedAt": None,
+            },
+        }
+
+    return {
+        "eventId": event_id,
+        "betStatus": "NO QUALIFIED BET",
+        "qualificationStatus": "NOT_QUALIFIED",
+        "qualificationReasons": ["Current edge and confidence do not meet SIA qualification thresholds."],
+        "currentLean": derive_game_lean(game_row),
+        "confidence": None,
+        "currentMarket": {
+            "spread": consensus_spread,
+            "total": consensus_total,
+            "sportsbook": None,
+            "price": None,
+        },
+        "whySummary": "SIA analyzed this game but no market/side currently qualifies as an actionable bet.",
+        "betTrigger": {
+            "available": False,
+            "message": "Actionable price not currently available",
+            "monitor": None,
+            "qualifiedAt": None,
+        },
+    }
+
+
 def build_id(
     row,
     suffix=None,
@@ -982,15 +1129,43 @@ def get_opportunity(
 @router.get("/games/{event_id}/opportunity")
 def get_game_best_opportunity(event_id: str):
     """Return the top-ranked SIA opportunity for this game, or null if none qualifies."""
+    game_row = None
+    if GAME_PROJECTIONS.exists():
+        game_df = pd.read_csv(GAME_PROJECTIONS)
+        game_df["api_event_id"] = game_df["api_event_id"].astype(str)
+        game_match = game_df[game_df["api_event_id"] == event_id]
+        if not game_match.empty:
+            game_row = game_match.iloc[0]
+
+    market_snapshot = market_data_service.event_market_snapshot(event_id)
+
     if not RANKED_BET_BOARD.exists():
-        return {"eventId": event_id, "opportunity": None}
+        return {
+            "eventId": event_id,
+            "opportunity": None,
+            "intelligenceReport": build_intelligence_report(
+                event_id=event_id,
+                opportunity=None,
+                game_row=game_row,
+                market_snapshot=market_snapshot,
+            ),
+        }
 
     df = pd.read_csv(RANKED_BET_BOARD)
     df["api_event_id"] = df["api_event_id"].astype(str)
     match = df[df["api_event_id"] == event_id]
 
     if match.empty:
-        return {"eventId": event_id, "opportunity": None}
+        return {
+            "eventId": event_id,
+            "opportunity": None,
+            "intelligenceReport": build_intelligence_report(
+                event_id=event_id,
+                opportunity=None,
+                game_row=game_row,
+                market_snapshot=market_snapshot,
+            ),
+        }
 
     # Identify the top-ranked market/side for this game
     match = match.sort_values("rank")
@@ -1002,15 +1177,22 @@ def get_game_best_opportunity(event_id: str):
     group = match[(match["market"] == top_market) & (match["side"] == top_side)]
     selected = best_line_for_group(group)
     alternates = make_alternate_books(group, selected)
-    market_snapshot = market_data_service.event_market_snapshot(event_id)
-
     opportunity = row_to_opportunity(
         selected,
         include_alternates=alternates,
         market_snapshot=market_snapshot,
         injury_ctx=InjuryMatchupContext(),
     )
-    return {"eventId": event_id, "opportunity": opportunity}
+    return {
+        "eventId": event_id,
+        "opportunity": opportunity,
+        "intelligenceReport": build_intelligence_report(
+            event_id=event_id,
+            opportunity=opportunity,
+            game_row=game_row,
+            market_snapshot=market_snapshot,
+        ),
+    }
 
 
 @router.get(

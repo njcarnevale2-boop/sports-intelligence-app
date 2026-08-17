@@ -30,6 +30,9 @@ type GameCard = {
   bestOpportunity?: string | null;
   sportsIntelligenceScore?: number | null;
   marketDataStatus?: string;
+  betStatus?: string | null;
+  recommendation?: string | null;
+  qualificationStatus?: string | null;
 };
 
 type GamesResponse = {
@@ -88,6 +91,12 @@ function scoreTone(score?: number | null) {
 
 function signedSpread(spread: number) {
   return spread > 0 ? `+${spread}` : `${spread}`;
+}
+
+function formatTeamSpread(game: GameCard) {
+  if (game.spread == null) return "—";
+  const homeLabel = game.homeAbbreviation || game.homeTeam;
+  return `${homeLabel} ${signedSpread(game.spread)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -222,12 +231,12 @@ export default function GamesPage() {
             )}
             {!loading && (
               <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-zinc-400">
-                {games.length} {games.length === 1 ? "game" : "games"}
+                {games.length} Games Analyzed
               </span>
             )}
             {!loading && qualifiedCount > 0 && (
               <span className="rounded-full border border-emerald-400/20 bg-emerald-400/[0.06] px-3 py-1 text-emerald-400">
-                {qualifiedCount} qualified {qualifiedCount === 1 ? "opportunity" : "opportunities"}
+                {qualifiedCount} Qualified {qualifiedCount === 1 ? "Opportunity" : "Opportunities"}
               </span>
             )}
             {marketStatus && marketStatus !== "UNAVAILABLE" && (
@@ -375,7 +384,7 @@ function GameRow({ game }: { game: GameCard }) {
         <div className="flex flex-col items-start min-w-[70px] flex-shrink-0">
           <span className="text-[10px] text-zinc-600">SPREAD</span>
           <span className="text-sm font-semibold text-zinc-200 mt-0.5">
-            {game.spread != null ? signedSpread(game.spread) : "—"}
+            {formatTeamSpread(game)}
           </span>
         </div>
 
@@ -397,11 +406,11 @@ function GameRow({ game }: { game: GameCard }) {
                 </span>
               )}
               <span className="text-[11px] text-zinc-400 mt-0.5 leading-snug max-w-[130px]">
-                {game.bestOpportunity}
+                {game.betStatus ?? game.recommendation ?? game.bestOpportunity}
               </span>
             </>
           ) : (
-            <span className="text-[11px] text-zinc-700">No Qualified</span>
+            <span className="text-[11px] text-zinc-700">{game.betStatus ?? "NO QUALIFIED BET"}</span>
           )}
         </div>
 
@@ -441,7 +450,7 @@ function GameRow({ game }: { game: GameCard }) {
           <div className="flex flex-col items-center">
             <span className="text-[10px] text-zinc-600">SPREAD</span>
             <span className="font-semibold text-zinc-200 mt-0.5">
-              {game.spread != null ? signedSpread(game.spread) : "—"}
+              {formatTeamSpread(game)}
             </span>
           </div>
           <div className="flex flex-col items-center">
@@ -461,8 +470,13 @@ function GameRow({ game }: { game: GameCard }) {
               </div>
             )}
             <div className="text-[11px] text-zinc-400 mt-1">
-              {game.bestOpportunity}
+              {game.betStatus ?? game.recommendation ?? game.bestOpportunity}
             </div>
+          </div>
+        )}
+        {!hasOpp && (
+          <div className="text-center mb-3 pb-3 border-b border-white/[0.05]">
+            <div className="text-[11px] text-zinc-700">{game.betStatus ?? "NO QUALIFIED BET"}</div>
           </div>
         )}
 
