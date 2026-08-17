@@ -26,6 +26,7 @@ type GameCard = {
   homeLogo?: string;
   status: string;
   spread?: number | null;
+  spreadSource?: string;
   total?: number | null;
   bestOpportunity?: string | null;
   sportsIntelligenceScore?: number | null;
@@ -97,6 +98,16 @@ function formatTeamSpread(game: GameCard) {
   if (game.spread == null) return "—";
   const homeLabel = game.homeAbbreviation || game.homeTeam;
   return `${homeLabel} ${signedSpread(game.spread)}`;
+}
+
+function compactBetStatus(game: GameCard) {
+  if (game.bestOpportunity) {
+    const prefix = (game.betStatus || "BET").replace("QUALIFIED", "BET");
+    const score = game.sportsIntelligenceScore != null ? ` · ${game.sportsIntelligenceScore.toFixed(1)}` : "";
+    return `${prefix} ${game.bestOpportunity}${score}`;
+  }
+  if ((game.betStatus || "").toUpperCase().includes("INSUFFICIENT")) return "PASS · Insufficient data";
+  return "PASS · No meaningful edge";
 }
 
 // ---------------------------------------------------------------------------
@@ -382,7 +393,7 @@ function GameRow({ game }: { game: GameCard }) {
 
         {/* SPREAD */}
         <div className="flex flex-col items-start min-w-[70px] flex-shrink-0">
-          <span className="text-[10px] text-zinc-600">SPREAD</span>
+          <span className="text-[10px] text-zinc-600">{game.spreadSource === "CONSENSUS_AVERAGE" ? "CONSENSUS" : "SPREAD"}</span>
           <span className="text-sm font-semibold text-zinc-200 mt-0.5">
             {formatTeamSpread(game)}
           </span>
@@ -400,17 +411,12 @@ function GameRow({ game }: { game: GameCard }) {
         <div className="flex flex-col items-start min-w-[140px] flex-shrink-0 ml-auto">
           {hasOpp ? (
             <>
-              {game.sportsIntelligenceScore != null && (
-                <span className={`text-xs font-semibold ${scoreTone(game.sportsIntelligenceScore)}`}>
-                  SI {game.sportsIntelligenceScore.toFixed(1)}
-                </span>
-              )}
-              <span className="text-[11px] text-zinc-400 mt-0.5 leading-snug max-w-[130px]">
-                {game.betStatus ?? game.recommendation ?? game.bestOpportunity}
+              <span className={`text-[11px] font-semibold ${scoreTone(game.sportsIntelligenceScore)}`}>
+                {compactBetStatus(game)}
               </span>
             </>
           ) : (
-            <span className="text-[11px] text-zinc-700">{game.betStatus ?? "NO QUALIFIED BET"}</span>
+            <span className="text-[11px] text-zinc-500">{compactBetStatus(game)}</span>
           )}
         </div>
 
@@ -448,7 +454,7 @@ function GameRow({ game }: { game: GameCard }) {
         {/* Spread + Total */}
         <div className="flex gap-4 justify-center mb-3 text-sm">
           <div className="flex flex-col items-center">
-            <span className="text-[10px] text-zinc-600">SPREAD</span>
+            <span className="text-[10px] text-zinc-600">{game.spreadSource === "CONSENSUS_AVERAGE" ? "CONSENSUS" : "SPREAD"}</span>
             <span className="font-semibold text-zinc-200 mt-0.5">
               {formatTeamSpread(game)}
             </span>
@@ -464,19 +470,14 @@ function GameRow({ game }: { game: GameCard }) {
         {/* SIA Signal */}
         {hasOpp && (
           <div className="text-center mb-3 pb-3 border-b border-white/[0.05]">
-            {game.sportsIntelligenceScore != null && (
-              <div className={`text-xs font-semibold ${scoreTone(game.sportsIntelligenceScore)}`}>
-                SI {game.sportsIntelligenceScore.toFixed(1)}
-              </div>
-            )}
-            <div className="text-[11px] text-zinc-400 mt-1">
-              {game.betStatus ?? game.recommendation ?? game.bestOpportunity}
+            <div className={`text-[11px] font-semibold ${scoreTone(game.sportsIntelligenceScore)}`}>
+              {compactBetStatus(game)}
             </div>
           </div>
         )}
         {!hasOpp && (
           <div className="text-center mb-3 pb-3 border-b border-white/[0.05]">
-            <div className="text-[11px] text-zinc-700">{game.betStatus ?? "NO QUALIFIED BET"}</div>
+            <div className="text-[11px] text-zinc-500">{compactBetStatus(game)}</div>
           </div>
         )}
 

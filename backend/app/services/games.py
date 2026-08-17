@@ -285,6 +285,7 @@ class GamesService:
                     "homeLogo": team_home.get("logo"),
                     "status": derive_game_status(kickoff, now_utc),
                     "spread": market_snapshot.get("consensusSpread", safe_float(source_row.get("market_home_spread"))),
+                    "spreadSource": "CONSENSUS_AVERAGE" if market_snapshot.get("consensusSpread") is not None else "MODEL_FEED_MARKET_HOME_SPREAD",
                     "total": market_snapshot.get("consensusTotal", safe_float(source_row.get("market_total"))),
                     "moneyline": market_snapshot.get("consensusMoneyline"),
                     "bestOpportunity": enrichment.get("bestOpportunity") if enrichment else None,

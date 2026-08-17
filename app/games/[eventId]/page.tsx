@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 
@@ -11,50 +11,32 @@ import { addToCard as addToCardHelper } from "@/lib/add-to-card";
 import {
   formatTravelMiles,
   formatTravelShift,
-  getInjuryFreshness,
   getRestLabel,
   hasScheduleContext,
   type InjuryContext,
   type ScheduleContext,
 } from "@/app/lib/page-context";
-import Tooltip from "@/components/ui/tooltip";
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
 
 type GameProjection = {
   eventId: string;
   commenceTime: string;
-  matchup: string;
   awayTeam: string;
   homeTeam: string;
-  teamPower: { away: number; home: number; differenceHomeMinusAway: number };
-  model: { marginHome: number; total: number; projectedScore: { away: number; home: number } };
-  market: { marginHome: number; homeSpread: number; total: number };
-  spreadAnalysis: { edgePoints: number; homeCoverProbability: number; homeCoverFairOdds: number };
+  model: { projectedScore: { away: number; home: number } };
+  market: { homeSpread: number; total: number };
+  spreadAnalysis: { edgePoints: number };
 };
 
 type MarketIntelligence = {
   score: number;
-  grade: string;
   signal: string;
-  booksTracked: number;
-  booksMoving: number;
   steamBooks: number;
-  supportingBooks: number;
-  opposingBooks: number;
-  consensus: number;
-  largestPointMove: number;
-  largestPriceMove: number;
-  marketSupport: boolean;
-  snapshots: number;
+  booksMoving: number;
+  booksTracked: number;
 };
 
 type SportsIntelligenceScore = {
   score: number;
-  grade: string;
-  stars: number;
   recommendation: string;
   components: {
     modelEdge: number;
@@ -63,57 +45,32 @@ type SportsIntelligenceScore = {
     marketIntelligence: number;
     dataCompleteness: number;
   };
-  reasons: string[];
 };
 
 type Opportunity = {
   id: string;
-  eventId: string;
-  commenceTime: string;
-  matchup: string;
-  awayTeam: string;
-  homeTeam: string;
   pick: string;
   book: string;
-  market: string;
-  side: string;
   point: number;
   price: number;
   modelProbability: number;
   impliedProbability: number;
-  fairOdds: number;
   edge: number;
   evPerDollar: number;
-  kellyFull: number;
-  kelly20: number;
-  recommendation: string;
   confidence: number;
-  dataCompleteness: number;
-  rank: number;
+  kelly20: number;
   marketIntelligence: MarketIntelligence;
   sportsIntelligenceScore: SportsIntelligenceScore;
-  injuryContext?: InjuryContext;
 };
 
 type IntelligenceReport = {
-  eventId: string;
   betStatus: string;
-  qualificationStatus: string;
   qualificationReasons: string[];
   currentLean: string;
-  confidence?: number | null;
-  currentMarket?: {
-    spread?: string | number | null;
-    total?: number | null;
-    sportsbook?: string | null;
-    price?: number | null;
-  };
   whySummary: string;
   betTrigger: {
     available: boolean;
     message: string;
-    monitor?: string | null;
-    qualifiedAt?: string | null;
   };
 };
 
@@ -121,83 +78,78 @@ type WeatherStatus = { dataStatus?: string; lastUpdated?: string | null };
 
 type SocialSignal = {
   signalId: string;
-  timestamp: string;
   team: string;
-  player?: string | null;
-  position?: string | null;
   category: string;
-  severity: string;
-  sourceName: string;
-  sourceHandle: string;
-  sourceType: string;
-  sourceCredibility: number;
-  textSummary: string;
-  corroborationCount: number;
   confidence: number;
-  status: string;
-  estimatedPointImpact: number;
-  marketRelevance: string;
-  gameImpact: number;
-  eventId?: string | null;
-  provider: string;
-  isLive: boolean;
+  textSummary: string;
+  sourceName: string;
 };
 
 type SocialGameContext = {
-  available?: boolean;
-  eventId: string;
-  awayTeam?: string;
-  homeTeam?: string;
-  awaySocialScore?: number;
-  homeSocialScore?: number;
-  netSocialAdvantage?: number;
-  keySignals: SocialSignal[];
-  confidence?: number;
   summary?: string;
   provider: string;
-  isLive: boolean;
   dataStatus: string;
-  sourcesActive?: number;
-  signalsDetected?: number;
-  corroboratedSignals?: number;
-  officialSignals?: number;
-  lastIngestion?: string | null;
-  errors?: string[];
+  keySignals: SocialSignal[];
   reason?: string;
 };
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+type CurrentUser = {
+  bankroll?: number;
+};
 
 function formatKickoff(iso: string) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "TBD";
   return d.toLocaleString("en-US", {
-    weekday: "short", month: "short", day: "numeric",
-    hour: "numeric", minute: "2-digit", timeZoneName: "short",
+    weekday: "long",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
   });
 }
 
-function signedOdds(n: number) {
-  return n > 0 ? `+${n}` : `${n}`;
+function signed(value: number) {
+  return value > 0 ? `+${value}` : `${value}`;
 }
 
-function formatHomeSpreadLabel(homeTeam: string, spread: number | null | undefined) {
-  if (spread == null) return "Unavailable";
-  return `${homeTeam} ${spread > 0 ? `+${spread}` : spread}`;
+function betStatusLabel(report: IntelligenceReport | null, opp: Opportunity | null) {
+  const raw = (report?.betStatus || opp?.sportsIntelligenceScore?.recommendation || "").toUpperCase();
+  if (raw.includes("NO QUALIFIED BET")) return "PASS";
+  if (raw.includes("INSUFFICIENT")) return "PASS";
+  if (raw.includes("LEAN")) return "LEAN";
+  if (raw.includes("STRONG") || raw.includes("ELITE")) return "STRONG BET";
+  if (raw.includes("QUALIFIED")) return "BET";
+  return "PASS";
 }
 
-function scoreTone(score?: number | null) {
-  if (score == null) return "text-zinc-400";
-  if (score >= 85) return "text-emerald-400";
-  if (score >= 75) return "text-sky-400";
-  return "text-amber-400";
+function suggestedBetText(opp: Opportunity | null, bankroll: number | null) {
+  if (!opp || opp.kelly20 == null) {
+    return { headline: "Unavailable", detail: "Suggested bet size is not currently available." };
+  }
+
+  const pct = opp.kelly20 * 100;
+  if (bankroll && bankroll > 0) {
+    return {
+      headline: `$${Math.round(bankroll * opp.kelly20).toLocaleString()}`,
+      detail: `${pct.toFixed(1)}% of $${bankroll.toLocaleString()} bankroll`,
+    };
+  }
+
+  return {
+    headline: `${pct.toFixed(1)}% of bankroll`,
+    detail: "Bankroll not set. Percentage sizing shown.",
+  };
 }
 
-// ---------------------------------------------------------------------------
-// Page
-// ---------------------------------------------------------------------------
+function edgeDirection(projection: GameProjection) {
+  const points = projection.spreadAnalysis.edgePoints;
+  const toward = points < 0 ? projection.awayTeam : projection.homeTeam;
+  return {
+    magnitude: Math.abs(points).toFixed(1),
+    toward,
+    signed: points.toFixed(1),
+  };
+}
 
 export default function GameIntelligencePage() {
   const params = useParams<{ eventId: string }>();
@@ -206,14 +158,14 @@ export default function GameIntelligencePage() {
   const [projection, setProjection] = useState<GameProjection | null>(null);
   const [context, setContext] = useState<ScheduleContext | null>(null);
   const [opportunity, setOpportunity] = useState<Opportunity | null>(null);
+  const [intelligenceReport, setIntelligenceReport] = useState<IntelligenceReport | null>(null);
   const [weather, setWeather] = useState<WeatherStatus | null>(null);
   const [injury, setInjury] = useState<InjuryContext | null>(null);
   const [social, setSocial] = useState<SocialGameContext | null>(null);
-  const [intelligenceReport, setIntelligenceReport] = useState<IntelligenceReport | null>(null);
+  const [bankroll, setBankroll] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [added, setAdded] = useState(false);
-  const [snapshotError, setSnapshotError] = useState("");
 
   useEffect(() => {
     if (!eventId) return;
@@ -223,23 +175,12 @@ export default function GameIntelligencePage() {
         setLoading(true);
         setError("");
 
-        // Primary game data (required)
         const proj = await fetchJson<GameProjection>(`/api/games/${eventId}`);
         setProjection(proj);
 
-        // Check localStorage for existing bet on this event
-        try {
-          const raw = localStorage.getItem("sports-intelligence-card");
-          if (raw) {
-            const card = JSON.parse(raw) as Array<{ eventId?: string }>;
-            setAdded(card.some((b) => b.eventId === eventId));
-          }
-        } catch { /* ignore */ }
-
-        // Parallel non-fatal requests
         const [ctxResult, oppResult, weatherResult, injuryResult, socialResult] = await Promise.allSettled([
           fetchJson<ScheduleContext>(`/api/games/${eventId}/context`),
-          fetchJson<{ eventId: string; opportunity: Opportunity | null; intelligenceReport?: IntelligenceReport }>(`/api/games/${eventId}/opportunity`),
+          fetchJson<{ opportunity: Opportunity | null; intelligenceReport?: IntelligenceReport }>(`/api/games/${eventId}/opportunity`),
           fetchJson<WeatherStatus>(`/api/games/${eventId}/weather`),
           fetchJson<{ injuryContext: InjuryContext }>(`/api/games/${eventId}/injuries`),
           fetchJson<SocialGameContext>(`/api/games/${eventId}/social-intelligence`),
@@ -248,9 +189,7 @@ export default function GameIntelligencePage() {
         if (ctxResult.status === "fulfilled") setContext(ctxResult.value);
         if (oppResult.status === "fulfilled") {
           setOpportunity(oppResult.value.opportunity);
-          if (oppResult.value.intelligenceReport) {
-            setIntelligenceReport(oppResult.value.intelligenceReport);
-          }
+          if (oppResult.value.intelligenceReport) setIntelligenceReport(oppResult.value.intelligenceReport);
         }
         if (weatherResult.status === "fulfilled") setWeather(weatherResult.value);
         if (injuryResult.status === "fulfilled") setInjury(injuryResult.value.injuryContext);
@@ -266,27 +205,58 @@ export default function GameIntelligencePage() {
     void load();
   }, [eventId]);
 
+  useEffect(() => {
+    async function loadBankroll() {
+      try {
+        const token = localStorage.getItem("access_token");
+        if (!token) return;
+        const user = await fetchJson<CurrentUser>("/api/auth/me", {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (typeof user.bankroll === "number" && user.bankroll > 0) setBankroll(user.bankroll);
+      } catch {
+        setBankroll(null);
+      }
+    }
+
+    void loadBankroll();
+  }, []);
+
   async function handleAddToCard() {
     if (!opportunity) return;
-    setSnapshotError("");
     const result = await addToCardHelper(opportunity as Record<string, unknown>);
-    if (result.success) {
-      setAdded(true);
-    } else {
-      setAdded(true);
-      setSnapshotError(result.error);
-    }
+    if (result.success) setAdded(true);
   }
 
-  // ---------------------------------------------------------------------------
-  // Loading / error states
-  // ---------------------------------------------------------------------------
+  const reasonSummary = useMemo(() => {
+    if (intelligenceReport?.whySummary) return intelligenceReport.whySummary;
+    if (opportunity?.sportsIntelligenceScore?.recommendation) {
+      return `SIA's recommendation is ${opportunity.sportsIntelligenceScore.recommendation} based on model value and market context.`;
+    }
+    return "SIA currently does not have enough aligned edge to publish a qualified bet.";
+  }, [intelligenceReport?.whySummary, opportunity?.sportsIntelligenceScore?.recommendation]);
+
+  const whyFactors = useMemo(() => {
+    if (!opportunity) {
+      const reasons = intelligenceReport?.qualificationReasons ?? [];
+      return reasons.slice(0, 3).map((r, idx) => `${idx + 1}. ${r}`);
+    }
+
+    const factors: string[] = [];
+    factors.push(`Model vs Market: SIA probability ${Math.round(opportunity.modelProbability)}% vs market ${Math.round(opportunity.impliedProbability)}%.`);
+    factors.push(`Price / Value: ${opportunity.pick} at ${signed(opportunity.price)} returns +$${opportunity.evPerDollar.toFixed(3)} EV per $1.`);
+    factors.push(`Confidence: ${opportunity.confidence}/100 with market support ${opportunity.marketIntelligence.booksMoving}/${opportunity.marketIntelligence.booksTracked} books moving.`);
+    if (opportunity.marketIntelligence.steamBooks > 0) {
+      factors.push(`Supporting signal: ${opportunity.marketIntelligence.steamBooks} steam books aligned.`);
+    }
+    return factors.slice(0, 4);
+  }, [intelligenceReport?.qualificationReasons, opportunity]);
 
   if (loading) {
     return (
       <main className="min-h-screen bg-[#070A0F] text-white">
         <div className="mx-auto max-w-5xl px-6 py-16 lg:px-10">
-          <p className="text-sm text-zinc-500">Loading game intelligence…</p>
+          <p className="text-sm text-zinc-500">Loading game intelligence...</p>
         </div>
       </main>
     );
@@ -303,443 +273,138 @@ export default function GameIntelligencePage() {
     );
   }
 
-  const si = opportunity?.sportsIntelligenceScore;
-  const mi = opportunity?.marketIntelligence;
+  const status = betStatusLabel(intelligenceReport, opportunity);
+  const betSize = suggestedBetText(opportunity, bankroll);
   const hasContext = hasScheduleContext(context);
-  const restLabel = getRestLabel(context?.rest);
-  const travelMiles = formatTravelMiles(context?.travel);
-  const travelShift = formatTravelShift(context?.travel);
-  const injuryFreshness = getInjuryFreshness(injury);
-  const topSocialSignals = social?.keySignals?.slice(0, 3) ?? [];
-  const topNoBetReasons = intelligenceReport?.qualificationReasons?.slice(0, 3) ?? [];
+  const directionalEdge = edgeDirection(projection);
 
   return (
     <main className="min-h-screen bg-[#070A0F] text-white">
-      <div className="mx-auto max-w-5xl px-6 py-10 lg:px-10 space-y-8">
-
-        {/* NAV */}
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <Link href="/games" className="text-sm text-zinc-500 transition hover:text-white">
-            ← Games
-          </Link>
-          {typeof context?.week === "number" && typeof context?.season === "number" && (
-            <Badge variant="outline" className="border-white/10 bg-white/[0.03] text-zinc-400">
-              Week {context.week} · {context.season} Season
-            </Badge>
-          )}
+      <div className="mx-auto max-w-5xl px-6 py-10 lg:px-10 space-y-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <Link href="/games" className="text-sm text-zinc-500 transition hover:text-white">← Games</Link>
+          <div className="flex gap-2">
+            <a href="#why"><Button variant="outline" className="h-9 border-white/10 bg-transparent text-white hover:bg-white/[0.05]">WHY?</Button></a>
+            <a href="#advanced"><Button variant="outline" className="h-9 border-white/10 bg-transparent text-white hover:bg-white/[0.05]">ADVANCED</Button></a>
+          </div>
         </div>
 
-        {/* HEADER */}
-        <section className="rounded-[32px] border border-white/[0.08] bg-[#0B1119] p-8">
-          <p className="text-[10px] uppercase tracking-[0.28em] text-zinc-600">
-            {formatKickoff(projection.commenceTime)}
-          </p>
-          <h1 className="mt-3 text-4xl font-semibold tracking-tight">
-            {projection.awayTeam} @ {projection.homeTeam}
+        <section className="rounded-3xl border border-white/[0.08] bg-[#0B1119] p-6 md:p-8">
+          <p className="text-sm text-zinc-500">{projection.awayTeam} @ {projection.homeTeam}</p>
+          <p className="mt-1 text-sm text-zinc-500">{formatKickoff(projection.commenceTime)}</p>
+
+          <div className="mt-5 flex flex-wrap items-center gap-3">
+            <Badge className="bg-white text-black hover:bg-zinc-100">{status === "PASS" ? "PASS" : "SIA PICK"}</Badge>
+            {opportunity?.sportsIntelligenceScore?.score != null && (
+              <span className="text-lg font-semibold text-zinc-200">{opportunity.sportsIntelligenceScore.score.toFixed(1)} · {status}</span>
+            )}
+          </div>
+
+          <h1 className="mt-4 text-3xl font-semibold tracking-tight md:text-4xl">
+            {status === "PASS" ? (intelligenceReport?.currentLean || "NO LEAN") : (opportunity?.pick || intelligenceReport?.currentLean || "NO LEAN")}
           </h1>
 
-          {/* Model projected score */}
-          <div className="mt-6 flex items-center gap-6">
-            <div className="text-center">
-              <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">
-                {projection.awayTeam}
-              </p>
-              <p className="mt-1 text-3xl font-semibold">
-                {projection.model.projectedScore.away.toFixed(1)}
+          <div className="mt-5 grid gap-3 md:grid-cols-2">
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+              <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">SIA Projection</p>
+              <p className="mt-2 text-lg font-semibold">{projection.awayTeam} {projection.model.projectedScore.away.toFixed(1)} - {projection.homeTeam} {projection.model.projectedScore.home.toFixed(1)}</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+              <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Market</p>
+              <p className="mt-2 text-lg font-semibold">{projection.homeTeam} {signed(projection.market.homeSpread)} · O/U {projection.market.total.toFixed(1)}</p>
+              <p className="mt-1 text-xs text-zinc-500">Spread source: model feed market_home_spread for this game endpoint.</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+              <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Best Price</p>
+              <p className="mt-2 text-lg font-semibold">
+                {opportunity ? `${opportunity.pick} ${signed(opportunity.price)} · ${opportunity.book}` : "Actionable price not currently available"}
               </p>
             </div>
-            <span className="text-zinc-600 text-xl">@</span>
-            <div className="text-center">
-              <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">
-                {projection.homeTeam}
-              </p>
-              <p className="mt-1 text-3xl font-semibold">
-                {projection.model.projectedScore.home.toFixed(1)}
-              </p>
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+              <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Suggested Bet</p>
+              <p className="mt-2 text-lg font-semibold">{betSize.headline}</p>
+              <p className="mt-1 text-xs text-zinc-500">{betSize.detail}</p>
             </div>
           </div>
 
-          {/* Market lines */}
-          <div className="mt-6 grid gap-3 sm:grid-cols-3">
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Spread</p>
-              <p className="mt-2 text-lg font-semibold">
-                {formatHomeSpreadLabel(projection.homeTeam, projection.market.homeSpread)}
-              </p>
-              <p className="mt-1 text-xs text-zinc-600">Current market spread</p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Total</p>
-              <p className="mt-2 text-lg font-semibold">
-                {projection.market.total ?? "Unavailable"}
-              </p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Model Edge</p>
-              <p className="mt-2 text-lg font-semibold">
-                {projection.spreadAnalysis.edgePoints > 0 ? "+" : ""}
-                {projection.spreadAnalysis.edgePoints.toFixed(1)} pts
-              </p>
-            </div>
+          <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+            <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Why SIA Likes It</p>
+            <p className="mt-2 text-sm text-zinc-300 leading-6">{reasonSummary}</p>
+          </div>
+
+          <div className="mt-5 flex flex-wrap gap-3">
+            <Button
+              onClick={() => void handleAddToCard()}
+              disabled={added || !opportunity}
+              className={added ? "h-10 bg-emerald-400/10 text-emerald-300" : "h-10 bg-white text-black hover:bg-zinc-200"}
+            >
+              {added ? "Added to Card ✓" : "ADD TO CARD"}
+            </Button>
+            <a href="#why"><Button variant="outline" className="h-10 border-white/10 bg-transparent text-white hover:bg-white/[0.05]">WHY?</Button></a>
+            <a href="#advanced"><Button variant="outline" className="h-10 border-white/10 bg-transparent text-white hover:bg-white/[0.05]">ADVANCED</Button></a>
           </div>
         </section>
 
-        {/* SIA GAME INTELLIGENCE SUMMARY */}
-        <section className="rounded-[32px] border border-white/[0.08] bg-[#0B1119] p-8">
-          <p className="text-[11px] uppercase tracking-[0.2em] text-zinc-600">SIA Game Intelligence</p>
-          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Matchup</p>
-              <p className="mt-2 text-base font-semibold text-white">{projection.awayTeam} @ {projection.homeTeam}</p>
-              <p className="mt-1 text-xs text-zinc-500">{formatKickoff(projection.commenceTime)}</p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Current Lean</p>
-              <p className="mt-2 text-base font-semibold text-white">{intelligenceReport?.currentLean ?? "NO LEAN"}</p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Bet Status</p>
-              <p className="mt-2 text-base font-semibold text-white">{intelligenceReport?.betStatus ?? (opportunity ? "QUALIFIED" : "NO QUALIFIED BET")}</p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">SI Score</p>
-              <p className={`mt-2 text-2xl font-semibold ${scoreTone(si?.score)}`}>{si?.score?.toFixed(1) ?? "Pending"}</p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Confidence</p>
-              <p className="mt-2 text-2xl font-semibold text-white">{intelligenceReport?.confidence != null ? `${intelligenceReport.confidence}%` : (opportunity ? `${opportunity.confidence}%` : "Pending")}</p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Current Market</p>
-              <p className="mt-2 text-base font-semibold text-white">
-                {formatHomeSpreadLabel(projection.homeTeam, projection.market.homeSpread)} · O/U {projection.market.total?.toFixed(1) ?? "—"}
-              </p>
-            </div>
+        <section id="why" className="rounded-3xl border border-white/[0.08] bg-[#0B1119] p-6 md:p-8">
+          <p className="text-xs uppercase tracking-[0.2em] text-zinc-600">Why SIA Likes This</p>
+          <div className="mt-4 space-y-2 text-sm text-zinc-300">
+            {whyFactors.map((factor) => (
+              <p key={factor}>{factor}</p>
+            ))}
           </div>
-          <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
-            <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Why SIA Sees It This Way</p>
-            <p className="mt-2 text-sm leading-6 text-zinc-400">
-              {intelligenceReport?.whySummary ?? "SIA is awaiting enough model and market context to publish a complete intelligence summary for this game."}
+          <div className="mt-5 rounded-2xl border border-amber-400/20 bg-amber-400/[0.05] p-4">
+            <p className="text-[10px] uppercase tracking-[0.18em] text-amber-300">Biggest Risk</p>
+            <p className="mt-2 text-sm text-amber-200">
+              {intelligenceReport?.qualificationReasons?.[0] ?? "Market alignment can shift as prices, injuries, and weather update before kickoff."}
             </p>
           </div>
         </section>
 
-        {/* SIA INTELLIGENCE */}
-        <section className="rounded-[32px] border border-white/[0.08] bg-[#0B1119] p-8">
-          <p className="text-[11px] uppercase tracking-[0.2em] text-zinc-600">SIA Intelligence</p>
-
-          {opportunity ? (
-            <>
-              <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                  <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600 inline-flex items-center">SI Score<Tooltip term="SI Score" /></p>
-                  <p className={`mt-2 text-2xl font-semibold ${scoreTone(si?.score)}`}>
-                    {si?.score?.toFixed(1) ?? "—"}
-                  </p>
-                  <p className="mt-1 text-xs text-zinc-600">{si?.grade ?? ""}</p>
-                </div>
-                <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                  <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600 inline-flex items-center">Model Edge<Tooltip term="Model Edge" /></p>
-                  <p className="mt-2 text-2xl font-semibold text-emerald-400">
-                    +{opportunity.edge.toFixed(1)}%
-                  </p>
-                </div>
-                <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                  <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600 inline-flex items-center">EV / $1<Tooltip term="EV" /></p>
-                  <p className="mt-2 text-2xl font-semibold text-emerald-400">
-                    +${opportunity.evPerDollar.toFixed(3)}
-                  </p>
-                </div>
-                <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                  <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600 inline-flex items-center">Confidence<Tooltip term="Confidence" /></p>
-                  <p className="mt-2 text-2xl font-semibold">{opportunity.confidence}%</p>
-                </div>
+        <section id="advanced" className="rounded-3xl border border-white/[0.08] bg-[#0B1119] p-6 md:p-8">
+          <details>
+            <summary className="cursor-pointer text-sm font-semibold tracking-wide text-zinc-200">ADVANCED INTELLIGENCE</summary>
+            <div className="mt-4 grid gap-4 md:grid-cols-2">
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">SIA vs Market</p>
+                <p className="mt-2 text-sm text-zinc-300">{directionalEdge.magnitude} pts toward {directionalEdge.toward}</p>
+                <p className="mt-1 text-xs text-zinc-500">Raw model edge points: {directionalEdge.signed}</p>
               </div>
-
-              <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
-                <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Recommended Bet</p>
-                <p className="mt-2 text-xl font-semibold text-white">{opportunity.pick}</p>
-                <p className="mt-1 text-sm text-zinc-400">
-                  {opportunity.book} · {signedOdds(opportunity.price)} ·{" "}
-                  {opportunity.recommendation}
-                </p>
-                <div className="mt-3 grid gap-3 sm:grid-cols-3 text-xs text-zinc-500">
-                  <span>Model prob: {opportunity.modelProbability.toFixed(1)}%</span>
-                  <span>Implied: {opportunity.impliedProbability.toFixed(1)}%</span>
-                  <span>Kelly 20%: {(opportunity.kelly20 * 100).toFixed(1)}%</span>
-                </div>
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Probabilities</p>
+                <p className="mt-2 text-sm text-zinc-300">SIA win/cover: {opportunity ? `${Math.round(opportunity.modelProbability)}%` : "Unavailable"}</p>
+                <p className="mt-1 text-sm text-zinc-300">Market implied: {opportunity ? `${Math.round(opportunity.impliedProbability)}%` : "Unavailable"}</p>
+                <p className="mt-1 text-sm text-emerald-400">Difference: {opportunity ? `+${Math.round(opportunity.modelProbability - opportunity.impliedProbability)} pp` : "Unavailable"}</p>
               </div>
-
-              {/* Market Intelligence */}
-              {mi && (
-                <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
-                  <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600 inline-flex items-center">Market Intelligence<Tooltip term="Market Intelligence" /></p>
-                  <p className="mt-2 text-base font-semibold">{mi.signal}</p>
-                  <div className="mt-3 grid gap-3 sm:grid-cols-4 text-xs text-zinc-500">
-                    <span>Score: {mi.score.toFixed(1)}/10</span>
-                    <span>Books moving: {mi.booksMoving}/{mi.booksTracked}</span>
-                    <span>Steam books: {mi.steamBooks}</span>
-                    <span>Consensus: {mi.consensus.toFixed(0)}%</span>
-                  </div>
-                </div>
-              )}
-
-              {/* Actions */}
-              <div className="mt-6 flex flex-wrap gap-3">
-                <Button
-                  onClick={() => void handleAddToCard()}
-                  disabled={added}
-                  className={added
-                    ? "h-11 bg-emerald-400/10 px-6 text-emerald-300"
-                    : "h-11 bg-white px-6 text-black hover:bg-zinc-200"}
-                >
-                  {added ? "Added to My Card ✓" : "Add to My Card"}
-                </Button>
-                <Link href={`/opportunities/${opportunity.id}`}>
-                  <Button variant="outline" className="h-11 border-white/10 bg-transparent px-6 text-white hover:bg-white/[0.05]">
-                    Full Opportunity Analysis →
-                  </Button>
-                </Link>
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Value & Risk</p>
+                <p className="mt-2 text-sm text-zinc-300">EV: {opportunity ? `+$${opportunity.evPerDollar.toFixed(3)} per $1` : "Unavailable"}</p>
+                <p className="mt-1 text-sm text-zinc-300">Confidence: {opportunity ? `${opportunity.confidence}/100` : "Unavailable"}</p>
+                <p className="mt-1 text-sm text-zinc-300">Kelly (advanced): {opportunity ? `${(opportunity.kelly20 * 100).toFixed(1)}%` : "Unavailable"}</p>
               </div>
-              {snapshotError && (
-                <p className="mt-2 text-xs text-amber-400">{snapshotError}</p>
-              )}
-            </>
-          ) : (
-            <div className="mt-4 space-y-3">
-              <div className="rounded-2xl border border-dashed border-white/[0.08] p-6 text-sm text-zinc-500">
-                {intelligenceReport?.betStatus === "INSUFFICIENT DATA"
-                  ? "Insufficient data to publish a qualified bet recommendation."
-                  : "No qualified SIA bet at current prices."}
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Market Intelligence</p>
+                <p className="mt-2 text-sm text-zinc-300">Signal: {opportunity?.marketIntelligence.signal ?? "Unavailable"}</p>
+                <p className="mt-1 text-sm text-zinc-300">Books moving: {opportunity ? `${opportunity.marketIntelligence.booksMoving}/${opportunity.marketIntelligence.booksTracked}` : "Unavailable"}</p>
+                <p className="mt-1 text-sm text-zinc-300">Steam: {opportunity?.marketIntelligence.steamBooks ?? 0}</p>
               </div>
-              {topNoBetReasons.length > 0 && (
-                <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
-                  <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Why No Qualified Bet</p>
-                  <ul className="mt-2 space-y-1 text-sm text-zinc-400">
-                    {topNoBetReasons.map((reason) => (
-                      <li key={reason}>• {reason}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
-                <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Bet Trigger</p>
-                <p className="mt-2 text-sm text-zinc-400">{intelligenceReport?.betTrigger?.message ?? "Actionable price not currently available"}</p>
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Context</p>
+                <p className="mt-2 text-sm text-zinc-300">Rest/Travel: {hasContext ? getRestLabel(context?.rest) : "Unavailable"}</p>
+                <p className="mt-1 text-sm text-zinc-300">Travel miles: {formatTravelMiles(context?.travel) || "Unavailable"}</p>
+                <p className="mt-1 text-sm text-zinc-300">Timezone shift: {formatTravelShift(context?.travel) || "Unavailable"}</p>
+                <p className="mt-1 text-sm text-zinc-300">Injuries: {injury?.summary ?? "Unavailable"}</p>
+                <p className="mt-1 text-sm text-zinc-300">Weather: {weather?.dataStatus ?? "Unavailable"}</p>
               </div>
-            </div>
-          )}
-        </section>
-
-        {/* MARKET ANALYSIS */}
-        <section className="rounded-[32px] border border-white/[0.08] bg-[#0B1119] p-8">
-          <p className="text-[11px] uppercase tracking-[0.2em] text-zinc-600">Market Analysis</p>
-          <div className="mt-4 grid gap-3 sm:grid-cols-3 text-sm">
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Spread</p>
-              <p className="mt-2 font-semibold text-white">{formatHomeSpreadLabel(projection.homeTeam, projection.market.homeSpread)}</p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Total</p>
-              <p className="mt-2 font-semibold text-white">{projection.market.total?.toFixed(1) ?? "Unavailable"}</p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Line Movement</p>
-              <p className="mt-2 font-semibold text-white">Pending</p>
-              <p className="mt-1 text-xs text-zinc-600">Actionable line-movement trigger is not currently available for this game.</p>
-            </div>
-          </div>
-        </section>
-
-        {/* MODEL PROJECTION */}
-        <section className="rounded-[32px] border border-white/[0.08] bg-[#0B1119] p-8">
-          <p className="text-[11px] uppercase tracking-[0.2em] text-zinc-600">Model Projection</p>
-          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Away Power</p>
-              <p className="mt-2 text-xl font-semibold">{projection.teamPower.away}</p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Home Power</p>
-              <p className="mt-2 text-xl font-semibold">{projection.teamPower.home}</p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Home Cover Prob.</p>
-              <p className="mt-2 text-xl font-semibold">
-                {projection.spreadAnalysis.homeCoverProbability.toFixed(1)}%
-              </p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Fair Home Odds</p>
-              <p className="mt-2 text-xl font-semibold">
-                {projection.spreadAnalysis.homeCoverFairOdds}
-              </p>
-            </div>
-          </div>
-        </section>
-
-        {/* CONTEXT */}
-        <section className="rounded-[32px] border border-white/[0.08] bg-[#0B1119] p-8">
-          <p className="text-[11px] uppercase tracking-[0.2em] text-zinc-600">Game Context</p>
-          <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            {/* Schedule / Rest */}
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Rest & Travel</p>
-              {hasContext ? (
-                <div className="mt-2 space-y-1 text-sm text-zinc-400">
-                  <p>{restLabel}</p>
-                  {context?.rest?.shortRestHome === true && <p className="text-amber-400">⚠ Short rest — home</p>}
-                  {context?.rest?.shortRestAway === true && <p className="text-amber-400">⚠ Short rest — away</p>}
-                  {travelMiles && (
-                    <p>Travel: {travelMiles}</p>
-                  )}
-                  {travelShift && (
-                    <p>Time zone shift: {travelShift}</p>
-                  )}
-                </div>
-              ) : (
-                <p className="mt-2 text-sm text-zinc-600">{context?.reason ?? "Unavailable"}</p>
-              )}
-            </div>
-
-            {/* Injury */}
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Injury Context</p>
-              {injury ? (
-                <div className="mt-2 space-y-1 text-sm text-zinc-400">
-                  {injury.awayInjuryScore != null && (
-                    <p>Away injury score: {injury.awayInjuryScore.toFixed(1)}</p>
-                  )}
-                  {injury.homeInjuryScore != null && (
-                    <p>Home injury score: {injury.homeInjuryScore.toFixed(1)}</p>
-                  )}
-                  <p className="text-xs text-zinc-600">
-                    {injuryFreshness?.isLive ? "LIVE" : "CACHED"} · ESPN
-                  </p>
-                </div>
-              ) : (
-                <p className="mt-2 text-sm text-zinc-600">Unavailable</p>
-              )}
-            </div>
-
-            {/* Weather */}
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Weather</p>
-              {weather ? (
-                <div className="mt-2 text-sm text-zinc-400">
-                  <p>{weather.dataStatus ?? "UNAVAILABLE"}</p>
-                  {weather.lastUpdated && (
-                    <p className="mt-1 text-xs text-zinc-600">
-                      Updated {new Date(weather.lastUpdated).toLocaleString()}
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <p className="mt-2 text-sm text-zinc-600">Unavailable</p>
-              )}
-            </div>
-          </div>
-        </section>
-
-        {/* KEY MATCHUP FACTORS */}
-        <section className="rounded-[32px] border border-white/[0.08] bg-[#0B1119] p-8">
-          <p className="text-[11px] uppercase tracking-[0.2em] text-zinc-600">Key Matchup Factors</p>
-          <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-sm text-zinc-400">
-              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Rest / Travel</p>
-              <p className="mt-2">{hasContext ? restLabel : "Pending"}</p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-sm text-zinc-400">
-              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Injury Intelligence</p>
-              <p className="mt-2">{injury?.summary ?? "Pending"}</p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-sm text-zinc-400">
-              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Weather</p>
-              <p className="mt-2">{weather?.dataStatus ?? "Pending"}</p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-sm text-zinc-400">
-              <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Social Intelligence</p>
-              <p className="mt-2">{social?.summary ?? social?.reason ?? "Pending"}</p>
-            </div>
-          </div>
-        </section>
-
-        {/* SOCIAL INTELLIGENCE */}
-        <section className="rounded-[32px] border border-white/[0.08] bg-[#0B1119] p-8">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <p className="text-[11px] uppercase tracking-[0.2em] text-zinc-600">Social Intelligence</p>
-              <p className="mt-2 max-w-3xl text-sm text-zinc-500">
-                {social?.summary ?? social?.reason ?? "No social intelligence is currently attached to this matchup."}
-              </p>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2 text-xs">
-              <Badge variant="outline" className="border-amber-400/20 bg-amber-400/[0.08] text-amber-300">
-                {social?.dataStatus ?? "MOCK"}
-              </Badge>
-              <Badge variant="outline" className="border-white/10 bg-white/[0.03] text-zinc-400">
-                {social?.provider ?? "MOCK"}
-              </Badge>
-            </div>
-          </div>
-
-          {social?.available !== false && topSocialSignals.length > 0 ? (
-            <>
-              <div className="mt-5 grid gap-3 sm:grid-cols-3 text-xs text-zinc-500">
-                <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                  <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Signals</p>
-                  <p className="mt-2 text-xl font-semibold text-white">{social?.signalsDetected ?? topSocialSignals.length}</p>
-                </div>
-                <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                  <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Corroborated</p>
-                  <p className="mt-2 text-xl font-semibold text-sky-300">{social?.corroboratedSignals ?? 0}</p>
-                </div>
-                <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                  <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Confidence</p>
-                  <p className="mt-2 text-xl font-semibold text-white">{social?.confidence?.toFixed(0) ?? "0"}/100</p>
-                </div>
-              </div>
-
-              <div className="mt-5 space-y-3">
-                {topSocialSignals.map((signal) => (
-                  <article key={signal.signalId} className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div>
-                        <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">
-                          {signal.team} · {signal.category.replaceAll("_", " ")}
-                        </p>
-                        <p className="mt-2 text-base font-semibold text-white">
-                          {signal.player ? `${signal.player}${signal.position ? ` (${signal.position})` : ""}` : "Team-level signal"}
-                        </p>
-                      </div>
-
-                      <div className="flex flex-wrap items-center gap-2 text-xs">
-                        <Badge variant="outline" className="border-white/10 bg-black/20 text-zinc-300">{signal.status}</Badge>
-                        <Badge variant="outline" className="border-white/10 bg-black/20 text-zinc-400">Confidence {signal.confidence.toFixed(0)}</Badge>
-                      </div>
-                    </div>
-
-                    <p className="mt-3 text-sm leading-6 text-zinc-400">{signal.textSummary}</p>
-
-                    <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-xs text-zinc-500">
-                      <span>Source: {signal.sourceName}</span>
-                      <span>Credibility: {signal.sourceCredibility}/100</span>
-                      <span>Impact: {signal.estimatedPointImpact.toFixed(2)} pts</span>
-                      <span>Corroboration: {signal.corroborationCount}</span>
-                    </div>
-                  </article>
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Social Intelligence</p>
+                <p className="mt-2 text-sm text-zinc-300">{social?.summary ?? social?.reason ?? "Unavailable"}</p>
+                <p className="mt-1 text-xs text-zinc-500">Provider: {social?.provider ?? "Unavailable"} · Status: {social?.dataStatus ?? "Unavailable"}</p>
+                {(social?.keySignals ?? []).slice(0, 2).map((signal) => (
+                  <p key={signal.signalId} className="mt-1 text-xs text-zinc-400">{signal.team} · {signal.category}: {signal.textSummary}</p>
                 ))}
               </div>
-
-              <p className="mt-4 text-xs text-zinc-600">
-                Mock-only Phase 1 social signals are shown for architecture validation and do not change recommendations or SI Score yet.
-              </p>
-            </>
-          ) : (
-            <div className="mt-5 rounded-2xl border border-dashed border-white/[0.08] p-6 text-sm text-zinc-500">
-              {social?.reason ?? "No social signals detected for this matchup."}
             </div>
-          )}
+          </details>
         </section>
       </div>
     </main>

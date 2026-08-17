@@ -33,6 +33,7 @@ def test_games_endpoint_returns_complete_slate_with_required_fields() -> None:
         "status",
         "betStatus",
         "qualificationStatus",
+        "spreadSource",
     }
     assert required_fields.issubset(set(games[0].keys()))
 
