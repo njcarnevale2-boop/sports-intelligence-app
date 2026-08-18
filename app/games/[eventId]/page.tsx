@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
 
 import { Badge } from "@/components/ui/badge";
@@ -110,6 +110,19 @@ type CurrentUser = {
   bankroll?: number;
 };
 
+type AskSiaResponse = {
+  answer: string;
+  why: string[];
+  whatChangesDecision: string;
+  snapshotNote?: string | null;
+  missingData?: string[];
+};
+
+type AskSiaMessage = {
+  question: string;
+  response: AskSiaResponse;
+};
+
 function formatKickoff(iso: string) {
   const date = formatKickoffDateEt(iso);
   const time = formatKickoffTimeEt(iso);
@@ -184,7 +197,10 @@ function edgeDirection(projection: GameProjection) {
 
 export default function GameIntelligencePage() {
   const params = useParams<{ eventId: string }>();
+  const searchParams = useSearchParams();
   const eventId = params.eventId;
+  const presetAsk = searchParams.get("ask") || "";
+  const snapshotId = searchParams.get("snapshotId") || undefined;
 
   const [projection, setProjection] = useState<GameProjection | null>(null);
   const [context, setContext] = useState<ScheduleContext | null>(null);
@@ -197,6 +213,11 @@ export default function GameIntelligencePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [added, setAdded] = useState(false);
+  const [askInput, setAskInput] = useState("");
+  const [askMessages, setAskMessages] = useState<AskSiaMessage[]>([]);
+  const [askLoading, setAskLoading] = useState(false);
+  const [askError, setAskError] = useState("");
+  const [presetAsked, setPresetAsked] = useState(false);
 
   useEffect(() => {
     if (!eventId) return;
@@ -259,6 +280,36 @@ export default function GameIntelligencePage() {
     if (result.success) setAdded(true);
   }
 
+  async function submitAsk(questionOverride?: string) {
+    if (!eventId) return;
+    const question = (questionOverride ?? askInput).trim();
+    if (!question) return;
+
+    try {
+      setAskLoading(true);
+      setAskError("");
+      const response = await fetchJson<AskSiaResponse>("/api/ask-sia", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ eventId, question, snapshotId }),
+      });
+
+      setAskMessages((prev) => [...prev, { question, response }]);
+      setAskInput("");
+    } catch {
+      setAskError("Ask SIA is unavailable right now.");
+    } finally {
+      setAskLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!presetAsk || presetAsked || loading || !eventId) return;
+    setAskInput(presetAsk);
+    void submitAsk(presetAsk);
+    setPresetAsked(true);
+  }, [eventId, loading, presetAsk, presetAsked]);
+
   const reasonSummary = useMemo(() => {
     if (intelligenceReport?.whySummary) return intelligenceReport.whySummary;
     if (opportunity?.sportsIntelligenceScore?.recommendation) {
@@ -317,6 +368,7 @@ export default function GameIntelligencePage() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <Link href="/games" className="text-sm text-zinc-500 transition hover:text-white">← Games</Link>
           <div className="flex gap-2">
+            <a href="#ask-sia"><Button variant="outline" className="h-9 border-white/10 bg-transparent text-white hover:bg-white/[0.05]">ASK SIA</Button></a>
             <a href="#why"><Button variant="outline" className="h-9 border-white/10 bg-transparent text-white hover:bg-white/[0.05]">WHY?</Button></a>
             <a href="#advanced"><Button variant="outline" className="h-9 border-white/10 bg-transparent text-white hover:bg-white/[0.05]">ADVANCED</Button></a>
           </div>
@@ -377,7 +429,81 @@ export default function GameIntelligencePage() {
               {added ? "Added to Card ✓" : "ADD TO CARD"}
             </Button>
             <a href="#why"><Button variant="outline" className="h-10 border-white/10 bg-transparent text-white hover:bg-white/[0.05]">WHY?</Button></a>
+            <a href="#ask-sia"><Button variant="outline" className="h-10 border-white/10 bg-transparent text-white hover:bg-white/[0.05]">ASK SIA</Button></a>
             <a href="#advanced"><Button variant="outline" className="h-10 border-white/10 bg-transparent text-white hover:bg-white/[0.05]">ADVANCED</Button></a>
+          </div>
+        </section>
+
+        <section id="ask-sia" className="rounded-3xl border border-white/[0.08] bg-[#0B1119] p-6 md:p-8">
+          <p className="text-xs uppercase tracking-[0.2em] text-zinc-600">Ask SIA</p>
+          <p className="mt-2 text-sm text-zinc-400">Complex Engine. Simple Answer.</p>
+
+          <div className="mt-4 flex flex-wrap gap-2">
+            {["Why does SIA like this?", "Biggest risk?", "Still playable at +2?", "What changes the bet?", "Compare to SIA 3."].map((prompt) => (
+              <button
+                key={prompt}
+                className="rounded-full border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs text-zinc-300 transition hover:bg-white/[0.08]"
+                onClick={() => void submitAsk(prompt)}
+                type="button"
+              >
+                {prompt}
+              </button>
+            ))}
+          </div>
+
+          <div className="mt-4 flex gap-2">
+            <input
+              value={askInput}
+              onChange={(e) => setAskInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void submitAsk();
+              }}
+              placeholder="Ask about this game..."
+              className="h-10 flex-1 rounded-xl border border-white/10 bg-black/20 px-3 text-sm text-white outline-none placeholder:text-zinc-600"
+            />
+            <Button
+              onClick={() => void submitAsk()}
+              disabled={askLoading || !askInput.trim()}
+              className="h-10 bg-white text-black hover:bg-zinc-200"
+            >
+              {askLoading ? "Asking..." : "Ask"}
+            </Button>
+          </div>
+
+          {askError && <p className="mt-3 text-sm text-rose-400">{askError}</p>}
+
+          <div className="mt-5 space-y-4">
+            {askMessages.map((item, idx) => (
+              <div key={`${item.question}-${idx}`} className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                <p className="text-xs uppercase tracking-[0.16em] text-zinc-600">You asked</p>
+                <p className="mt-1 text-sm text-zinc-200">{item.question}</p>
+
+                <p className="mt-4 text-xs uppercase tracking-[0.16em] text-zinc-600">Answer</p>
+                <p className="mt-1 text-sm text-zinc-100">{item.response.answer}</p>
+
+                <p className="mt-3 text-xs uppercase tracking-[0.16em] text-zinc-600">Why</p>
+                <div className="mt-1 space-y-1">
+                  {item.response.why.map((line) => (
+                    <p key={line} className="text-sm text-zinc-300">{line}</p>
+                  ))}
+                </div>
+
+                <p className="mt-3 text-xs uppercase tracking-[0.16em] text-zinc-600">What Changes The Decision</p>
+                <p className="mt-1 text-sm text-zinc-300">{item.response.whatChangesDecision}</p>
+
+                {item.response.snapshotNote ? (
+                  <p className="mt-3 text-xs text-zinc-500">{item.response.snapshotNote}</p>
+                ) : null}
+
+                {(item.response.missingData ?? []).length > 0 ? (
+                  <div className="mt-3 space-y-1">
+                    {(item.response.missingData ?? []).map((note) => (
+                      <p key={note} className="text-xs text-zinc-500">{note}</p>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ))}
           </div>
         </section>
 

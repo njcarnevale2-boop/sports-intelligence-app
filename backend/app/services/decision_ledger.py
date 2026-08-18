@@ -504,6 +504,31 @@ def get_decision(decision_id: str) -> Optional[Dict[str, Any]]:
     return out
 
 
+def get_latest_decision_by_snapshot_id(snapshot_id: str) -> Optional[Dict[str, Any]]:
+    _ensure_schema()
+    value = str(snapshot_id or "").strip()
+    if not value:
+        return None
+
+    con = _connect()
+    row = con.execute(
+        """
+        SELECT *
+        FROM decision_ledger
+        WHERE source_snapshot_id = ?
+        ORDER BY published_at_utc DESC, id DESC
+        LIMIT 1
+        """,
+        [value],
+    ).fetchone()
+    con.close()
+    if row is None:
+        return None
+    out = _row_to_decision(row)
+    out["isLatestDecision"] = _is_latest_decision(str(row["decision_id"]))
+    return out
+
+
 def list_decisions(
     season: Optional[int] = None,
     week: Optional[int] = None,

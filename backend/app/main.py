@@ -20,6 +20,7 @@ from app.routes.games import router as games_router
 from app.routes.recommendation_snapshot import router as recommendation_snapshot_router
 from app.routes.decision_ledger import router as decision_ledger_router
 from app.routes.social import router as social_router
+from app.routes.ask_sia import router as ask_sia_router
 from database.session import init_db
 
 app = FastAPI(
@@ -75,6 +76,7 @@ app.include_router(games_router)
 app.include_router(social_router)
 app.include_router(recommendation_snapshot_router)
 app.include_router(decision_ledger_router)
+app.include_router(ask_sia_router)
 
 
 @app.on_event("startup")

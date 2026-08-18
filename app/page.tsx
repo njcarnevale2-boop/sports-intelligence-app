@@ -220,7 +220,7 @@ export default function Home() {
                     </p>
                   </div>
                   <div className="mt-4 flex gap-2">
-                    <Link href={`/opportunities/${opp.id}`}>
+                    <Link href={`/games/${opp.eventId}?ask=${encodeURIComponent("Why is this in The SIA 3?")}`}>
                       <Button className="h-9 bg-white px-4 text-black hover:bg-zinc-200">WHY?</Button>
                     </Link>
                     <Link href={`/games/${opp.eventId}`}>
