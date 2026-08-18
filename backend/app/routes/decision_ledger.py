@@ -74,6 +74,7 @@ class OutcomeRequest(BaseModel):
 
 class OfficialPublishRequest(BaseModel):
     week: Optional[int] = None
+    snapshotId: str
     overrideStaleOdds: bool = False
     overrideMissingSnapshotLinkage: bool = False
 
@@ -163,6 +164,7 @@ def preview_official_sia3(
     opps_payload = get_opportunities(limit=100, best_lines_only=True, week=resolved_week)
     opportunities = opps_payload.get("opportunities") or []
     preview = build_official_sia3_preview(opportunities, season=season, week=resolved_week)
+    preview["snapshotId"] = opps_payload.get("snapshotId")
     preview["dataTimestamp"] = opps_payload.get("lastUpdated")
     preview["dataStatus"] = opps_payload.get("dataStatus")
     return preview
@@ -173,8 +175,19 @@ def publish_official_sia3(request: OfficialPublishRequest, x_admin_token: str | 
     _require_admin_token(x_admin_token)
     season, resolved_week = _resolve_week_and_season(request.week)
     opps_payload = get_opportunities(limit=100, best_lines_only=True, week=resolved_week)
+    live_snapshot_id = opps_payload.get("snapshotId")
+    if not live_snapshot_id:
+        raise HTTPException(status_code=400, detail="No opportunity snapshot available; refresh preview and retry")
+    if str(request.snapshotId) != str(live_snapshot_id):
+        raise HTTPException(status_code=400, detail="Snapshot is stale; refresh preview and publish again")
+
     opportunities = opps_payload.get("opportunities") or []
-    preview = build_official_sia3_preview(opportunities, season=season, week=resolved_week)
+    preview = build_official_sia3_preview(
+        opportunities,
+        season=season,
+        week=resolved_week,
+        source_snapshot_id=str(live_snapshot_id),
+    )
     try:
         publication = publish_official_sia3_from_preview(
             preview,

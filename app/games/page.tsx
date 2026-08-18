@@ -5,6 +5,7 @@ import Link from "next/link";
 
 import TeamLogo from "@/components/team-logo";
 import { fetchJson } from "../lib/api";
+import { formatDateUtcHeading, formatDateUtcTab } from "@/app/lib/time-format";
 
 const GAMES_REQUEST_TIMEOUT_MS = 30000;
 
@@ -47,41 +48,6 @@ type GamesResponse = {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function formatKickoff(iso: string) {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "TBD";
-  return d.toLocaleString("en-US", {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    timeZoneName: "short",
-  });
-}
-
-function formatDateHeading(dateStr: string) {
-  const d = new Date(`${dateStr}T00:00:00Z`);
-  if (Number.isNaN(d.getTime())) return dateStr;
-  return d.toLocaleDateString("en-US", {
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-    timeZone: "UTC",
-  }).toUpperCase();
-}
-
-function formatDateTab(dateStr: string) {
-  const d = new Date(`${dateStr}T00:00:00Z`);
-  if (Number.isNaN(d.getTime())) return dateStr;
-  return d.toLocaleDateString("en-US", {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    timeZone: "UTC",
-  }).toUpperCase();
-}
 
 function scoreTone(score?: number | null) {
   if (score == null) return "text-zinc-500";
@@ -310,7 +276,7 @@ export default function GamesPage() {
                     : "border-white/10 bg-transparent text-zinc-500 hover:text-white"
                 }`}
               >
-                {formatDateTab(d)}
+                {formatDateUtcTab(d)}
               </button>
             ))}
           </div>
@@ -340,7 +306,7 @@ export default function GamesPage() {
               groupedGames.map(([date, dayGames]) => (
                 <section key={date}>
                   <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-[0.22em] text-zinc-600">
-                    {formatDateHeading(date)}
+                    {formatDateUtcHeading(date)}
                   </h2>
                   <div className="space-y-2">
                     {dayGames.map((game) => (

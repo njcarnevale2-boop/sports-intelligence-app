@@ -689,28 +689,34 @@ def _snapshot_linkage(
 
 
 def _decision_payload_from_opportunity(opportunity: Dict[str, Any], published_at_utc: str) -> Dict[str, Any]:
-    raw_probability = _to_float(opportunity.get("modelProbability"))
+    raw_probability = _to_float(opportunity.get("rawModelProbability") if opportunity.get("rawModelProbability") is not None else opportunity.get("modelProbability"))
     if raw_probability is not None and raw_probability > 1.0:
         raw_probability = raw_probability / 100.0
 
-    calibrated_probability = _to_float(opportunity.get("currentWinProbability"))
+    calibrated_probability = _to_float(
+        opportunity.get("calibratedProbability")
+        if opportunity.get("calibratedProbability") is not None
+        else opportunity.get("currentWinProbability")
+    )
     if calibrated_probability is not None and calibrated_probability > 1.0:
         calibrated_probability = calibrated_probability / 100.0
 
     push_probability = _to_float(opportunity.get("currentPushProbability"))
     loss_probability = _to_float(opportunity.get("currentLossProbability"))
 
-    raw_edge = _to_float(opportunity.get("edge"))
+    raw_edge = _to_float(opportunity.get("rawEdge") if opportunity.get("rawEdge") is not None else opportunity.get("edge"))
     if raw_edge is not None and raw_edge > 1.0:
         raw_edge = raw_edge / 100.0
 
-    cal_edge = raw_edge
-    if calibrated_probability is not None:
-        implied = _to_float(opportunity.get("impliedProbability"))
-        if implied is not None:
-            if implied > 1.0:
-                implied = implied / 100.0
-            cal_edge = calibrated_probability - implied
+    cal_edge = _to_float(opportunity.get("calibratedEdge"))
+    if cal_edge is None:
+        cal_edge = raw_edge
+        if calibrated_probability is not None:
+            implied = _to_float(opportunity.get("impliedProbability"))
+            if implied is not None:
+                if implied > 1.0:
+                    implied = implied / 100.0
+                cal_edge = calibrated_probability - implied
 
     score_obj = opportunity.get("sportsIntelligenceScore") or {}
     reasons = []
@@ -728,12 +734,10 @@ def _decision_payload_from_opportunity(opportunity: Dict[str, Any], published_at
         price=_to_float(opportunity.get("price")),
     )
 
-    qualification_status = "QUALIFIED"
-    recommendation = str(opportunity.get("recommendation") or "").upper()
-    if "LEAN" in recommendation:
-        qualification_status = "NOT_QUALIFIED"
-    if "WATCH" in recommendation or recommendation == "":
-        qualification_status = "NOT_QUALIFIED"
+    qualification_status = str(opportunity.get("qualificationStatus") or "").upper() or "QUALIFIED"
+    qualification_reasons = opportunity.get("qualificationReasons")
+    if not isinstance(qualification_reasons, list):
+        qualification_reasons = reasons
 
     decision = {
         "publishedAtUTC": published_at_utc,
@@ -764,7 +768,7 @@ def _decision_payload_from_opportunity(opportunity: Dict[str, Any], published_at
         "siRank": opportunity.get("weekRank") if opportunity.get("weekRank") is not None else opportunity.get("rank"),
         "recommendation": opportunity.get("recommendation"),
         "qualificationStatus": qualification_status,
-        "qualificationReasons": reasons,
+        "qualificationReasons": [str(r) for r in qualification_reasons],
         "oddsProvider": opportunity.get("marketProvider") or "line_movement_board",
         "oddsTimestamp": linkage["oddsTimestamp"] or opportunity.get("marketLastUpdated"),
         "modelTimestamp": _utc_now_iso(),
@@ -827,6 +831,7 @@ def build_official_sia3_preview(
     season: int,
     week: int,
     max_odds_age_minutes: Optional[int] = None,
+    source_snapshot_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     threshold = max_odds_age_minutes if max_odds_age_minutes is not None else settings.OFFICIAL_PUBLICATION_MAX_ODDS_AGE_MINUTES
     published_at_utc = _utc_now_iso()
@@ -879,6 +884,7 @@ def build_official_sia3_preview(
         )
 
     return {
+        "snapshotId": source_snapshot_id,
         "publishedAtUTC": published_at_utc,
         "season": season,
         "week": week,
@@ -915,6 +921,7 @@ def publish_official_sia3_from_preview(preview: Dict[str, Any], *, override_stal
             "week": int(preview["week"]),
             "isOfficial": True,
             "officialCadence": settings.OFFICIAL_SIA3_CADENCE,
+            "sourceSnapshotId": preview.get("snapshotId"),
             "slots": slots_payload,
         }
     )
@@ -928,6 +935,7 @@ def publish_sia3(payload: Dict[str, Any]) -> Dict[str, Any]:
     week = int(payload["week"])
     is_official = bool(payload.get("isOfficial", False))
     official_cadence = payload.get("officialCadence") or settings.OFFICIAL_SIA3_CADENCE
+    source_snapshot_id = payload.get("sourceSnapshotId")
 
     slots = payload.get("slots") or []
     if len(slots) > 3:
@@ -949,6 +957,8 @@ def publish_sia3(payload: Dict[str, Any]) -> Dict[str, Any]:
                 decision_payload.setdefault("publishedAtUTC", published_at_utc)
                 decision_payload.setdefault("season", season)
                 decision_payload.setdefault("week", week)
+                if source_snapshot_id and not decision_payload.get("sourceSnapshotId"):
+                    decision_payload["sourceSnapshotId"] = source_snapshot_id
                 decision = record_decision(decision_payload, publication_type=publication_type)
                 decision_id = decision["decisionId"]
                 if qualification_status is None:

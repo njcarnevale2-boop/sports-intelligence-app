@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { fetchJson } from "../../lib/api";
 import { addToCard as addToCardHelper } from "@/lib/add-to-card";
+import { formatKickoffLocal } from "@/app/lib/time-format";
 import {
   formatTravelMiles,
   formatTravelShift,
@@ -110,14 +111,7 @@ type CurrentUser = {
 };
 
 function formatKickoff(iso: string) {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "TBD";
-  return d.toLocaleString("en-US", {
-    weekday: "long",
-    hour: "numeric",
-    minute: "2-digit",
-    timeZoneName: "short",
-  });
+  return formatKickoffLocal(iso);
 }
 
 function signed(value: number) {
@@ -127,7 +121,7 @@ function signed(value: number) {
 function formatBestPrice(opp: Opportunity | null) {
   if (!opp) return "Actionable price not currently available";
   if (opp.market === "spread" || opp.market === "total") {
-    return `${opp.pick} ${signed(opp.point)} (${signed(opp.price)}) · ${opp.book}`;
+    return `${opp.pick} (${signed(opp.price)}) · ${opp.book}`;
   }
   return `${opp.pick} ${signed(opp.price)} · ${opp.book}`;
 }
@@ -137,7 +131,7 @@ function formatTruePlayableTo(opp: Opportunity | null) {
   if (opp.truePlayableToStatus !== "AVAILABLE" || opp.truePlayableTo == null) {
     return "Not available yet";
   }
-  return opp.market === "spread" || opp.market === "total" ? `${opp.pick.split(" ")[0]} ${signed(opp.truePlayableTo)}` : signed(opp.truePlayableTo);
+  return signed(opp.truePlayableTo);
 }
 
 function displayWinProbability(opp: Opportunity | null) {

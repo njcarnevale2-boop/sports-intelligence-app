@@ -305,7 +305,7 @@ export default function MyCardShell({ bets, onRemoveBet, bankroll }: { bets: Sav
                       date: formatKickoff(bet.commenceTime),
                       sportsIntelligenceScore: bet.sportsIntelligenceScore?.score,
                       marketGrade: bet.sportsIntelligenceScore?.recommendation ?? bet.recommendation,
-                      recommendation: bet.sportsIntelligenceScore?.recommendation ?? bet.recommendation,
+                      recommendation: bet.pick ?? bet.recommendation,
                       confidence: bet.confidence,
                       bestAvailableLine: `${bet.book} • ${bet.point ?? "—"}`,
                       expectedValue: bet.evPerDollar ? `+$${bet.evPerDollar.toFixed(2)} / $1` : "—",
@@ -326,7 +326,7 @@ export default function MyCardShell({ bets, onRemoveBet, bankroll }: { bets: Sav
                     <div className="flex gap-2 rounded-xl border border-white/[0.06] bg-black/30 px-4 py-3 text-xs">
                       <div className="flex-1">
                         <p className="text-zinc-600 uppercase tracking-widest text-[9px]">Bet</p>
-                        <p className="mt-1 font-medium text-white">{bet.pick} {bet.point != null ? (bet.point > 0 ? `+${bet.point}` : bet.point) : ""}</p>
+                        <p className="mt-1 font-medium text-white">{bet.pick}</p>
                       </div>
                       <div className="flex-1">
                         <p className="text-zinc-600 uppercase tracking-widest text-[9px]">Close</p>

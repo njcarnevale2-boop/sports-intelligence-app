@@ -1,0 +1,52 @@
+{
+  "calibrationVersion": "guarded_isotonic_v2026_preseason",
+  "calibrationMethod": "GUARDED_ISOTONIC",
+  "calibrationStatus": "ACTIVE",
+  "sourceReport": "backend/research_outputs/sia_corrected_historical_baseline_report.json",
+  "frozenThroughSeason": 2025,
+  "guardK": 60.0,
+  "bins": [
+    {
+      "label": "50-55",
+      "n": 104,
+      "avgPredicted": 0.5268573638787049,
+      "isotonicProbability": 0.5149863760217984
+    },
+    {
+      "label": "55-60",
+      "n": 141,
+      "avgPredicted": 0.5810187867131844,
+      "isotonicProbability": 0.5149863760217984
+    },
+    {
+      "label": "60-65",
+      "n": 74,
+      "avgPredicted": 0.621959661219945,
+      "isotonicProbability": 0.5149863760217984
+    },
+    {
+      "label": "65-70",
+      "n": 48,
+      "avgPredicted": 0.6732224775371133,
+      "isotonicProbability": 0.5149863760217984
+    },
+    {
+      "label": "70-75",
+      "n": 34,
+      "avgPredicted": 0.7250799057991719,
+      "isotonicProbability": 0.5588235294117647
+    },
+    {
+      "label": "75-80",
+      "n": 16,
+      "avgPredicted": 0.761153807144904,
+      "isotonicProbability": 0.6153846153846154
+    },
+    {
+      "label": "80+",
+      "n": 10,
+      "avgPredicted": 0.8317688366037903,
+      "isotonicProbability": 0.6153846153846154
+    }
+  ]
+}

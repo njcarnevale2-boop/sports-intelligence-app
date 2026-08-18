@@ -525,8 +525,8 @@ def test_official_preview_and_publish_routes_enforce_admin_token_and_overrides(t
     }
 
     monkeypatch.setattr("app.routes.decision_ledger._resolve_week_and_season", lambda week: (2026, 1))
-    monkeypatch.setattr("app.routes.decision_ledger.get_opportunities", lambda **kwargs: {"opportunities": []})
-    monkeypatch.setattr("app.routes.decision_ledger.build_official_sia3_preview", lambda opportunities, season, week: dict(preview_payload))
+    monkeypatch.setattr("app.routes.decision_ledger.get_opportunities", lambda **kwargs: {"opportunities": [], "snapshotId": "snap-live-1"})
+    monkeypatch.setattr("app.routes.decision_ledger.build_official_sia3_preview", lambda opportunities, season, week, **kwargs: dict(preview_payload))
 
     unauth_preview = client.get("/api/admin/ledger/official-sia3/preview")
     assert unauth_preview.status_code == 401
@@ -536,12 +536,20 @@ def test_official_preview_and_publish_routes_enforce_admin_token_and_overrides(t
     assert preview.json()["staleSlotCount"] == 1
 
     blocked = client.post("/api/admin/ledger/official-sia3/publish", headers=ADMIN_HEADERS, json={})
-    assert blocked.status_code == 400
+    assert blocked.status_code == 422
+
+    stale = client.post(
+        "/api/admin/ledger/official-sia3/publish",
+        headers=ADMIN_HEADERS,
+        json={"snapshotId": "snap-stale"},
+    )
+    assert stale.status_code == 400
+    assert "stale" in stale.json()["detail"].lower()
 
     allowed = client.post(
         "/api/admin/ledger/official-sia3/publish",
         headers=ADMIN_HEADERS,
-        json={"overrideStaleOdds": True, "overrideMissingSnapshotLinkage": True},
+        json={"snapshotId": "snap-live-1", "overrideStaleOdds": True, "overrideMissingSnapshotLinkage": True},
     )
     assert allowed.status_code == 200
     body = allowed.json()

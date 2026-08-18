@@ -1,4 +1,6 @@
 from pathlib import Path
+import hashlib
+import json
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
@@ -17,6 +19,7 @@ from app.services.decision_change_engine import build_decision_timeline
 from app.services.weather import WeatherAnalyzer
 from app.services.market_data import market_data_service, select_best_line_row
 from app.services.fair_price import build_fair_price_result
+from app.services.calibration import apply_guarded_isotonic, calibration_info
 from app.config import settings
 
 
@@ -135,6 +138,38 @@ def safe_int(value):
         return None
 
     return int(value)
+
+
+def _clamp_probability(value: float) -> float:
+    return max(1e-6, min(1 - 1e-6, value))
+
+
+def _unit_probability(value: float | None) -> float | None:
+    if value is None:
+        return None
+    p = float(value)
+    if p > 1.0:
+        p /= 100.0
+    return _clamp_probability(p)
+
+
+def _canonical_json(payload: dict) -> str:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def _sha256(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _qualification_from_recommendation(recommendation: str | None) -> tuple[str, list[str]]:
+    label = str(recommendation or "").strip().upper()
+    if not label:
+        return "NOT_QUALIFIED", ["No actionable recommendation was produced."]
+    if "WATCH" in label:
+        return "NOT_QUALIFIED", ["Recommendation is watch-only at current market conditions."]
+    if "LEAN" in label:
+        return "NOT_QUALIFIED", ["Lean recommendations are tracked but not counted as qualified bets."]
+    return "QUALIFIED", ["Current model edge and confidence meet SIA qualification thresholds."]
 
 
 def format_pick(row):
@@ -363,6 +398,19 @@ def row_to_opportunity(
 ):
     away_code = normalize_team_code(row.get("away_team", ""))
     home_code = normalize_team_code(row.get("home_team", ""))
+    raw_model_prob = _unit_probability(safe_float(row.get("model_prob")))
+    implied_prob = _unit_probability(safe_float(row.get("implied_prob_raw")))
+    calibrated_prob = apply_guarded_isotonic(raw_model_prob)
+    calibrated_edge = None
+    if calibrated_prob is not None and implied_prob is not None:
+        calibrated_edge = calibrated_prob - implied_prob
+
+    raw_edge = safe_float(row.get("edge_pp"))
+    if raw_edge is not None and raw_edge > 1.0:
+        raw_edge = raw_edge / 100.0
+
+    quality_status, quality_reasons = _qualification_from_recommendation(row.get("recommendation"))
+    cinfo = calibration_info()
     
     result = {
         "id": build_id(row),
@@ -416,20 +464,18 @@ def row_to_opportunity(
         ),
 
         "modelProbability": round(
-            float(
-                row["model_prob"]
-            )
-            * 100,
+            float(raw_model_prob or 0.0) * 100,
             1,
         ),
 
+        "rawModelProbability": raw_model_prob,
+
         "impliedProbability": round(
-            float(
-                row["implied_prob_raw"]
-            )
-            * 100,
+            float(implied_prob or 0.0) * 100,
             1,
         ),
+
+        "calibratedProbability": calibrated_prob,
 
         "fairOdds": round(
             float(
@@ -438,12 +484,13 @@ def row_to_opportunity(
         ),
 
         "edge": round(
-            float(
-                row["edge_pp"]
-            )
-            * 100,
+            float(calibrated_edge or 0.0) * 100,
             1,
         ),
+
+        "rawEdge": round(float(raw_edge or 0.0) * 100, 1),
+
+        "calibratedEdge": calibrated_edge,
 
         "evPerDollar": round(
             float(
@@ -513,6 +560,14 @@ def row_to_opportunity(
         "rank": int(
             row["rank"]
         ),
+        "rawRank": int(row["rank"]),
+        "qualificationStatus": quality_status,
+        "qualificationReasons": quality_reasons,
+        "qualificationPolicyVersion": settings.DEFAULT_QUALIFICATION_POLICY_VERSION,
+        "rankingVersion": settings.DEFAULT_RANKING_VERSION,
+        "calibrationStatus": cinfo.status,
+        "calibrationMethod": cinfo.method,
+        "calibrationVersion": cinfo.version,
         "marketProvider": (
             market_snapshot.get("provider")
             if market_snapshot
@@ -589,21 +644,6 @@ def row_to_opportunity(
     )
     result["injuryContext"] = injury_context
 
-    # -----------------------------------------------------
-    # SPORTS INTELLIGENCE SCORE
-    # -----------------------------------------------------
-
-    result[
-        "sportsIntelligenceScore"
-    ] = (
-        calculate_sports_intelligence_score(
-            opportunity=result,
-            market_intelligence=(
-                market_intelligence
-            ),
-        )
-    )
-
     fair_price_result = build_fair_price_result(
         row=row,
         group_rows=group_rows,
@@ -629,6 +669,29 @@ def row_to_opportunity(
     result["minimumPlayableEV"] = fair_price_result.minimum_playable_ev
     result["bestAvailablePrice"] = fair_price_result.best_available_price
     result["bestAvailableLine"] = fair_price_result.best_available_line
+    result["pushAwareEV"] = fair_price_result.current_ev
+
+    if result["currentWinProbability"] is not None and implied_prob is not None:
+        result["edge"] = round((float(result["currentWinProbability"]) - implied_prob) * 100, 1)
+        result["calibratedEdge"] = float(result["currentWinProbability"]) - implied_prob
+
+    if result["currentEV"] is not None:
+        result["evPerDollar"] = round(float(result["currentEV"]), 3)
+
+    # -----------------------------------------------------
+    # SPORTS INTELLIGENCE SCORE
+    # -----------------------------------------------------
+
+    result[
+        "sportsIntelligenceScore"
+    ] = (
+        calculate_sports_intelligence_score(
+            opportunity=result,
+            market_intelligence=(
+                market_intelligence
+            ),
+        )
+    )
 
     if (
         include_alternates
@@ -812,6 +875,8 @@ def get_opportunities(
     # One InjuryMatchupContext per request — one ESPN fetch total.
     shared_injury_ctx = InjuryMatchupContext()
 
+    cinfo = calibration_info()
+
     if not best_lines_only:
         market_snapshots = market_data_service.all_event_snapshots()
 
@@ -844,6 +909,9 @@ def get_opportunities(
             "provider": market_meta["provider"],
             "lastUpdated": market_meta["lastUpdated"],
             "dataStatus": market_meta["dataStatus"],
+            "calibrationStatus": cinfo.status,
+            "calibrationMethod": cinfo.method,
+            "calibrationVersion": cinfo.version,
             "opportunities": opportunities,
         }
 
@@ -873,12 +941,42 @@ def get_opportunities(
         raw_group_map[id(selected)] = group
         raw_group_min_rank[id(selected)] = group_min_rank
 
-    # Sort by group's minimum model rank (preserves rank-1 intent even if that row was replaced)
-    raw_best_rows.sort(key=lambda r: (raw_group_min_rank[id(r)], -float(r["edge_pp"]), -float(r["ev_per_dollar"])))
-    raw_best_rows = raw_best_rows[:limit]
+    candidate_rows = []
+    for selected in raw_best_rows:
+        model_prob = _unit_probability(safe_float(selected.get("model_prob")))
+        implied_prob = _unit_probability(safe_float(selected.get("implied_prob_raw")))
+        calibrated_prob = apply_guarded_isotonic(model_prob)
+        calibrated_edge = (calibrated_prob - implied_prob) if calibrated_prob is not None and implied_prob is not None else -999.0
+        candidate_rows.append(
+            {
+                "selected": selected,
+                "groupMinRank": raw_group_min_rank[id(selected)],
+                "calibratedEdge": float(calibrated_edge),
+                "ev": float(safe_float(selected.get("ev_per_dollar")) or 0.0),
+                "confidence": float(safe_float(selected.get("confidence_score")) or 0.0),
+                "eventId": str(selected.get("api_event_id") or ""),
+                "market": str(selected.get("market") or ""),
+                "side": str(selected.get("side") or ""),
+            }
+        )
+
+    # Canonical SIA3 ordering: calibrated edge first, then deterministic tie-breakers.
+    candidate_rows.sort(
+        key=lambda r: (
+            -r["calibratedEdge"],
+            -r["ev"],
+            -r["confidence"],
+            r["groupMinRank"],
+            r["eventId"],
+            r["market"],
+            r["side"],
+        )
+    )
+    candidate_rows = candidate_rows[:limit]
 
     best_rows = []
-    for week_rank, selected in enumerate(raw_best_rows, start=1):
+    for week_rank, candidate in enumerate(candidate_rows, start=1):
+        selected = candidate["selected"]
         item = row_to_opportunity(
             selected,
             include_alternates=raw_alternates_map[id(selected)],
@@ -889,7 +987,34 @@ def get_opportunities(
         )
         # weekRank is sequential position on the filtered week board; rank is the model's row rank
         item["weekRank"] = week_rank
+        item["rank"] = week_rank
         best_rows.append(item)
+
+    snapshot_payload = {
+        "week": resolved_week,
+        "source": str(RANKED_BET_BOARD),
+        "lastUpdated": market_meta.get("lastUpdated"),
+        "opportunities": [
+            {
+                "id": o.get("id"),
+                "eventId": o.get("eventId"),
+                "market": o.get("market"),
+                "side": o.get("side"),
+                "point": o.get("point"),
+                "price": o.get("price"),
+                "calibratedProbability": o.get("calibratedProbability"),
+                "currentWinProbability": o.get("currentWinProbability"),
+                "impliedProbability": o.get("impliedProbability"),
+                "calibratedEdge": o.get("calibratedEdge"),
+                "pushAwareEV": o.get("pushAwareEV"),
+                "rank": o.get("rank"),
+                "weekRank": o.get("weekRank"),
+                "qualificationStatus": o.get("qualificationStatus"),
+            }
+            for o in best_rows
+        ],
+    }
+    snapshot_id = _sha256(_canonical_json(snapshot_payload))
 
     return {
         "count": len(best_rows),
@@ -902,6 +1027,12 @@ def get_opportunities(
         "provider": market_meta["provider"],
         "lastUpdated": market_meta["lastUpdated"],
         "dataStatus": market_meta["dataStatus"],
+        "snapshotId": snapshot_id,
+        "calibrationStatus": cinfo.status,
+        "calibrationMethod": cinfo.method,
+        "calibrationVersion": cinfo.version,
+        "rankingVersion": settings.DEFAULT_RANKING_VERSION,
+        "qualificationPolicyVersion": settings.DEFAULT_QUALIFICATION_POLICY_VERSION,
         "opportunities": best_rows,
     }
 
