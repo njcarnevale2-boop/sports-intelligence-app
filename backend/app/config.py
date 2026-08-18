@@ -19,6 +19,16 @@ class Settings:
     POSTGRES_HOST: str = os.getenv("POSTGRES_HOST", "localhost")
     POSTGRES_PORT: str = os.getenv("POSTGRES_PORT", "5432")
     POSTGRES_DB: str = os.getenv("POSTGRES_DB", "sports_intelligence")
+    MIN_PLAYABLE_EV: float = float(os.getenv("MIN_PLAYABLE_EV", "0.0"))
+    ADMIN_API_KEY: str = os.getenv("ADMIN_API_KEY", "dev-admin-token")
+    DEFAULT_MODEL_VERSION: str = os.getenv("MODEL_VERSION", "unknown-model-version")
+    DEFAULT_PROBABILITY_ENGINE_VERSION: str = os.getenv("PROBABILITY_ENGINE_VERSION", "unknown-probability-engine-version")
+    DEFAULT_CALIBRATION_VERSION: str = os.getenv("CALIBRATION_VERSION", "unknown-calibration-version")
+    DEFAULT_SI_SCORE_VERSION: str = os.getenv("SI_SCORE_VERSION", "unknown-si-score-version")
+    DEFAULT_RANKING_VERSION: str = os.getenv("RANKING_VERSION", "unknown-ranking-version")
+    DEFAULT_QUALIFICATION_POLICY_VERSION: str = os.getenv("QUALIFICATION_POLICY_VERSION", "unknown-qualification-policy-version")
+    DEFAULT_GIT_COMMIT_HASH: str = os.getenv("GIT_COMMIT_HASH", "unknown-git-commit")
+    OFFICIAL_SIA3_CADENCE: str = os.getenv("OFFICIAL_SIA3_CADENCE", "UNSET")
 
     @property
     def sqlalchemy_database_url(self) -> str:

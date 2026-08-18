@@ -17,6 +17,7 @@ from app.services.social_history import get_query_usage_summary
 from app.services.social_intelligence import social_intelligence_service
 from app.services.social_sources import get_social_source_coverage_report
 from app.services.weather_history import get_weather_summary
+from app.services.decision_ledger import get_admin_ledger_summary
 from database.models import PerformanceRecord
 from database.session import SessionLocal
 
@@ -48,6 +49,7 @@ class AdminStatusService:
         social_coverage = get_social_source_coverage_report()
         social_usage = get_query_usage_summary()
         wx_summary = get_weather_summary()
+        ledger_summary = get_admin_ledger_summary(limit=100)
         inj_provider_meta = provider_metadata.get("injury", {})
         wx_provider_meta  = provider_metadata.get("weather", {})
 
@@ -121,6 +123,16 @@ class AdminStatusService:
             "weatherGamesUpdated": wx_summary.get("gamesUpdated", 0),
             "weatherForecastsAvailable": wx_summary.get("forecastsAvailable", 0),
             "lastWeatherError":    refresh_status.get("lastWeatherError"),
+            # Decision ledger
+            "ledgerDecisionsRecorded": ledger_summary.get("decisionsRecorded", 0),
+            "ledgerOfficialPublications": ledger_summary.get("officialSia3Publications", 0),
+            "ledgerLatestPublication": ledger_summary.get("latestPublication"),
+            "ledgerIntegrity": ledger_summary.get("ledgerIntegrity"),
+            "ledgerOutcomesCaptured": ledger_summary.get("outcomesCaptured", 0),
+            "ledgerClosingLinesCaptured": ledger_summary.get("closingLinesCaptured", 0),
+            "ledgerMissingOutcomes": ledger_summary.get("missingOutcomes", 0),
+            "ledgerMissingClosingLines": ledger_summary.get("missingClosingLines", 0),
+            "ledgerAuditRows": ledger_summary.get("auditRows", []),
         }
 
     def _read_last_refresh(self) -> str:

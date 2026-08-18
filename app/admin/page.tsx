@@ -83,6 +83,28 @@ type AdminStatus = {
   weatherGamesUpdated?: number;
   weatherForecastsAvailable?: number;
   lastWeatherError?: string | null;
+  // Decision ledger status
+  ledgerDecisionsRecorded?: number;
+  ledgerOfficialPublications?: number;
+  ledgerLatestPublication?: { publicationId?: string; publishedAtUTC?: string } | null;
+  ledgerIntegrity?: { valid?: boolean; invalidHashCount?: number } | null;
+  ledgerOutcomesCaptured?: number;
+  ledgerClosingLinesCaptured?: number;
+  ledgerMissingOutcomes?: number;
+  ledgerMissingClosingLines?: number;
+  ledgerAuditRows?: Array<{
+    timestamp?: string;
+    week?: string;
+    rank?: number | null;
+    selection?: string;
+    line?: number | null;
+    price?: number | null;
+    sportsbook?: string | null;
+    siScore?: number | null;
+    ev?: number | null;
+    decisionHash?: string;
+    result?: string | null;
+  }>;
 };
 
 type SocialCoverageTeam = {
@@ -387,6 +409,85 @@ export default function AdminPage() {
                     {status.averageCLV != null ? (status.averageCLV > 0 ? `+${status.averageCLV}` : status.averageCLV) : "—"}
                   </p>
                 </div>
+              </div>
+            </section>
+
+            <section className="mt-6 rounded-3xl border border-white/10 bg-[#0B1119] p-6">
+              <h2 className="text-lg font-semibold">Decision Ledger Audit</h2>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">2026 Decisions Recorded</p>
+                  <p className="mt-1 font-medium text-white">{status.ledgerDecisionsRecorded ?? 0}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Official SIA 3 Publications</p>
+                  <p className="mt-1 font-medium text-white">{status.ledgerOfficialPublications ?? 0}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Outcomes Captured</p>
+                  <p className="mt-1 font-medium text-emerald-400">{status.ledgerOutcomesCaptured ?? 0}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Closing Lines Captured</p>
+                  <p className="mt-1 font-medium text-emerald-400">{status.ledgerClosingLinesCaptured ?? 0}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Missing Outcomes</p>
+                  <p className="mt-1 font-medium text-amber-400">{status.ledgerMissingOutcomes ?? 0}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Missing Closing Lines</p>
+                  <p className="mt-1 font-medium text-amber-400">{status.ledgerMissingClosingLines ?? 0}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm sm:col-span-2">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Ledger Integrity</p>
+                  <p className={`mt-1 font-medium ${status.ledgerIntegrity?.valid ? "text-emerald-400" : "text-amber-400"}`}>
+                    {status.ledgerIntegrity?.valid ? "VALID" : "CHECK REQUIRED"}
+                  </p>
+                  <p className="text-[11px] text-zinc-500">Invalid hashes: {status.ledgerIntegrity?.invalidHashCount ?? 0}</p>
+                </div>
+              </div>
+
+              <div className="mt-6 overflow-x-auto rounded-2xl border border-white/10">
+                <table className="min-w-full divide-y divide-white/10 text-left text-xs">
+                  <thead className="bg-black/30 text-zinc-400 uppercase tracking-widest">
+                    <tr>
+                      <th className="px-3 py-2">Timestamp</th>
+                      <th className="px-3 py-2">Week</th>
+                      <th className="px-3 py-2">Rank</th>
+                      <th className="px-3 py-2">Selection</th>
+                      <th className="px-3 py-2">Line</th>
+                      <th className="px-3 py-2">Price</th>
+                      <th className="px-3 py-2">Sportsbook</th>
+                      <th className="px-3 py-2">SI</th>
+                      <th className="px-3 py-2">EV</th>
+                      <th className="px-3 py-2">Hash</th>
+                      <th className="px-3 py-2">Result</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5 text-zinc-200">
+                    {(status.ledgerAuditRows ?? []).slice(0, 50).map((row, idx) => (
+                      <tr key={`${row.decisionHash}-${idx}`}>
+                        <td className="px-3 py-2">{row.timestamp ? new Date(row.timestamp).toLocaleString() : "n/a"}</td>
+                        <td className="px-3 py-2">{row.week ?? "n/a"}</td>
+                        <td className="px-3 py-2">{row.rank ?? "-"}</td>
+                        <td className="px-3 py-2">{row.selection ?? "n/a"}</td>
+                        <td className="px-3 py-2">{row.line ?? "-"}</td>
+                        <td className="px-3 py-2">{row.price ?? "-"}</td>
+                        <td className="px-3 py-2">{row.sportsbook ?? "-"}</td>
+                        <td className="px-3 py-2">{row.siScore ?? "-"}</td>
+                        <td className="px-3 py-2">{row.ev ?? "-"}</td>
+                        <td className="px-3 py-2 font-mono text-[10px] text-zinc-400">{(row.decisionHash ?? "").slice(0, 12)}</td>
+                        <td className="px-3 py-2">{row.result ?? "-"}</td>
+                      </tr>
+                    ))}
+                    {(status.ledgerAuditRows ?? []).length === 0 && (
+                      <tr>
+                        <td className="px-3 py-4 text-zinc-500" colSpan={11}>No ledger rows captured yet.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
               </div>
             </section>
 
