@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 from app.providers.provider_manager import ProviderManager
-from app.services.market_data import market_data_service
+from app.services.market_data import market_data_service, select_best_line_row
 from app.services.market_intelligence import build_market_intelligence_lookup, normalize_market
 from app.services.sports_intelligence_score import calculate_sports_intelligence_score
 
@@ -289,6 +289,7 @@ class GamesService:
                     "total": market_snapshot.get("consensusTotal", safe_float(source_row.get("market_total"))),
                     "moneyline": market_snapshot.get("consensusMoneyline"),
                     "bestOpportunity": enrichment.get("bestOpportunity") if enrichment else None,
+                    "bestOpportunityDetail": enrichment.get("bestOpportunityDetail") if enrichment else None,
                     "sportsIntelligenceScore": sports_score,
                     "marketIntelligence": market_intelligence,
                     "bestAvailableLine": best_available_line,
@@ -435,9 +436,14 @@ class GamesService:
         best_rows_by_event: List[Tuple[str, pd.Series, pd.DataFrame]] = []
         selection_keys: set[Tuple[str, str, str]] = set()
         for event_id, group in board_df.groupby("api_event_id", sort=False):
-            best = group.iloc[0]
-            market = str(best.get("market", "")).strip().lower()
-            side = str(best.get("side", "")).strip().lower()
+            best_ranked = group.iloc[0]
+            market = str(best_ranked.get("market", "")).strip().lower()
+            side = str(best_ranked.get("side", "")).strip().lower()
+            selected_group = group[
+                group["market"].astype(str).str.strip().str.lower().eq(market)
+                & group["side"].astype(str).str.strip().str.lower().eq(side)
+            ]
+            best = select_best_line_row(selected_group if not selected_group.empty else group)
 
             best_rows_by_event.append((event_id, best, group))
             selection_keys.add((str(event_id), market, side))
@@ -477,6 +483,14 @@ class GamesService:
 
             output[event_id] = {
                 "bestOpportunity": self._format_best_opportunity(best),
+                "bestOpportunityDetail": {
+                    "market": market,
+                    "side": side,
+                    "pick": self._format_best_opportunity(best),
+                    "point": safe_float(best.get("point")),
+                    "price": safe_float(best.get("price")),
+                    "sportsbook": str(best.get("sportsbook", "")).strip() or None,
+                },
                 "recommendationLabel": str(best.get("recommendation", "")).strip() or None,
                 "sportsIntelligenceScore": float(score_payload.get("score", 0.0)),
                 "marketIntelligence": market_intelligence_payload,
@@ -502,23 +516,30 @@ class GamesService:
         return output or None
 
     def _format_best_opportunity(self, row: pd.Series) -> str:
-        recommendation = str(row.get("recommendation", "")).strip()
         market = str(row.get("market", "")).strip().lower()
         side = str(row.get("side", "")).strip().lower()
         point = safe_float(row.get("point"))
+        away_code = normalize_team_code(row.get("away_team", ""))
+        home_code = normalize_team_code(row.get("home_team", ""))
 
         if market == "spread":
             if point is None:
-                return recommendation or "Unavailable"
+                return "Unavailable"
+            team = home_code if side == "home" else away_code
+            team = team or ("HOME" if side == "home" else "AWAY")
             point_text = f"{point:+g}"
-            return f"{recommendation}: {side.title()} {point_text}" if recommendation else f"{side.title()} {point_text}"
+            return f"{team} {point_text}"
 
         if market == "total":
             if point is None:
-                return recommendation or "Unavailable"
-            return f"{recommendation}: {side.title()} {point:g}" if recommendation else f"{side.title()} {point:g}"
+                return "Unavailable"
+            return f"{side.title()} {point:g}"
 
-        return recommendation or "Unavailable"
+        if market in {"moneyline", "h2h"}:
+            team = home_code if side == "home" else away_code
+            return team or side.title() or "Unavailable"
+
+        return side.title() or "Unavailable"
 
     def _data_status(self, schedule_available: bool, opportunities_available: bool) -> Dict[str, str]:
         provider_metadata = self.provider_manager.metadata()

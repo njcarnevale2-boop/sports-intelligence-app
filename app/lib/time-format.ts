@@ -1,3 +1,5 @@
+const ET_ZONE = "America/New_York";
+
 export function formatKickoffLocal(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "TBD";
@@ -8,6 +10,29 @@ export function formatKickoffLocal(iso: string): string {
     hour: "numeric",
     minute: "2-digit",
     timeZoneName: "short",
+    timeZone: ET_ZONE,
+  });
+}
+
+export function formatKickoffDateEt(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "TBD";
+  return d.toLocaleString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    timeZone: ET_ZONE,
+  });
+}
+
+export function formatKickoffTimeEt(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "TBD";
+  return d.toLocaleString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+    timeZone: ET_ZONE,
   });
 }
 

@@ -5,7 +5,7 @@ import Link from "next/link";
 
 import TeamLogo from "@/components/team-logo";
 import { fetchJson } from "../lib/api";
-import { formatDateUtcHeading, formatDateUtcTab } from "@/app/lib/time-format";
+import { formatDateUtcHeading, formatDateUtcTab, formatKickoffDateEt, formatKickoffTimeEt } from "@/app/lib/time-format";
 
 const GAMES_REQUEST_TIMEOUT_MS = 30000;
 
@@ -30,6 +30,14 @@ type GameCard = {
   spreadSource?: string;
   total?: number | null;
   bestOpportunity?: string | null;
+  bestOpportunityDetail?: {
+    market?: string;
+    side?: string;
+    pick?: string;
+    point?: number | null;
+    price?: number | null;
+    sportsbook?: string | null;
+  } | null;
   sportsIntelligenceScore?: number | null;
   marketDataStatus?: string;
   betStatus?: string | null;
@@ -70,7 +78,9 @@ function compactBetStatus(game: GameCard) {
   if (game.bestOpportunity) {
     const prefix = (game.betStatus || "BET").replace("QUALIFIED", "BET");
     const score = game.sportsIntelligenceScore != null ? ` · ${game.sportsIntelligenceScore.toFixed(1)}` : "";
-    return `${prefix} ${game.bestOpportunity}${score}`;
+    const price = game.bestOpportunityDetail?.price;
+    const pricedPick = price != null ? `${game.bestOpportunity} (${price > 0 ? `+${price}` : `${price}`})` : game.bestOpportunity;
+    return `${prefix} · ${pricedPick}${score}`;
   }
   if ((game.betStatus || "").toUpperCase().includes("INSUFFICIENT")) return "PASS · Insufficient data";
   return "PASS · No meaningful edge";
@@ -330,8 +340,8 @@ export default function GamesPage() {
 
 function GameRow({ game }: { game: GameCard }) {
   const hasOpp = Boolean(game.bestOpportunity);
-  const kickoffDate = formatKickoffDate(game.commenceTime);
-  const kickoffTime = formatKickoffTime(game.commenceTime);
+  const kickoffDate = formatKickoffDateEt(game.commenceTime);
+  const kickoffTime = formatKickoffTimeEt(game.commenceTime);
 
   return (
     <>
@@ -459,25 +469,4 @@ function GameRow({ game }: { game: GameCard }) {
   );
 }
 
-// Format kickoff as "Sun, Sep 13"
-function formatKickoffDate(iso: string) {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "TBD";
-  return d.toLocaleString("en-US", {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-  });
-}
-
-// Format time as "1:00 PM ET"
-function formatKickoffTime(iso: string) {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "TBD";
-  return d.toLocaleString("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    timeZoneName: "short",
-  });
-}
 

@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { fetchJson } from "../../lib/api";
 import { addToCard as addToCardHelper } from "@/lib/add-to-card";
-import { formatKickoffLocal } from "@/app/lib/time-format";
+import { formatKickoffDateEt, formatKickoffTimeEt } from "@/app/lib/time-format";
 import {
   formatTravelMiles,
   formatTravelShift,
@@ -111,7 +111,10 @@ type CurrentUser = {
 };
 
 function formatKickoff(iso: string) {
-  return formatKickoffLocal(iso);
+  const date = formatKickoffDateEt(iso);
+  const time = formatKickoffTimeEt(iso);
+  if (date === "TBD" || time === "TBD") return "TBD";
+  return `${date} ${time}`;
 }
 
 function signed(value: number) {
@@ -420,7 +423,7 @@ export default function GameIntelligencePage() {
                 <p className="mt-2 text-sm text-zinc-300">Fair line: {opportunity?.fairLine != null ? signed(opportunity.fairLine) : "Unavailable"}</p>
                 <p className="mt-1 text-sm text-zinc-300">True Playable-To: {formatTruePlayableTo(opportunity)}</p>
                 <p className="mt-1 text-sm text-zinc-300">Worst currently available playable price: {opportunity?.worstObservedPlayablePrice != null ? signed(opportunity.worstObservedPlayablePrice) : "Unavailable"}</p>
-                <p className="mt-1 text-sm text-zinc-300">Minimum required EV: {opportunity?.minimumPlayableEV != null ? `${(opportunity.minimumPlayableEV * 100).toFixed(1)}%` : "Unavailable"}</p>
+                <p className="mt-1 text-sm text-zinc-300">Playable-To EV floor: {opportunity?.minimumPlayableEV != null ? `${(opportunity.minimumPlayableEV * 100).toFixed(1)}%` : "Unavailable"}</p>
               </div>
               <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
                 <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Market Intelligence</p>

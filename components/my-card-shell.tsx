@@ -9,6 +9,7 @@ import TeamLogo from "@/components/team-logo";
 import { buildCardSummary, buildPortfolioRiskWarnings, createExportPayload, getBestLineAndPriceOffers, getEdgeValue, normalizeSavedBet, type RiskWarning, type SavedBet } from "@/lib/my-card-helpers";
 import Tooltip from "@/components/ui/tooltip";
 import { getSportsbookConfig } from "@/lib/sportsbook-config";
+import { formatKickoffLocal } from "@/app/lib/time-format";
 
 function formatSigned(value: number) {
   return value >= 0 ? `+${value.toFixed(1)}` : value.toFixed(1);
@@ -16,18 +17,9 @@ function formatSigned(value: number) {
 
 function formatKickoff(iso: string | undefined | null): string {
   if (!iso) return "Kickoff TBD";
-  // Normalize space-separated UTC timestamps: "2026-09-13 17:00:00" → Date
   const normalized = iso.includes("T") ? iso : iso.replace(" ", "T") + "Z";
-  const d = new Date(normalized);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString("en-US", {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    timeZoneName: "short",
-  });
+  const text = formatKickoffLocal(normalized);
+  return text === "TBD" ? iso : text;
 }
 
 export default function MyCardShell({ bets, onRemoveBet, bankroll }: { bets: SavedBet[]; onRemoveBet: (idOrEventId: string) => void; bankroll?: number | null }) {
