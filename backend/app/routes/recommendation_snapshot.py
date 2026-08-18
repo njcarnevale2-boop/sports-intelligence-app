@@ -6,6 +6,7 @@ from app.services.recommendation_snapshot import (
     get_clv_summary,
     store_snapshot,
 )
+from app.services.decision_ledger import record_my_card_decision_from_payload
 
 router = APIRouter(prefix="/api/recommendation", tags=["recommendation"])
 
@@ -16,7 +17,21 @@ def create_snapshot(payload: dict):
     snapshot_id = store_snapshot(payload)
     if not snapshot_id:
         return {"success": False, "reason": "database unavailable"}
-    return {"success": True, "snapshotId": snapshot_id}
+
+    decision_payload = dict(payload)
+    decision_payload["sourceSnapshotId"] = snapshot_id
+    try:
+        decision = record_my_card_decision_from_payload(decision_payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "success": True,
+        "snapshotId": snapshot_id,
+        "decisionId": decision["decisionId"],
+        "decisionVersion": decision["decisionVersion"],
+        "decisionCreated": decision["created"],
+    }
 
 
 @router.get("/clv/{event_id}")

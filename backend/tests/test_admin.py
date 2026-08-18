@@ -26,6 +26,12 @@ def test_admin_status_endpoint_returns_metrics():
     assert "socialDataStatus" in payload
     assert "socialSourcesActive" in payload
     assert "socialCoveragePercent" in payload
+    # Ledger fields
+    assert "ledgerMyCardDecisionsCaptured" in payload
+    assert "ledgerSia3DecisionsCaptured" in payload
+    assert "ledgerMissingOddsSnapshotLinkages" in payload
+    assert "officialSia3PublishedThisWeek" in payload
+    assert "officialSia3PublicationTime" in payload
     # Scheduler fields
     assert "scheduler" in payload
     sched = payload["scheduler"]

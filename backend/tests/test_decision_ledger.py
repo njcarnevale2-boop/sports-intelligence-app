@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -365,3 +366,183 @@ def test_admin_audit_and_prospective_performance_endpoints(tmp_path, monkeypatch
     assert p["datasetLabel"] == "PROSPECTIVE AUDITED TRACK RECORD"
     assert p["historicalLabel"] == "MARKET-REFERENCE BACKTEST"
     assert "byRank" in p
+
+
+def test_recommendation_snapshot_auto_records_my_card_decision(tmp_path, monkeypatch):
+    import app.services.decision_ledger as dl
+    import app.routes.recommendation_snapshot as snapshot_route
+
+    monkeypatch.setattr(dl, "_DB_PATH", tmp_path / "ledger.db")
+    monkeypatch.setattr(snapshot_route, "store_snapshot", lambda payload: "snap-123")
+
+    payload = {
+        "season": 2026,
+        "week": 1,
+        "eventId": "evt-my-card-1",
+        "commenceTime": "2026-09-13T17:00:00+00:00",
+        "awayTeam": "NO",
+        "homeTeam": "ATL",
+        "selection": "NO +7",
+        "market": "spreads",
+        "side": "away",
+        "point": 7.0,
+        "price": -110.0,
+        "sportsbook": "DraftKings",
+        "modelProbability": 0.57,
+        "calibratedProbability": 0.59,
+        "pushProbability": 0.02,
+        "lossProbability": 0.39,
+        "edge": 0.032,
+        "currentEV": 0.054,
+        "evPerDollar": 0.054,
+        "fairLine": -128.0,
+        "truePlayableTo": -118.0,
+        "truePlayableToStatus": "AVAILABLE",
+        "siScore": 80.0,
+        "siGrade": "A-",
+        "siRank": 1,
+        "recommendation": "BET",
+        "qualificationReasons": ["edge", "ev"],
+        "oddsProvider": "the_odds_api",
+        "oddsTimestamp": "2026-09-13T15:00:00+00:00",
+        "marketTimestamp": "2026-09-13T15:00:00+00:00",
+    }
+
+    response = client.post("/api/recommendation/snapshot", json=payload)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert body["snapshotId"] == "snap-123"
+    assert body["decisionId"]
+    assert body["decisionVersion"] == 1
+    assert body["decisionCreated"] is True
+
+    decision = client.get(f"/api/admin/ledger/decisions/{body['decisionId']}")
+    assert decision.status_code == 200
+    stored = decision.json()
+    assert stored["publicationType"] == "MY_CARD"
+    assert stored["sourceSnapshotId"] == "snap-123"
+
+
+def test_publish_official_sia3_from_preview_requires_overrides(tmp_path, monkeypatch):
+    import app.services.decision_ledger as dl
+
+    monkeypatch.setattr(dl, "_DB_PATH", tmp_path / "ledger.db")
+
+    preview = {
+        "publishedAtUTC": "2026-09-13T16:00:00+00:00",
+        "season": 2026,
+        "week": 1,
+        "staleSlotCount": 1,
+        "missingSnapshotLinkageCount": 1,
+        "slots": [
+            {
+                "rank": 1,
+                "slotLabel": "BET",
+                "qualificationStatus": "QUALIFIED",
+                "decision": _decision_payload("evt-preview-1"),
+            }
+        ],
+    }
+
+    with patch.object(dl.settings, "OFFICIAL_SIA3_CADENCE", "WEEKLY"):
+        with pytest.raises(ValueError, match="Stale odds"):
+            dl.publish_official_sia3_from_preview(preview)
+
+        with pytest.raises(ValueError, match="snapshot linkage"):
+            dl.publish_official_sia3_from_preview(preview, override_stale=True)
+
+        published = dl.publish_official_sia3_from_preview(
+            preview,
+            override_stale=True,
+            override_missing_linkage=True,
+        )
+
+    assert published["isOfficial"] is True
+    assert published["qualifiedPickCount"] == 1
+
+
+def test_auto_append_outcomes_from_scores_appends_once(tmp_path, monkeypatch):
+    import app.services.decision_ledger as dl
+
+    monkeypatch.setattr(dl, "_DB_PATH", tmp_path / "ledger.db")
+
+    decision_id = _post_decision(_decision_payload("evt-score-1")).json()["decisionId"]
+
+    first = dl.auto_append_outcomes_from_scores(
+        fetch_scores_fn=lambda event_id: {"finalAwayScore": 24, "finalHomeScore": 20} if event_id == "evt-score-1" else None
+    )
+    assert first["checked"] == 1
+    assert first["appended"] == 1
+    assert first["pending"] == 0
+
+    second = dl.auto_append_outcomes_from_scores(
+        fetch_scores_fn=lambda event_id: {"finalAwayScore": 24, "finalHomeScore": 20} if event_id == "evt-score-1" else None
+    )
+    assert second["checked"] == 0
+    assert second["appended"] == 0
+    assert second["pending"] == 0
+
+    con = sqlite3.connect(str(tmp_path / "ledger.db"))
+    con.row_factory = sqlite3.Row
+    row = con.execute(
+        "SELECT decision_id, bet_result, final_away_score, final_home_score FROM decision_outcomes WHERE decision_id = ? ORDER BY id DESC LIMIT 1",
+        [decision_id],
+    ).fetchone()
+    con.close()
+    assert row is not None
+    assert row["bet_result"] == "LOSS"
+    assert row["final_away_score"] == 24
+    assert row["final_home_score"] == 20
+
+
+def test_official_preview_and_publish_routes_enforce_admin_token_and_overrides(tmp_path, monkeypatch):
+    import app.services.decision_ledger as dl
+
+    monkeypatch.setattr(dl, "_DB_PATH", tmp_path / "ledger.db")
+
+    preview_payload = {
+        "publishedAtUTC": "2026-09-13T16:00:00+00:00",
+        "season": 2026,
+        "week": 1,
+        "maxOddsAgeMinutes": 60,
+        "staleSlotCount": 1,
+        "missingSnapshotLinkageCount": 1,
+        "slots": [
+            {
+                "rank": 1,
+                "slotLabel": "BET",
+                "qualificationStatus": "QUALIFIED",
+                "decision": _decision_payload("evt-route-1"),
+                "snapshotVerified": False,
+                "snapshotVerificationReason": "NO_SNAPSHOT_RECORD",
+                "oddsAgeMinutes": 120,
+                "isStale": True,
+            }
+        ],
+        "dataTimestamp": "2026-09-13T15:00:00+00:00",
+        "dataStatus": "LIVE",
+    }
+
+    monkeypatch.setattr("app.routes.decision_ledger._resolve_week_and_season", lambda week: (2026, 1))
+    monkeypatch.setattr("app.routes.decision_ledger.get_opportunities", lambda **kwargs: {"opportunities": []})
+    monkeypatch.setattr("app.routes.decision_ledger.build_official_sia3_preview", lambda opportunities, season, week: dict(preview_payload))
+
+    unauth_preview = client.get("/api/admin/ledger/official-sia3/preview")
+    assert unauth_preview.status_code == 401
+
+    preview = client.get("/api/admin/ledger/official-sia3/preview", headers=ADMIN_HEADERS)
+    assert preview.status_code == 200
+    assert preview.json()["staleSlotCount"] == 1
+
+    blocked = client.post("/api/admin/ledger/official-sia3/publish", headers=ADMIN_HEADERS, json={})
+    assert blocked.status_code == 400
+
+    allowed = client.post(
+        "/api/admin/ledger/official-sia3/publish",
+        headers=ADMIN_HEADERS,
+        json={"overrideStaleOdds": True, "overrideMissingSnapshotLinkage": True},
+    )
+    assert allowed.status_code == 200
+    body = allowed.json()
+    assert body["publication"]["isOfficial"] is True

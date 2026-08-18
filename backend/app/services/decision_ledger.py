@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from app.config import settings
 from app.services.closing_line import calculate_clv, get_closing_line
+from app.services.market_data import market_data_service, normalize_market, normalize_side
 
 
 def _utc_now_iso() -> str:
@@ -584,6 +585,341 @@ def _fetch_decision_row(con: sqlite3.Connection, decision_id: str) -> Optional[s
     return con.execute("SELECT * FROM decision_ledger WHERE decision_id = ?", [decision_id]).fetchone()
 
 
+def _parse_timestamp_utc(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _to_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _snapshot_linkage(
+    *,
+    event_id: str,
+    market: str,
+    side: str,
+    sportsbook: Optional[str],
+    point: Optional[float],
+    price: Optional[float],
+) -> Dict[str, Any]:
+    records = market_data_service.records_for_event(event_id)
+    market_key = normalize_market(market)
+    side_key = normalize_side(side)
+    book_key = str(sportsbook or "").strip().lower()
+    point_val = _to_float(point)
+    price_val = _to_float(price)
+
+    exact: Optional[Dict[str, Any]] = None
+    fallback: Optional[Dict[str, Any]] = None
+
+    for rec in records:
+        if normalize_market(rec.get("market")) != market_key:
+            continue
+        if normalize_side(rec.get("side")) != side_key:
+            continue
+        if book_key and str(rec.get("sportsbook") or "").strip().lower() != book_key:
+            continue
+
+        fallback = rec
+        rec_point = _to_float(rec.get("point"))
+        rec_price = _to_float(rec.get("americanOdds"))
+        point_match = point_val is None or rec_point == point_val
+        price_match = price_val is None or rec_price == price_val
+        if point_match and price_match:
+            exact = rec
+            break
+
+    selected = exact or fallback
+    if selected is None:
+        return {
+            "verified": False,
+            "reason": "NO_MATCHING_SNAPSHOT_RECORD",
+            "sourceSnapshotId": None,
+            "oddsTimestamp": None,
+            "snapshotAgeMinutes": None,
+            "linePriceMatch": False,
+        }
+
+    stamp = selected.get("lastSeen") or selected.get("lastUpdated")
+    ts = _parse_timestamp_utc(stamp)
+    now = datetime.now(timezone.utc)
+    age_minutes = None if ts is None else max(0.0, (now - ts).total_seconds() / 60.0)
+
+    source_snapshot_id = _sha256(
+        _canonical_json(
+            {
+                "eventId": selected.get("eventId"),
+                "sportsbook": selected.get("sportsbook"),
+                "market": selected.get("market"),
+                "side": selected.get("side"),
+                "point": selected.get("point"),
+                "americanOdds": selected.get("americanOdds"),
+                "lastSeen": selected.get("lastSeen"),
+                "lastUpdated": selected.get("lastUpdated"),
+            }
+        )
+    )
+
+    return {
+        "verified": exact is not None,
+        "reason": "VERIFIED" if exact is not None else "BOOK_MARKET_SIDE_MATCH_LINE_OR_PRICE_DIFFERS",
+        "sourceSnapshotId": source_snapshot_id,
+        "oddsTimestamp": ts.isoformat() if ts else None,
+        "snapshotAgeMinutes": age_minutes,
+        "linePriceMatch": exact is not None,
+    }
+
+
+def _decision_payload_from_opportunity(opportunity: Dict[str, Any], published_at_utc: str) -> Dict[str, Any]:
+    raw_probability = _to_float(opportunity.get("modelProbability"))
+    if raw_probability is not None and raw_probability > 1.0:
+        raw_probability = raw_probability / 100.0
+
+    calibrated_probability = _to_float(opportunity.get("currentWinProbability"))
+    if calibrated_probability is not None and calibrated_probability > 1.0:
+        calibrated_probability = calibrated_probability / 100.0
+
+    push_probability = _to_float(opportunity.get("currentPushProbability"))
+    loss_probability = _to_float(opportunity.get("currentLossProbability"))
+
+    raw_edge = _to_float(opportunity.get("edge"))
+    if raw_edge is not None and raw_edge > 1.0:
+        raw_edge = raw_edge / 100.0
+
+    cal_edge = raw_edge
+    if calibrated_probability is not None:
+        implied = _to_float(opportunity.get("impliedProbability"))
+        if implied is not None:
+            if implied > 1.0:
+                implied = implied / 100.0
+            cal_edge = calibrated_probability - implied
+
+    score_obj = opportunity.get("sportsIntelligenceScore") or {}
+    reasons = []
+    if isinstance(score_obj, dict):
+        raw_reasons = score_obj.get("reasons")
+        if isinstance(raw_reasons, list):
+            reasons = [str(x) for x in raw_reasons]
+
+    linkage = _snapshot_linkage(
+        event_id=str(opportunity.get("eventId") or ""),
+        market=str(opportunity.get("market") or ""),
+        side=str(opportunity.get("side") or ""),
+        sportsbook=str(opportunity.get("book") or ""),
+        point=_to_float(opportunity.get("point")),
+        price=_to_float(opportunity.get("price")),
+    )
+
+    qualification_status = "QUALIFIED"
+    recommendation = str(opportunity.get("recommendation") or "").upper()
+    if "LEAN" in recommendation:
+        qualification_status = "NOT_QUALIFIED"
+    if "WATCH" in recommendation or recommendation == "":
+        qualification_status = "NOT_QUALIFIED"
+
+    decision = {
+        "publishedAtUTC": published_at_utc,
+        "season": opportunity.get("season"),
+        "week": opportunity.get("week"),
+        "eventId": opportunity.get("eventId"),
+        "commenceTime": opportunity.get("commenceTime"),
+        "awayTeam": opportunity.get("awayTeam"),
+        "homeTeam": opportunity.get("homeTeam"),
+        "selection": opportunity.get("pick"),
+        "market": opportunity.get("market"),
+        "side": opportunity.get("side"),
+        "point": _to_float(opportunity.get("point")),
+        "price": _to_float(opportunity.get("price")),
+        "sportsbook": opportunity.get("book"),
+        "rawProbability": raw_probability,
+        "calibratedProbability": calibrated_probability,
+        "pushProbability": push_probability,
+        "lossProbability": loss_probability,
+        "rawEdge": raw_edge,
+        "calibratedEdge": cal_edge,
+        "currentEV": _to_float(opportunity.get("currentEV") if opportunity.get("currentEV") is not None else opportunity.get("evPerDollar")),
+        "fairLine": _to_float(opportunity.get("fairLine")),
+        "truePlayableTo": _to_float(opportunity.get("truePlayableTo")),
+        "truePlayableToStatus": opportunity.get("truePlayableToStatus"),
+        "siScore": _to_float(score_obj.get("score") if isinstance(score_obj, dict) else None),
+        "siGrade": score_obj.get("grade") if isinstance(score_obj, dict) else None,
+        "siRank": opportunity.get("weekRank") if opportunity.get("weekRank") is not None else opportunity.get("rank"),
+        "recommendation": opportunity.get("recommendation"),
+        "qualificationStatus": qualification_status,
+        "qualificationReasons": reasons,
+        "oddsProvider": opportunity.get("marketProvider") or "line_movement_board",
+        "oddsTimestamp": linkage["oddsTimestamp"] or opportunity.get("marketLastUpdated"),
+        "modelTimestamp": _utc_now_iso(),
+        "marketTimestamp": opportunity.get("marketLastUpdated"),
+        "sourceSnapshotId": linkage["sourceSnapshotId"],
+    }
+
+    decision["_snapshotLinkage"] = linkage
+    return decision
+
+
+def record_my_card_decision_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    published_at_utc = _utc_now_iso()
+    opportunity = {
+        "season": payload.get("season"),
+        "week": payload.get("week"),
+        "eventId": payload.get("eventId"),
+        "commenceTime": payload.get("commenceTime"),
+        "awayTeam": payload.get("awayTeam"),
+        "homeTeam": payload.get("homeTeam"),
+        "pick": payload.get("selection") or payload.get("pick") or f"{payload.get('side', '')} {payload.get('point', '')}".strip(),
+        "market": payload.get("market"),
+        "side": payload.get("side"),
+        "point": payload.get("point"),
+        "price": payload.get("price"),
+        "book": payload.get("sportsbook"),
+        "modelProbability": payload.get("modelProbability") or payload.get("rawProbability"),
+        "currentWinProbability": payload.get("calibratedProbability"),
+        "currentPushProbability": payload.get("pushProbability"),
+        "currentLossProbability": payload.get("lossProbability"),
+        "edge": payload.get("edge") or payload.get("rawEdge"),
+        "currentEV": payload.get("currentEV") or payload.get("evPerDollar"),
+        "evPerDollar": payload.get("evPerDollar"),
+        "fairLine": payload.get("fairLine"),
+        "truePlayableTo": payload.get("truePlayableTo"),
+        "truePlayableToStatus": payload.get("truePlayableToStatus"),
+        "recommendation": payload.get("recommendation") or "MY_CARD",
+        "sportsIntelligenceScore": {
+            "score": payload.get("siScore"),
+            "grade": payload.get("siGrade"),
+            "reasons": payload.get("qualificationReasons") or [],
+        },
+        "weekRank": payload.get("siRank"),
+        "rank": payload.get("siRank"),
+        "marketProvider": payload.get("oddsProvider") or "line_movement_board",
+        "marketLastUpdated": payload.get("marketTimestamp") or payload.get("oddsTimestamp"),
+    }
+
+    decision_payload = _decision_payload_from_opportunity(opportunity, published_at_utc)
+    # Preserve provided source snapshot when passed by caller.
+    if payload.get("sourceSnapshotId"):
+        decision_payload["sourceSnapshotId"] = payload.get("sourceSnapshotId")
+    decision_payload.pop("_snapshotLinkage", None)
+    return record_decision(decision_payload, publication_type="MY_CARD")
+
+
+def build_official_sia3_preview(
+    opportunities: List[Dict[str, Any]],
+    *,
+    season: int,
+    week: int,
+    max_odds_age_minutes: Optional[int] = None,
+) -> Dict[str, Any]:
+    threshold = max_odds_age_minutes if max_odds_age_minutes is not None else settings.OFFICIAL_PUBLICATION_MAX_ODDS_AGE_MINUTES
+    published_at_utc = _utc_now_iso()
+
+    top_three = opportunities[:3]
+    slots = []
+    stale_count = 0
+    missing_linkage_count = 0
+    for idx in range(3):
+        rank = idx + 1
+        if idx >= len(top_three):
+            slots.append(
+                {
+                    "rank": rank,
+                    "slotLabel": "WATCH",
+                    "qualificationStatus": "NOT_QUALIFIED",
+                    "decision": None,
+                    "snapshotVerified": False,
+                    "snapshotVerificationReason": "EMPTY_SLOT",
+                    "oddsAgeMinutes": None,
+                    "isStale": False,
+                }
+            )
+            continue
+
+        opp = dict(top_three[idx])
+        opp["season"] = season
+        opp["week"] = week
+        decision = _decision_payload_from_opportunity(opp, published_at_utc)
+        linkage = decision.pop("_snapshotLinkage")
+        odds_age = linkage.get("snapshotAgeMinutes")
+        is_stale = odds_age is None or (threshold is not None and odds_age > float(threshold))
+        if is_stale:
+            stale_count += 1
+        if not linkage.get("verified"):
+            missing_linkage_count += 1
+
+        slot_label = "BET" if decision.get("qualificationStatus") == "QUALIFIED" else "WATCH"
+        slots.append(
+            {
+                "rank": rank,
+                "slotLabel": slot_label,
+                "qualificationStatus": decision.get("qualificationStatus"),
+                "decision": decision,
+                "snapshotVerified": bool(linkage.get("verified")),
+                "snapshotVerificationReason": linkage.get("reason"),
+                "oddsAgeMinutes": odds_age,
+                "isStale": is_stale,
+            }
+        )
+
+    return {
+        "publishedAtUTC": published_at_utc,
+        "season": season,
+        "week": week,
+        "maxOddsAgeMinutes": threshold,
+        "staleSlotCount": stale_count,
+        "missingSnapshotLinkageCount": missing_linkage_count,
+        "slots": slots,
+    }
+
+
+def publish_official_sia3_from_preview(preview: Dict[str, Any], *, override_stale: bool = False, override_missing_linkage: bool = False) -> Dict[str, Any]:
+    stale_count = int(preview.get("staleSlotCount") or 0)
+    missing_count = int(preview.get("missingSnapshotLinkageCount") or 0)
+    if stale_count > 0 and not override_stale:
+        raise ValueError("Stale odds detected; override required for official publication")
+    if missing_count > 0 and not override_missing_linkage:
+        raise ValueError("Missing odds snapshot linkage; override required for official publication")
+
+    slots_payload = []
+    for slot in preview.get("slots", []):
+        slots_payload.append(
+            {
+                "slotLabel": slot.get("slotLabel"),
+                "qualificationStatus": slot.get("qualificationStatus"),
+                "decision": slot.get("decision"),
+            }
+        )
+
+    return publish_sia3(
+        {
+            "publicationType": "SIA_3",
+            "publishedAtUTC": preview.get("publishedAtUTC") or _utc_now_iso(),
+            "season": int(preview["season"]),
+            "week": int(preview["week"]),
+            "isOfficial": True,
+            "officialCadence": settings.OFFICIAL_SIA3_CADENCE,
+            "slots": slots_payload,
+        }
+    )
+
+
 def publish_sia3(payload: Dict[str, Any]) -> Dict[str, Any]:
     _ensure_schema()
     publication_type = payload.get("publicationType") or "SIA_3"
@@ -931,6 +1267,8 @@ def get_admin_ledger_summary(limit: int = 200) -> Dict[str, Any]:
     con = _connect()
 
     decisions_recorded = int(con.execute("SELECT COUNT(*) AS n FROM decision_ledger").fetchone()["n"])
+    my_card_decisions = int(con.execute("SELECT COUNT(*) AS n FROM decision_ledger WHERE publication_type = 'MY_CARD'").fetchone()["n"])
+    sia3_decisions = int(con.execute("SELECT COUNT(*) AS n FROM decision_ledger WHERE publication_type = 'SIA_3'").fetchone()["n"])
     publications_total = int(con.execute("SELECT COUNT(*) AS n FROM sia3_publications").fetchone()["n"])
     official_publications = int(con.execute("SELECT COUNT(*) AS n FROM sia3_publications WHERE is_official = 1").fetchone()["n"])
     outcomes_captured = int(con.execute("SELECT COUNT(*) AS n FROM decision_outcomes").fetchone()["n"])
@@ -984,10 +1322,18 @@ def get_admin_ledger_summary(limit: int = 200) -> Dict[str, Any]:
         if not validate_decision_hash(drow["decision_id"]).get("valid"):
             invalid_hashes += 1
 
+    missing_snapshot_linkages = int(
+        con.execute(
+            "SELECT COUNT(*) AS n FROM decision_ledger WHERE source_snapshot_id IS NULL OR TRIM(source_snapshot_id) = ''"
+        ).fetchone()["n"]
+    )
+
     con.close()
 
     return {
         "decisionsRecorded": decisions_recorded,
+        "sia3DecisionsCaptured": sia3_decisions,
+        "myCardDecisionsCaptured": my_card_decisions,
         "officialSia3Publications": official_publications,
         "publicationsRecorded": publications_total,
         "latestPublication": None if latest_publication is None else {
@@ -1002,6 +1348,7 @@ def get_admin_ledger_summary(limit: int = 200) -> Dict[str, Any]:
         "closingLinesCaptured": closing_lines_captured,
         "missingOutcomes": missing_outcomes,
         "missingClosingLines": missing_closing_lines,
+        "missingOddsSnapshotLinkages": missing_snapshot_linkages,
         "auditRows": [
             {
                 "timestamp": r["published_at_utc"],
@@ -1019,6 +1366,27 @@ def get_admin_ledger_summary(limit: int = 200) -> Dict[str, Any]:
             for r in rows
         ],
     }
+
+
+def get_official_publication_for_week(season: int, week: int) -> Optional[Dict[str, Any]]:
+    _ensure_schema()
+    con = _connect()
+    row = con.execute(
+        """
+        SELECT publication_id
+        FROM sia3_publications
+        WHERE is_official = 1
+          AND season = ?
+          AND week = ?
+        ORDER BY published_at_utc DESC, id DESC
+        LIMIT 1
+        """,
+        [season, week],
+    ).fetchone()
+    con.close()
+    if row is None:
+        return None
+    return get_publication(row["publication_id"])
 
 
 def get_prospective_performance() -> Dict[str, Any]:
@@ -1083,4 +1451,93 @@ def get_prospective_performance() -> Dict[str, Any]:
             "2": by_rank[2],
             "3": by_rank[3],
         },
+    }
+
+
+def auto_append_outcomes_from_scores(
+    *,
+    fetch_scores_fn: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Append outcome rows for decisions that now have final scores.
+
+    This never updates decision rows; it only appends to decision_outcomes.
+    """
+    _ensure_schema()
+
+    if fetch_scores_fn is None:
+        def _default_fetch_scores(event_id: str) -> Optional[Dict[str, Any]]:
+            return None
+        fetch_scores_fn = _default_fetch_scores
+
+    con = _connect()
+    pending = con.execute(
+        """
+        SELECT d.*
+        FROM decision_ledger d
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM decision_outcomes o
+            WHERE o.decision_id = d.decision_id
+              AND o.bet_result IN ('WIN','LOSS','PUSH')
+        )
+        """
+    ).fetchall()
+    con.close()
+
+    appended = 0
+    still_pending = 0
+    for row in pending:
+        score = fetch_scores_fn(row["event_id"])
+        if not score:
+            still_pending += 1
+            continue
+
+        away = score.get("finalAwayScore")
+        home = score.get("finalHomeScore")
+        if away is None or home is None:
+            still_pending += 1
+            continue
+
+        market = str(row["market"] or "").lower()
+        side = str(row["side"] or "").lower()
+        point = _to_float(row["point"])
+        if point is None:
+            still_pending += 1
+            continue
+
+        result = None
+        if market in {"spread", "spreads"}:
+            margin = float(home) - float(away)
+            if side == "home":
+                ats = margin + point
+                result = "WIN" if ats > 0 else "LOSS" if ats < 0 else "PUSH"
+            elif side == "away":
+                ats = -margin - point
+                result = "WIN" if ats > 0 else "LOSS" if ats < 0 else "PUSH"
+        elif market in {"total", "totals"}:
+            total = float(home) + float(away)
+            if side == "over":
+                result = "WIN" if total > point else "LOSS" if total < point else "PUSH"
+            elif side == "under":
+                result = "WIN" if total < point else "LOSS" if total > point else "PUSH"
+
+        if result is None:
+            still_pending += 1
+            continue
+
+        append_outcome(
+            {
+                "decisionId": row["decision_id"],
+                "capturedAtUTC": _utc_now_iso(),
+                "betResult": result,
+                "finalAwayScore": int(away),
+                "finalHomeScore": int(home),
+            }
+        )
+        appended += 1
+
+    return {
+        "checked": len(pending),
+        "appended": appended,
+        "pending": still_pending,
     }

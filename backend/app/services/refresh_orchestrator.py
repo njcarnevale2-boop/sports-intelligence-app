@@ -121,6 +121,11 @@ _EMPTY_STATE: Dict[str, Any] = {
     "closingLinesMissing": 0,
     "closingCaptureErrors": 0,
     "lastClosingCaptureError": None,
+    # Ledger outcome append stats (updated each run)
+    "ledgerOutcomeChecked": 0,
+    "ledgerOutcomesAppended": 0,
+    "ledgerOutcomesStillPending": 0,
+    "lastLedgerOutcomeError": None,
     # Injury refresh stats (updated each run)
     "injuryPlayersUpdated": 0,
     "injuryTeamsUpdated": 0,
@@ -218,6 +223,22 @@ def _run_once() -> bool:
             closing_capture_error = str(exc)[:300]
             log.warning("Closing line capture step failed (non-fatal): %s", exc)
 
+        # Step 3b: append ledger outcomes for finished games (append-only).
+        ledger_outcomes: Dict[str, int] = {"checked": 0, "appended": 0, "pending": 0}
+        ledger_outcome_error: Optional[str] = None
+        try:
+            from app.services.decision_ledger import auto_append_outcomes_from_scores
+            ledger_outcomes = auto_append_outcomes_from_scores(fetch_scores_fn=_fetch_final_score_from_duckdb)
+            log.info(
+                "Ledger outcome append: checked=%d appended=%d pending=%d",
+                ledger_outcomes.get("checked", 0),
+                ledger_outcomes.get("appended", 0),
+                ledger_outcomes.get("pending", 0),
+            )
+        except Exception as exc:
+            ledger_outcome_error = str(exc)[:300]
+            log.warning("Ledger outcome append step failed (non-fatal): %s", exc)
+
         # Step 4: refresh performance metrics after CLV capture (non-fatal).
         try:
             from app.services.performance import get_performance_service
@@ -246,6 +267,10 @@ def _run_once() -> bool:
         state["closingLinesMissing"]         = clv_counts["missing"]
         state["closingCaptureErrors"]        = max(clv_counts["errors"], 1 if closing_capture_error else 0)
         state["lastClosingCaptureError"]     = closing_capture_error
+        state["ledgerOutcomeChecked"] = int(ledger_outcomes.get("checked", 0))
+        state["ledgerOutcomesAppended"] = int(ledger_outcomes.get("appended", 0))
+        state["ledgerOutcomesStillPending"] = int(ledger_outcomes.get("pending", 0))
+        state["lastLedgerOutcomeError"] = ledger_outcome_error
 
         # Step 5: refresh injury data (non-fatal – never blocks odds refresh)
         try:
@@ -327,6 +352,69 @@ def _read_quota_from_db() -> Optional[int]:
         ).fetchone()
         con.close()
         return int(row[0]) if row and row[0] is not None else None
+    except Exception:
+        return None
+
+
+def _fetch_final_score_from_duckdb(event_id: str) -> Optional[Dict[str, Any]]:
+    """Best-effort final score lookup for an event id from nfl_model DuckDB."""
+    try:
+        import duckdb  # type: ignore
+
+        db_path = _MODEL_ROOT / "database" / "nfl_model.duckdb"
+        if not db_path.exists():
+            return None
+
+        con = duckdb.connect(str(db_path), read_only=True)
+        tables = {r[0] for r in con.execute("SHOW TABLES").fetchall()}
+        if "schedules" not in tables:
+            con.close()
+            return None
+
+        # 1) direct game_id/event_id match
+        row = con.execute(
+            """
+            SELECT away_score, home_score
+            FROM schedules
+            WHERE game_id = ?
+              AND away_score IS NOT NULL
+              AND home_score IS NOT NULL
+            LIMIT 1
+            """,
+            [event_id],
+        ).fetchone()
+
+        if row is not None:
+            con.close()
+            return {"finalAwayScore": int(row[0]), "finalHomeScore": int(row[1])}
+
+        # 2) fallback parse for event pattern: YYYY_W_AWAY_HOME
+        parts = str(event_id).split("_")
+        if len(parts) >= 4:
+            season = int(parts[0])
+            week = int(parts[1])
+            away = parts[2]
+            home = parts[3]
+            row = con.execute(
+                """
+                SELECT away_score, home_score
+                FROM schedules
+                WHERE season = ?
+                  AND week = ?
+                  AND away_team = ?
+                  AND home_team = ?
+                  AND away_score IS NOT NULL
+                  AND home_score IS NOT NULL
+                LIMIT 1
+                """,
+                [season, week, away, home],
+            ).fetchone()
+            if row is not None:
+                con.close()
+                return {"finalAwayScore": int(row[0]), "finalHomeScore": int(row[1])}
+
+        con.close()
+        return None
     except Exception:
         return None
 
@@ -457,6 +545,10 @@ def trigger_now() -> Dict[str, Any]:
         "closingLinesMissing":         state.get("closingLinesMissing",         0),
         "closingCaptureErrors":        state.get("closingCaptureErrors",        0),
         "lastClosingCaptureError":     state.get("lastClosingCaptureError"),
+        "ledgerOutcomeChecked": state.get("ledgerOutcomeChecked", 0),
+        "ledgerOutcomesAppended": state.get("ledgerOutcomesAppended", 0),
+        "ledgerOutcomesStillPending": state.get("ledgerOutcomesStillPending", 0),
+        "lastLedgerOutcomeError": state.get("lastLedgerOutcomeError"),
     }
 
 
@@ -484,6 +576,10 @@ def get_refresh_status() -> Dict[str, Any]:
         "closingLinesMissing":         int(state.get("closingLinesMissing")         or 0),
         "closingCaptureErrors":        int(state.get("closingCaptureErrors")        or 0),
         "lastClosingCaptureError":     state.get("lastClosingCaptureError"),
+        "ledgerOutcomeChecked": int(state.get("ledgerOutcomeChecked") or 0),
+        "ledgerOutcomesAppended": int(state.get("ledgerOutcomesAppended") or 0),
+        "ledgerOutcomesStillPending": int(state.get("ledgerOutcomesStillPending") or 0),
+        "lastLedgerOutcomeError": state.get("lastLedgerOutcomeError"),
         "injuryPlayersUpdated": int(state.get("injuryPlayersUpdated") or 0),
         "injuryTeamsUpdated":   int(state.get("injuryTeamsUpdated")   or 0),
         "lastInjuryError":      state.get("lastInjuryError"),

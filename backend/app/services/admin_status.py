@@ -17,7 +17,8 @@ from app.services.social_history import get_query_usage_summary
 from app.services.social_intelligence import social_intelligence_service
 from app.services.social_sources import get_social_source_coverage_report
 from app.services.weather_history import get_weather_summary
-from app.services.decision_ledger import get_admin_ledger_summary
+from app.services.decision_ledger import get_admin_ledger_summary, get_official_publication_for_week
+from app.services.games import service as games_service
 from database.models import PerformanceRecord
 from database.session import SessionLocal
 
@@ -50,6 +51,19 @@ class AdminStatusService:
         social_usage = get_query_usage_summary()
         wx_summary = get_weather_summary()
         ledger_summary = get_admin_ledger_summary(limit=100)
+        official_this_week = None
+        official_published = False
+        try:
+            games_payload = games_service.list_games()
+            games = games_payload.get("games") or []
+            if games:
+                season = int(games[0].get("season"))
+                week = int(games[0].get("week"))
+                official_this_week = get_official_publication_for_week(season, week)
+                official_published = official_this_week is not None
+        except Exception:
+            official_this_week = None
+            official_published = False
         inj_provider_meta = provider_metadata.get("injury", {})
         wx_provider_meta  = provider_metadata.get("weather", {})
 
@@ -132,6 +146,11 @@ class AdminStatusService:
             "ledgerClosingLinesCaptured": ledger_summary.get("closingLinesCaptured", 0),
             "ledgerMissingOutcomes": ledger_summary.get("missingOutcomes", 0),
             "ledgerMissingClosingLines": ledger_summary.get("missingClosingLines", 0),
+            "ledgerMyCardDecisionsCaptured": ledger_summary.get("myCardDecisionsCaptured", 0),
+            "ledgerSia3DecisionsCaptured": ledger_summary.get("sia3DecisionsCaptured", 0),
+            "ledgerMissingOddsSnapshotLinkages": ledger_summary.get("missingOddsSnapshotLinkages", 0),
+            "officialSia3PublishedThisWeek": official_published,
+            "officialSia3PublicationTime": None if official_this_week is None else official_this_week.get("publishedAtUTC"),
             "ledgerAuditRows": ledger_summary.get("auditRows", []),
         }
 

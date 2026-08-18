@@ -92,6 +92,11 @@ type AdminStatus = {
   ledgerClosingLinesCaptured?: number;
   ledgerMissingOutcomes?: number;
   ledgerMissingClosingLines?: number;
+  ledgerMyCardDecisionsCaptured?: number;
+  ledgerSia3DecisionsCaptured?: number;
+  ledgerMissingOddsSnapshotLinkages?: number;
+  officialSia3PublishedThisWeek?: boolean;
+  officialSia3PublicationTime?: string | null;
   ledgerAuditRows?: Array<{
     timestamp?: string;
     week?: string;
@@ -105,6 +110,35 @@ type AdminStatus = {
     decisionHash?: string;
     result?: string | null;
   }>;
+};
+
+type OfficialPreviewSlot = {
+  rank: number;
+  slotLabel: string;
+  qualificationStatus?: string;
+  snapshotVerified: boolean;
+  snapshotVerificationReason?: string;
+  oddsAgeMinutes?: number | null;
+  isStale: boolean;
+  decision?: {
+    selection?: string;
+    point?: number | null;
+    price?: number | null;
+    sportsbook?: string | null;
+    siScore?: number | null;
+    currentEV?: number | null;
+  } | null;
+};
+
+type OfficialPreview = {
+  publishedAtUTC: string;
+  season: number;
+  week: number;
+  maxOddsAgeMinutes: number;
+  staleSlotCount: number;
+  missingSnapshotLinkageCount: number;
+  dataTimestamp?: string | null;
+  slots: OfficialPreviewSlot[];
 };
 
 type SocialCoverageTeam = {
@@ -140,6 +174,13 @@ export default function AdminPage() {
   const [socialCoverage, setSocialCoverage] = useState<SocialCoverageResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [adminToken, setAdminToken] = useState("");
+  const [officialPreview, setOfficialPreview] = useState<OfficialPreview | null>(null);
+  const [loadingPreview, setLoadingPreview] = useState(false);
+  const [publishingOfficial, setPublishingOfficial] = useState(false);
+  const [publishMessage, setPublishMessage] = useState<string>("");
+  const [overrideStale, setOverrideStale] = useState(false);
+  const [overrideMissingLinkage, setOverrideMissingLinkage] = useState(false);
 
   const loadStatus = async () => {
     try {
@@ -197,6 +238,61 @@ export default function AdminPage() {
       await loadStatus();
     } finally {
       setRefreshing(false);
+    }
+  };
+
+  const handlePreviewOfficial = async () => {
+    if (!adminToken.trim()) {
+      setPublishMessage("Admin token required.");
+      return;
+    }
+    setPublishMessage("");
+    setLoadingPreview(true);
+    try {
+      const preview = await fetchJson<OfficialPreview>("/api/admin/ledger/official-sia3/preview", {
+        headers: {
+          "x-admin-token": adminToken.trim(),
+        },
+      });
+      setOfficialPreview(preview);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "Unable to load official preview";
+      setPublishMessage(msg);
+      setOfficialPreview(null);
+    } finally {
+      setLoadingPreview(false);
+    }
+  };
+
+  const handlePublishOfficial = async () => {
+    if (!adminToken.trim()) {
+      setPublishMessage("Admin token required.");
+      return;
+    }
+    setPublishMessage("");
+    setPublishingOfficial(true);
+    try {
+      const result = await fetchJson<{ publication: { publicationId: string } }>(
+        "/api/admin/ledger/official-sia3/publish",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-admin-token": adminToken.trim(),
+          },
+          body: JSON.stringify({
+            overrideStaleOdds: overrideStale,
+            overrideMissingSnapshotLinkage: overrideMissingLinkage,
+          }),
+        }
+      );
+      setPublishMessage(`Official SIA 3 published: ${result.publication.publicationId}`);
+      await Promise.all([loadStatus(), handlePreviewOfficial()]);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "Publish failed";
+      setPublishMessage(msg);
+    } finally {
+      setPublishingOfficial(false);
     }
   };
 
@@ -424,6 +520,13 @@ export default function AdminPage() {
                   <p className="mt-1 font-medium text-white">{status.ledgerOfficialPublications ?? 0}</p>
                 </div>
                 <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Official Published This Week</p>
+                  <p className={`mt-1 font-medium ${status.officialSia3PublishedThisWeek ? "text-emerald-400" : "text-amber-400"}`}>
+                    {status.officialSia3PublishedThisWeek ? "YES" : "NO"}
+                  </p>
+                  <p className="text-[11px] text-zinc-500">{status.officialSia3PublicationTime ? new Date(status.officialSia3PublicationTime).toLocaleString() : "n/a"}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
                   <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Outcomes Captured</p>
                   <p className="mt-1 font-medium text-emerald-400">{status.ledgerOutcomesCaptured ?? 0}</p>
                 </div>
@@ -439,6 +542,18 @@ export default function AdminPage() {
                   <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Missing Closing Lines</p>
                   <p className="mt-1 font-medium text-amber-400">{status.ledgerMissingClosingLines ?? 0}</p>
                 </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">My Card Decisions Captured</p>
+                  <p className="mt-1 font-medium text-white">{status.ledgerMyCardDecisionsCaptured ?? 0}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">SIA 3 Decisions Captured</p>
+                  <p className="mt-1 font-medium text-white">{status.ledgerSia3DecisionsCaptured ?? 0}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm">
+                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Missing Snapshot Linkage</p>
+                  <p className="mt-1 font-medium text-amber-400">{status.ledgerMissingOddsSnapshotLinkages ?? 0}</p>
+                </div>
                 <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm sm:col-span-2">
                   <p className="text-zinc-500 text-[10px] uppercase tracking-widest">Ledger Integrity</p>
                   <p className={`mt-1 font-medium ${status.ledgerIntegrity?.valid ? "text-emerald-400" : "text-amber-400"}`}>
@@ -446,6 +561,81 @@ export default function AdminPage() {
                   </p>
                   <p className="text-[11px] text-zinc-500">Invalid hashes: {status.ledgerIntegrity?.invalidHashCount ?? 0}</p>
                 </div>
+              </div>
+
+              <div className="mt-6 rounded-2xl border border-white/10 bg-black/20 p-4">
+                <h3 className="text-sm font-semibold text-white">Publish Official SIA 3</h3>
+                <p className="mt-1 text-xs text-zinc-500">Server-side UTC timestamp is used at publish time. This action creates immutable official weekly records.</p>
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  <input
+                    type="password"
+                    value={adminToken}
+                    onChange={(e) => setAdminToken(e.target.value)}
+                    placeholder="Admin API token"
+                    className="rounded-xl border border-white/10 bg-[#05070A] px-3 py-2 text-sm text-white outline-none"
+                  />
+                  <div className="flex gap-2">
+                    <Button onClick={handlePreviewOfficial} disabled={loadingPreview} className="h-10 bg-white px-4 text-black hover:bg-zinc-200">
+                      {loadingPreview ? "Loading..." : "Preview Official SIA 3"}
+                    </Button>
+                    <Button onClick={handlePublishOfficial} disabled={publishingOfficial || !officialPreview} variant="outline" className="h-10 border-emerald-400/30 bg-emerald-400/10 px-4 text-emerald-300 hover:bg-emerald-400/15">
+                      {publishingOfficial ? "Publishing..." : "Publish Official SIA 3"}
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="mt-3 flex flex-wrap gap-3 text-xs text-zinc-400">
+                  <label className="inline-flex items-center gap-2">
+                    <input type="checkbox" checked={overrideStale} onChange={(e) => setOverrideStale(e.target.checked)} />
+                    Override stale odds block
+                  </label>
+                  <label className="inline-flex items-center gap-2">
+                    <input type="checkbox" checked={overrideMissingLinkage} onChange={(e) => setOverrideMissingLinkage(e.target.checked)} />
+                    Override missing snapshot linkage block
+                  </label>
+                </div>
+
+                {publishMessage && <p className="mt-2 text-xs text-amber-400">{publishMessage}</p>}
+
+                {officialPreview && (
+                  <div className="mt-4 overflow-x-auto rounded-xl border border-white/10">
+                    <table className="min-w-full divide-y divide-white/10 text-left text-xs">
+                      <thead className="bg-black/30 text-zinc-400 uppercase tracking-widest">
+                        <tr>
+                          <th className="px-3 py-2">Week</th>
+                          <th className="px-3 py-2">Rank</th>
+                          <th className="px-3 py-2">Selection</th>
+                          <th className="px-3 py-2">Line</th>
+                          <th className="px-3 py-2">Price</th>
+                          <th className="px-3 py-2">Sportsbook</th>
+                          <th className="px-3 py-2">SI Score</th>
+                          <th className="px-3 py-2">EV</th>
+                          <th className="px-3 py-2">Data Timestamp</th>
+                          <th className="px-3 py-2">Snapshot</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/5 text-zinc-200">
+                        {officialPreview.slots.map((slot) => (
+                          <tr key={`official-slot-${slot.rank}`}>
+                            <td className="px-3 py-2">{officialPreview.week}</td>
+                            <td className="px-3 py-2">#{slot.rank}</td>
+                            <td className="px-3 py-2">{slot.decision?.selection ?? slot.slotLabel}</td>
+                            <td className="px-3 py-2">{slot.decision?.point ?? "-"}</td>
+                            <td className="px-3 py-2">{slot.decision?.price ?? "-"}</td>
+                            <td className="px-3 py-2">{slot.decision?.sportsbook ?? "-"}</td>
+                            <td className="px-3 py-2">{slot.decision?.siScore ?? "-"}</td>
+                            <td className="px-3 py-2">{slot.decision?.currentEV ?? "-"}</td>
+                            <td className="px-3 py-2">{officialPreview.dataTimestamp ? new Date(officialPreview.dataTimestamp).toLocaleString() : "n/a"}</td>
+                            <td className={`px-3 py-2 ${slot.snapshotVerified ? "text-emerald-400" : "text-amber-400"}`}>
+                              {slot.snapshotVerified ? "VERIFIED" : slot.snapshotVerificationReason ?? "MISSING"}
+                              {slot.oddsAgeMinutes != null ? ` (${slot.oddsAgeMinutes.toFixed(1)}m)` : ""}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
 
               <div className="mt-6 overflow-x-auto rounded-2xl border border-white/10">
