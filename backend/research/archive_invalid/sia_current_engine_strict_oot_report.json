@@ -1,0 +1,1003 @@
+{
+  "methodology": {
+    "objective": "strict out-of-time validation of current production empirical residual spread engine",
+    "no_lookahead": "week-by-week walk-forward; each test week uses only residuals from prior weeks",
+    "min_residual_sample": 200,
+    "eligible_seasons": [
+      2022,
+      2023,
+      2024,
+      2025
+    ],
+    "production_modified": false,
+    "config_touched": false,
+    "production_ranking_definition": "proxy from historical production validation file using production_rank_score=edge from validation_spread_bets"
+  },
+  "sample": {
+    "total_rows": 1139,
+    "eligible_rows": 931,
+    "warmup_ineligible_rows": 208,
+    "eligible_nonpush_scored": 917,
+    "weeks_total": 88,
+    "weeks_eligible": 74,
+    "weeks_warmup": 14
+  },
+  "quality": {
+    "current_engine_brier": 0.22089308764102195,
+    "market_brier": 0.24947499034161655,
+    "current_engine_logloss": 0.6286171160884058,
+    "market_logloss": 0.6920966184697712,
+    "beats_market_brier": true,
+    "beats_market_logloss": true
+  },
+  "calibration_table": [
+    {
+      "bucket": "50-55",
+      "N": 146,
+      "avg_predicted": 0.5210588299355443,
+      "actual_rate": 0.4178082191780822,
+      "gap_pp": -10.325061075746211
+    },
+    {
+      "bucket": "55-60",
+      "N": 96,
+      "avg_predicted": 0.573948880903214,
+      "actual_rate": 0.46875,
+      "gap_pp": -10.519888090321405
+    },
+    {
+      "bucket": "60-65",
+      "N": 95,
+      "avg_predicted": 0.6278490037502007,
+      "actual_rate": 0.5263157894736842,
+      "gap_pp": -10.153321427651651
+    },
+    {
+      "bucket": "65-70",
+      "N": 59,
+      "avg_predicted": 0.673895323331614,
+      "actual_rate": 0.4745762711864407,
+      "gap_pp": -19.931905214517325
+    },
+    {
+      "bucket": "70-75",
+      "N": 61,
+      "avg_predicted": 0.7234701995220613,
+      "actual_rate": 0.6065573770491803,
+      "gap_pp": -11.691282247288093
+    },
+    {
+      "bucket": "75-80",
+      "N": 47,
+      "avg_predicted": 0.7744702949570845,
+      "actual_rate": 0.6382978723404256,
+      "gap_pp": -13.617242261665897
+    },
+    {
+      "bucket": "80+",
+      "N": 123,
+      "avg_predicted": 0.8783085394130902,
+      "actual_rate": 0.8292682926829268,
+      "gap_pp": -4.904024673016338
+    }
+  ],
+  "extreme_probabilities": {
+    ">=70": {
+      "N": 231,
+      "avg_prob": 0.8162932310893454,
+      "actual_rate": 0.7316017316017316,
+      "gap_pp": -8.469149948761379
+    },
+    ">=75": {
+      "N": 170,
+      "avg_prob": 0.8496003188870179,
+      "actual_rate": 0.7764705882352941,
+      "gap_pp": -7.312973065172379
+    },
+    ">=80": {
+      "N": 123,
+      "avg_prob": 0.8783085394130902,
+      "actual_rate": 0.8292682926829268,
+      "gap_pp": -4.904024673016338
+    }
+  },
+  "edge_bands": [
+    {
+      "band": "0-2pp",
+      "N": 61,
+      "win_rate": 0.4,
+      "push_rate": 0.01639344262295082,
+      "roi": -0.2330442955944001,
+      "avg_modeled_probability": 0.5081279724353299,
+      "avg_modeled_ev": -0.01618247142059173
+    },
+    {
+      "band": "2-5pp",
+      "N": 83,
+      "win_rate": 0.4146341463414634,
+      "push_rate": 0.012048192771084338,
+      "roi": -0.2038127560632616,
+      "avg_modeled_probability": 0.5328106920312916,
+      "avg_modeled_ev": 0.03881752326535349
+    },
+    {
+      "band": "5-8pp",
+      "N": 56,
+      "win_rate": 0.5454545454545454,
+      "push_rate": 0.017857142857142856,
+      "roi": 0.05280747403667496,
+      "avg_modeled_probability": 0.5627301688750108,
+      "avg_modeled_ev": 0.10138072055672502
+    },
+    {
+      "band": "8-10pp",
+      "N": 40,
+      "win_rate": 0.42105263157894735,
+      "push_rate": 0.05,
+      "roi": -0.18916162673145442,
+      "avg_modeled_probability": 0.5899735174084981,
+      "avg_modeled_ev": 0.14652837016889353
+    },
+    {
+      "band": "10-15pp",
+      "N": 85,
+      "win_rate": 0.5121951219512195,
+      "push_rate": 0.03529411764705882,
+      "roi": -0.015971542869467992,
+      "avg_modeled_probability": 0.6247632930743267,
+      "avg_modeled_ev": 0.21100226208162678
+    },
+    {
+      "band": "15-20pp",
+      "N": 78,
+      "win_rate": 0.5128205128205128,
+      "push_rate": 0.0,
+      "roi": -0.012073728593556883,
+      "avg_modeled_probability": 0.6718016832546859,
+      "avg_modeled_ev": 0.30590043392659855
+    },
+    {
+      "band": "20pp+",
+      "N": 226,
+      "win_rate": 0.7288888888888889,
+      "push_rate": 0.004424778761061947,
+      "roi": 0.389276062309636,
+      "avg_modeled_probability": 0.8187610343254151,
+      "avg_modeled_ev": 0.5711732972555565
+    }
+  ],
+  "ev_bands": [
+    {
+      "band": "0-2%",
+      "N": 29,
+      "win_rate": 0.4642857142857143,
+      "push_rate": 0.034482758620689655,
+      "roi": -0.10100392446972885,
+      "avg_modeled_probability": 0.5155686270786102,
+      "avg_modeled_ev": 0.00965959515083571
+    },
+    {
+      "band": "2-5%",
+      "N": 36,
+      "win_rate": 0.45714285714285713,
+      "push_rate": 0.027777777777777776,
+      "roi": -0.12730911677438492,
+      "avg_modeled_probability": 0.5358444401005956,
+      "avg_modeled_ev": 0.03388712943527669
+    },
+    {
+      "band": "5-10%",
+      "N": 53,
+      "win_rate": 0.4716981132075472,
+      "push_rate": 0.0,
+      "roi": -0.09691299225647036,
+      "avg_modeled_probability": 0.5511777789574132,
+      "avg_modeled_ev": 0.07730173026234093
+    },
+    {
+      "band": "10-15%",
+      "N": 53,
+      "win_rate": 0.45098039215686275,
+      "push_rate": 0.03773584905660377,
+      "roi": -0.1252354833749721,
+      "avg_modeled_probability": 0.5765722588705371,
+      "avg_modeled_ev": 0.12813862788671238
+    },
+    {
+      "band": "15-20%",
+      "N": 46,
+      "win_rate": 0.5454545454545454,
+      "push_rate": 0.043478260869565216,
+      "roi": 0.03816451684779594,
+      "avg_modeled_probability": 0.602488603280311,
+      "avg_modeled_ev": 0.17350462032849
+    },
+    {
+      "band": "20%+",
+      "N": 359,
+      "win_rate": 0.6432584269662921,
+      "push_rate": 0.008356545961002786,
+      "roi": 0.22936958273331012,
+      "avg_modeled_probability": 0.7580029733053925,
+      "avg_modeled_ev": 0.46123570822479215
+    }
+  ],
+  "rankings": {
+    "production_ranking": {
+      "top1": {
+        "weeks": 74,
+        "weeks_with_picks": 74,
+        "bets": 74,
+        "wins": 36,
+        "losses": 38,
+        "pushes": 0,
+        "win_rate_ex_push": 0.4864864864864865,
+        "roi": -0.07013823949171963,
+        "by_season": [
+          {
+            "season": 2022,
+            "bets": 8,
+            "wins": 4,
+            "losses": 4,
+            "pushes": 0,
+            "roi": -0.02193984831706622
+          },
+          {
+            "season": 2023,
+            "bets": 22,
+            "wins": 13,
+            "losses": 9,
+            "pushes": 0,
+            "roi": 0.13879969802429698
+          },
+          {
+            "season": 2024,
+            "bets": 22,
+            "wins": 8,
+            "losses": 14,
+            "pushes": 0,
+            "roi": -0.30836087074782054
+          },
+          {
+            "season": 2025,
+            "bets": 22,
+            "wins": 11,
+            "losses": 11,
+            "pushes": 0,
+            "roi": -0.05838023345150933
+          }
+        ],
+        "by_rank": [
+          {
+            "pick_rank": 1,
+            "bets": 74,
+            "wins": 36,
+            "losses": 38,
+            "pushes": 0,
+            "roi": -0.07013823949171966
+          }
+        ]
+      },
+      "top2_max": {
+        "weeks": 74,
+        "weeks_with_picks": 74,
+        "bets": 144,
+        "wins": 64,
+        "losses": 78,
+        "pushes": 2,
+        "win_rate_ex_push": 0.4507042253521127,
+        "roi": -0.13343462137584589,
+        "by_season": [
+          {
+            "season": 2022,
+            "bets": 15,
+            "wins": 9,
+            "losses": 6,
+            "pushes": 0,
+            "roi": 0.16622316644361856
+          },
+          {
+            "season": 2023,
+            "bets": 43,
+            "wins": 20,
+            "losses": 22,
+            "pushes": 1,
+            "roi": -0.08026190280219898
+          },
+          {
+            "season": 2024,
+            "bets": 43,
+            "wins": 18,
+            "losses": 25,
+            "pushes": 0,
+            "roi": -0.2014923264344868
+          },
+          {
+            "season": 2025,
+            "bets": 43,
+            "wins": 17,
+            "losses": 25,
+            "pushes": 1,
+            "roi": -0.2230814213395023
+          }
+        ],
+        "by_rank": [
+          {
+            "pick_rank": 1,
+            "bets": 74,
+            "wins": 36,
+            "losses": 38,
+            "pushes": 0,
+            "roi": -0.07013823949171966
+          },
+          {
+            "pick_rank": 2,
+            "bets": 70,
+            "wins": 28,
+            "losses": 40,
+            "pushes": 2,
+            "roi": -0.20034793936763648
+          }
+        ]
+      },
+      "top3_max": {
+        "weeks": 74,
+        "weeks_with_picks": 74,
+        "bets": 210,
+        "wins": 94,
+        "losses": 113,
+        "pushes": 3,
+        "win_rate_ex_push": 0.45410628019323673,
+        "roi": -0.12438244118570026,
+        "by_season": [
+          {
+            "season": 2022,
+            "bets": 21,
+            "wins": 10,
+            "losses": 11,
+            "pushes": 0,
+            "roi": -0.07486062209968498
+          },
+          {
+            "season": 2023,
+            "bets": 63,
+            "wins": 28,
+            "losses": 34,
+            "pushes": 1,
+            "roi": -0.12533987918106781
+          },
+          {
+            "season": 2024,
+            "bets": 63,
+            "wins": 28,
+            "losses": 34,
+            "pushes": 1,
+            "roi": -0.1344591760863649
+          },
+          {
+            "season": 2025,
+            "bets": 63,
+            "wins": 28,
+            "losses": 34,
+            "pushes": 1,
+            "roi": -0.12985554131833982
+          }
+        ],
+        "by_rank": [
+          {
+            "pick_rank": 1,
+            "bets": 74,
+            "wins": 36,
+            "losses": 38,
+            "pushes": 0,
+            "roi": -0.07013823949171966
+          },
+          {
+            "pick_rank": 2,
+            "bets": 70,
+            "wins": 28,
+            "losses": 40,
+            "pushes": 2,
+            "roi": -0.20034793936763648
+          },
+          {
+            "pick_rank": 3,
+            "bets": 66,
+            "wins": 30,
+            "losses": 35,
+            "pushes": 1,
+            "roi": -0.10463222986174613
+          }
+        ]
+      }
+    },
+    "current_ev_ranking": {
+      "top1": {
+        "weeks": 74,
+        "weeks_with_picks": 74,
+        "bets": 74,
+        "wins": 63,
+        "losses": 11,
+        "pushes": 0,
+        "win_rate_ex_push": 0.8513513513513513,
+        "roi": 0.6262617077027091,
+        "by_season": [
+          {
+            "season": 2022,
+            "bets": 8,
+            "wins": 5,
+            "losses": 3,
+            "pushes": 0,
+            "roi": 0.24473318420079154
+          },
+          {
+            "season": 2023,
+            "bets": 22,
+            "wins": 19,
+            "losses": 3,
+            "pushes": 0,
+            "roi": 0.6516219533105043
+          },
+          {
+            "season": 2024,
+            "bets": 22,
+            "wins": 18,
+            "losses": 4,
+            "pushes": 0,
+            "roi": 0.5600980930668744
+          },
+          {
+            "season": 2025,
+            "bets": 22,
+            "wins": 21,
+            "losses": 1,
+            "pushes": 0,
+            "roi": 0.8058027216405367
+          }
+        ],
+        "by_rank": [
+          {
+            "pick_rank": 1,
+            "bets": 74,
+            "wins": 63,
+            "losses": 11,
+            "pushes": 0,
+            "roi": 0.6262617077027091
+          }
+        ]
+      },
+      "top2_max": {
+        "weeks": 74,
+        "weeks_with_picks": 74,
+        "bets": 144,
+        "wins": 109,
+        "losses": 34,
+        "pushes": 1,
+        "win_rate_ex_push": 0.7622377622377622,
+        "roi": 0.4538133496720318,
+        "by_season": [
+          {
+            "season": 2022,
+            "bets": 15,
+            "wins": 11,
+            "losses": 4,
+            "pushes": 0,
+            "roi": 0.4465333396485186
+          },
+          {
+            "season": 2023,
+            "bets": 43,
+            "wins": 32,
+            "losses": 11,
+            "pushes": 0,
+            "roi": 0.42241553492519507
+          },
+          {
+            "season": 2024,
+            "bets": 43,
+            "wins": 33,
+            "losses": 9,
+            "pushes": 1,
+            "roi": 0.4906432336810565
+          },
+          {
+            "season": 2025,
+            "bets": 43,
+            "wins": 33,
+            "losses": 10,
+            "pushes": 0,
+            "roi": 0.45092081879013923
+          }
+        ],
+        "by_rank": [
+          {
+            "pick_rank": 1,
+            "bets": 74,
+            "wins": 63,
+            "losses": 11,
+            "pushes": 0,
+            "roi": 0.6262617077027091
+          },
+          {
+            "pick_rank": 2,
+            "bets": 70,
+            "wins": 46,
+            "losses": 23,
+            "pushes": 1,
+            "roi": 0.2715107997538873
+          }
+        ]
+      },
+      "top3_max": {
+        "weeks": 74,
+        "weeks_with_picks": 74,
+        "bets": 210,
+        "wins": 144,
+        "losses": 65,
+        "pushes": 1,
+        "win_rate_ex_push": 0.6889952153110048,
+        "roi": 0.31418653105326155,
+        "by_season": [
+          {
+            "season": 2022,
+            "bets": 21,
+            "wins": 15,
+            "losses": 6,
+            "pushes": 0,
+            "roi": 0.4015546571411295
+          },
+          {
+            "season": 2023,
+            "bets": 63,
+            "wins": 41,
+            "losses": 22,
+            "pushes": 0,
+            "roi": 0.24123706958217234
+          },
+          {
+            "season": 2024,
+            "bets": 63,
+            "wins": 46,
+            "losses": 16,
+            "pushes": 1,
+            "roi": 0.40880839167466515
+          },
+          {
+            "season": 2025,
+            "bets": 63,
+            "wins": 42,
+            "losses": 21,
+            "pushes": 0,
+            "roi": 0.2633914232069911
+          }
+        ],
+        "by_rank": [
+          {
+            "pick_rank": 1,
+            "bets": 74,
+            "wins": 63,
+            "losses": 11,
+            "pushes": 0,
+            "roi": 0.6262617077027091
+          },
+          {
+            "pick_rank": 2,
+            "bets": 70,
+            "wins": 46,
+            "losses": 23,
+            "pushes": 1,
+            "roi": 0.2715107997538873
+          },
+          {
+            "pick_rank": 3,
+            "bets": 66,
+            "wins": 35,
+            "losses": 31,
+            "pushes": 0,
+            "roi": 0.009546199521399096
+          }
+        ]
+      }
+    },
+    "current_edge_ranking": {
+      "top1": {
+        "weeks": 74,
+        "weeks_with_picks": 74,
+        "bets": 74,
+        "wins": 64,
+        "losses": 10,
+        "pushes": 0,
+        "win_rate_ex_push": 0.8648648648648649,
+        "roi": 0.6528951372487599,
+        "by_season": [
+          {
+            "season": 2022,
+            "bets": 8,
+            "wins": 6,
+            "losses": 2,
+            "pushes": 0,
+            "roi": 0.4910924075017624
+          },
+          {
+            "season": 2023,
+            "bets": 22,
+            "wins": 19,
+            "losses": 3,
+            "pushes": 0,
+            "roi": 0.6516219533105043
+          },
+          {
+            "season": 2024,
+            "bets": 22,
+            "wins": 18,
+            "losses": 4,
+            "pushes": 0,
+            "roi": 0.5600980930668744
+          },
+          {
+            "season": 2025,
+            "bets": 22,
+            "wins": 21,
+            "losses": 1,
+            "pushes": 0,
+            "roi": 0.8058027216405367
+          }
+        ],
+        "by_rank": [
+          {
+            "pick_rank": 1,
+            "bets": 74,
+            "wins": 64,
+            "losses": 10,
+            "pushes": 0,
+            "roi": 0.65289513724876
+          }
+        ]
+      },
+      "top2_max": {
+        "weeks": 74,
+        "weeks_with_picks": 74,
+        "bets": 144,
+        "wins": 111,
+        "losses": 32,
+        "pushes": 1,
+        "win_rate_ex_push": 0.7762237762237763,
+        "roi": 0.4777963722960036,
+        "by_season": [
+          {
+            "season": 2022,
+            "bets": 15,
+            "wins": 11,
+            "losses": 4,
+            "pushes": 0,
+            "roi": 0.44322615010603494
+          },
+          {
+            "season": 2023,
+            "bets": 43,
+            "wins": 33,
+            "losses": 10,
+            "pushes": 0,
+            "roi": 0.4620178268025122
+          },
+          {
+            "season": 2024,
+            "bets": 43,
+            "wins": 34,
+            "losses": 8,
+            "pushes": 1,
+            "roi": 0.5325098511290693
+          },
+          {
+            "season": 2025,
+            "bets": 43,
+            "wins": 33,
+            "losses": 10,
+            "pushes": 0,
+            "roi": 0.45092081879013923
+          }
+        ],
+        "by_rank": [
+          {
+            "pick_rank": 1,
+            "bets": 74,
+            "wins": 64,
+            "losses": 10,
+            "pushes": 0,
+            "roi": 0.65289513724876
+          },
+          {
+            "pick_rank": 2,
+            "bets": 70,
+            "wins": 47,
+            "losses": 22,
+            "pushes": 1,
+            "roi": 0.2926919636316611
+          }
+        ]
+      },
+      "top3_max": {
+        "weeks": 74,
+        "weeks_with_picks": 74,
+        "bets": 210,
+        "wins": 146,
+        "losses": 63,
+        "pushes": 1,
+        "win_rate_ex_push": 0.6985645933014354,
+        "roi": 0.3315023243007319,
+        "by_season": [
+          {
+            "season": 2022,
+            "bets": 21,
+            "wins": 15,
+            "losses": 6,
+            "pushes": 0,
+            "roi": 0.4015546571411295
+          },
+          {
+            "season": 2023,
+            "bets": 63,
+            "wins": 42,
+            "losses": 21,
+            "pushes": 0,
+            "roi": 0.269650455138415
+          },
+          {
+            "season": 2024,
+            "bets": 63,
+            "wins": 47,
+            "losses": 15,
+            "pushes": 1,
+            "roi": 0.4384840300459557
+          },
+          {
+            "season": 2025,
+            "bets": 63,
+            "wins": 42,
+            "losses": 21,
+            "pushes": 0,
+            "roi": 0.26302171010435876
+          }
+        ],
+        "by_rank": [
+          {
+            "pick_rank": 1,
+            "bets": 74,
+            "wins": 64,
+            "losses": 10,
+            "pushes": 0,
+            "roi": 0.65289513724876
+          },
+          {
+            "pick_rank": 2,
+            "bets": 70,
+            "wins": 47,
+            "losses": 22,
+            "pushes": 1,
+            "roi": 0.2926919636316611
+          },
+          {
+            "pick_rank": 3,
+            "bets": 66,
+            "wins": 35,
+            "losses": 31,
+            "pushes": 0,
+            "roi": 0.012315310492866114
+          }
+        ]
+      }
+    }
+  },
+  "uncertainty": {
+    "production_ranking": {
+      "top1": {
+        "roi_ci_95": [
+          -0.2788959122040324,
+          0.15838606737873415
+        ],
+        "win_rate_ci_95": [
+          0.3783783783783784,
+          0.6081081081081081
+        ],
+        "replicates": 3000
+      },
+      "top2_max": {
+        "roi_ci_95": [
+          -0.27955765375421254,
+          0.019378325897790795
+        ],
+        "win_rate_ci_95": [
+          0.37414843635295847,
+          0.5314685314685315
+        ],
+        "replicates": 3000
+      },
+      "top3_max": {
+        "roi_ci_95": [
+          -0.2510132178579603,
+          -0.00020843337759144948
+        ],
+        "win_rate_ci_95": [
+          0.3878432008227876,
+          0.5194174757281553
+        ],
+        "replicates": 3000
+      },
+      "rank_1": {
+        "roi_ci_95": [
+          -0.2788959122040324,
+          0.15838606737873415
+        ],
+        "win_rate_ci_95": [
+          0.3783783783783784,
+          0.6081081081081081
+        ],
+        "replicates": 3000
+      },
+      "rank_2": {
+        "roi_ci_95": [
+          -0.4169028701039558,
+          0.015569555606490043
+        ],
+        "win_rate_ci_95": [
+          0.29850746268656714,
+          0.5294117647058824
+        ],
+        "replicates": 3000
+      },
+      "rank_3": {
+        "roi_ci_95": [
+          -0.32939503588529007,
+          0.13057884350518925
+        ],
+        "win_rate_ci_95": [
+          0.34375,
+          0.5846153846153846
+        ],
+        "replicates": 3000
+      }
+    },
+    "current_ev_ranking": {
+      "top1": {
+        "roi_ci_95": [
+          0.4638477793625262,
+          0.7640523693877685
+        ],
+        "win_rate_ci_95": [
+          0.7702702702702703,
+          0.918918918918919
+        ],
+        "replicates": 3000
+      },
+      "top2_max": {
+        "roi_ci_95": [
+          0.32608372993892815,
+          0.5734121201229373
+        ],
+        "win_rate_ci_95": [
+          0.6944444444444444,
+          0.8252051767676769
+        ],
+        "replicates": 3000
+      },
+      "top3_max": {
+        "roi_ci_95": [
+          0.1957588766598456,
+          0.4259966928224205
+        ],
+        "win_rate_ci_95": [
+          0.627344384761217,
+          0.7476646231672811
+        ],
+        "replicates": 3000
+      },
+      "rank_1": {
+        "roi_ci_95": [
+          0.4638477793625262,
+          0.7640523693877685
+        ],
+        "win_rate_ci_95": [
+          0.7702702702702703,
+          0.918918918918919
+        ],
+        "replicates": 3000
+      },
+      "rank_2": {
+        "roi_ci_95": [
+          0.04904641122986315,
+          0.4729345479966543
+        ],
+        "win_rate_ci_95": [
+          0.5507246376811594,
+          0.7714285714285715
+        ],
+        "replicates": 3000
+      },
+      "rank_3": {
+        "roi_ci_95": [
+          -0.22339651593265097,
+          0.2413937085573527
+        ],
+        "win_rate_ci_95": [
+          0.4090909090909091,
+          0.6515151515151515
+        ],
+        "replicates": 3000
+      }
+    },
+    "current_edge_ranking": {
+      "top1": {
+        "roi_ci_95": [
+          0.4933611045090559,
+          0.7905183328138928
+        ],
+        "win_rate_ci_95": [
+          0.7837837837837838,
+          0.9324324324324325
+        ],
+        "replicates": 3000
+      },
+      "top2_max": {
+        "roi_ci_95": [
+          0.35139075171561623,
+          0.5966139425142823
+        ],
+        "win_rate_ci_95": [
+          0.7092198581560284,
+          0.8380564857677535
+        ],
+        "replicates": 3000
+      },
+      "top3_max": {
+        "roi_ci_95": [
+          0.21265277456895543,
+          0.44815676996169196
+        ],
+        "win_rate_ci_95": [
+          0.6363636363636364,
+          0.7596153846153846
+        ],
+        "replicates": 3000
+      },
+      "rank_1": {
+        "roi_ci_95": [
+          0.4933611045090559,
+          0.7905183328138928
+        ],
+        "win_rate_ci_95": [
+          0.7837837837837838,
+          0.9324324324324325
+        ],
+        "replicates": 3000
+      },
+      "rank_2": {
+        "roi_ci_95": [
+          0.07744463244153485,
+          0.4891764433363133
+        ],
+        "win_rate_ci_95": [
+          0.5652173913043478,
+          0.7857142857142857
+        ],
+        "replicates": 3000
+      },
+      "rank_3": {
+        "roi_ci_95": [
+          -0.21828560780522532,
+          0.24405603227764747
+        ],
+        "win_rate_ci_95": [
+          0.4090909090909091,
+          0.6515151515151515
+        ],
+        "replicates": 3000
+      }
+    }
+  },
+  "notes": [
+    "This study is research-only and does not modify any production threshold, ranking, API, or UI logic.",
+    "Historical file lacks direct per-row Sports Intelligence Score; production ranking is represented by the available historical production rank proxy score in validation_spread_bets."
+  ],
+  "validity_status": "INVALID",
+  "invalid_reason": "SPREAD SIGN BUG"
+}

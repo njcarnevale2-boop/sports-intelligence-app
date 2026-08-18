@@ -1,0 +1,944 @@
+{
+  "inputs": {
+    "walkforward_path": "/Users/nickcarnevale/Downloads/NFL_Analytics_OS_v1_9/outputs/walkforward_multiseason_predictions.csv",
+    "validation_spread_path": "/Users/nickcarnevale/Downloads/NFL_Analytics_OS_v1_9/outputs/validation_spread_bets.csv",
+    "team_power_ratings_latest_path": "/Users/nickcarnevale/Downloads/NFL_Analytics_OS_v1_9/outputs/team_power_ratings_latest.csv",
+    "uses_live_team_power_file_in_audit": false
+  },
+  "sample": {
+    "candidate_rows_total": 2278,
+    "candidate_rows_eligible": 1862,
+    "production_side_rows_eligible": 931,
+    "games_eligible": 931,
+    "weeks_eligible": 74
+  },
+  "feature_safety": {
+    "historical_model_features_as_of_time_safe": "UNKNOWN_FROM_ARTIFACTS",
+    "future_feature_leakage_found": "UNKNOWN_FROM_ARTIFACTS",
+    "details": [
+      "Audit script uses model_margin directly from historical walkforward rows, not reconstructed from live team_power_ratings_latest.csv.",
+      "Underlying feature-engineering provenance/timestamps for model_margin cannot be conclusively verified from output CSVs alone."
+    ]
+  },
+  "residual_no_lookahead": {
+    "violations": 0,
+    "assertion": "max(residual_source_key) < decision_key for each eligible decision window (season-week granularity)",
+    "note": "Intra-week kickoff timestamps are unavailable, so same-week game ordering cannot be audited at sub-week resolution."
+  },
+  "side_selection": {
+    "uses_outcome": false,
+    "method": "home/away candidate probabilities and EV computed pre-outcome; ranking scores current_ev/current_edge used for selection"
+  },
+  "opposite_side_checks": {
+    "non_integer_symmetry_violations": 0,
+    "integer_symmetry_violations": 0,
+    "both_sides_positive_ev_count": 0,
+    "both_sides_positive_ev_examples": [],
+    "sample_rows": [
+      {
+        "season": 2022,
+        "week": 21,
+        "game_id": "2022_21_SF_PHI",
+        "home_line": 2.5,
+        "away_line": -2.5,
+        "home_win_prob": 0.5516014234875445,
+        "away_win_prob": 0.4483985765124555,
+        "home_push_prob": 0.0,
+        "away_push_prob": 0.0,
+        "home_ev": 0.027119892011289726,
+        "away_ev": -0.08078291814946625,
+        "selected_side_by_ev": "home",
+        "actual_result_home_side": "win",
+        "actual_result_away_side": "loss"
+      },
+      {
+        "season": 2023,
+        "week": 7,
+        "game_id": "2023_07_GB_DEN",
+        "home_line": 1.5,
+        "away_line": -1.5,
+        "home_win_prob": 0.4827586206896552,
+        "away_win_prob": 0.5172413793103449,
+        "home_push_prob": 0.0,
+        "away_push_prob": 0.0,
+        "home_ev": -0.07024265644955285,
+        "away_ev": -0.02093596059113295,
+        "selected_side_by_ev": "away",
+        "actual_result_home_side": "win",
+        "actual_result_away_side": "loss"
+      },
+      {
+        "season": 2024,
+        "week": 13,
+        "game_id": "2024_13_PIT_CIN",
+        "home_line": 3.0,
+        "away_line": -3.0,
+        "home_win_prob": 0.7125668449197861,
+        "away_win_prob": 0.25935828877005346,
+        "home_push_prob": 0.02807486631016043,
+        "away_push_prob": 0.02807486631016043,
+        "home_ev": 0.38842975206611574,
+        "away_ev": -0.4767865824015557,
+        "selected_side_by_ev": "home",
+        "actual_result_home_side": "loss",
+        "actual_result_away_side": "win"
+      },
+      {
+        "season": 2023,
+        "week": 15,
+        "game_id": "2023_15_BAL_JAX",
+        "home_line": -4.0,
+        "away_line": 4.0,
+        "home_win_prob": 0.22764227642276422,
+        "away_win_prob": 0.7601626016260162,
+        "home_push_prob": 0.012195121951219513,
+        "away_push_prob": 0.012195121951219513,
+        "home_ev": -0.5532150776053215,
+        "away_ev": 0.46341463414634143,
+        "selected_side_by_ev": "away",
+        "actual_result_home_side": "loss",
+        "actual_result_away_side": "win"
+      },
+      {
+        "season": 2024,
+        "week": 6,
+        "game_id": "2024_06_ARI_GB",
+        "home_line": 5.5,
+        "away_line": -5.5,
+        "home_win_prob": 0.7418856259659969,
+        "away_win_prob": 0.2581143740340031,
+        "home_push_prob": 0.0,
+        "away_push_prob": 0.0,
+        "home_ev": 0.4163271041169033,
+        "away_ev": -0.507236195025994,
+        "selected_side_by_ev": "home",
+        "actual_result_home_side": "win",
+        "actual_result_away_side": "loss"
+      },
+      {
+        "season": 2025,
+        "week": 18,
+        "game_id": "2025_18_NYJ_BUF",
+        "home_line": 12.5,
+        "away_line": -12.5,
+        "home_win_prob": 0.9873873873873874,
+        "away_win_prob": 0.012612612612612612,
+        "home_push_prob": 0.0,
+        "away_push_prob": 0.0,
+        "home_ev": 0.9016349683016351,
+        "away_ev": -0.9761261261261261,
+        "selected_side_by_ev": "home",
+        "actual_result_home_side": "win",
+        "actual_result_away_side": "loss"
+      },
+      {
+        "season": 2023,
+        "week": 5,
+        "game_id": "2023_05_KC_MIN",
+        "home_line": -3.5,
+        "away_line": 3.5,
+        "home_win_prob": 0.29022988505747127,
+        "away_win_prob": 0.7097701149425287,
+        "home_push_prob": 0.0,
+        "away_push_prob": 0.0,
+        "home_ev": -0.4573963018490755,
+        "away_ev": 0.3857416529830322,
+        "selected_side_by_ev": "away",
+        "actual_result_home_side": "loss",
+        "actual_result_away_side": "win"
+      },
+      {
+        "season": 2023,
+        "week": 3,
+        "game_id": "2023_03_TEN_CLE",
+        "home_line": 3.5,
+        "away_line": -3.5,
+        "home_win_prob": 0.7816455696202531,
+        "away_win_prob": 0.21835443037974683,
+        "home_push_prob": 0.0,
+        "away_push_prob": 0.0,
+        "home_ev": 0.49223245109321057,
+        "away_ev": -0.5831415420023014,
+        "selected_side_by_ev": "home",
+        "actual_result_home_side": "win",
+        "actual_result_away_side": "loss"
+      },
+      {
+        "season": 2023,
+        "week": 17,
+        "game_id": "2023_17_GB_MIN",
+        "home_line": 1.0,
+        "away_line": -1.0,
+        "home_win_prob": 0.5458015267175572,
+        "away_win_prob": 0.4179389312977099,
+        "home_push_prob": 0.03625954198473282,
+        "away_push_prob": 0.03625954198473282,
+        "home_ev": 0.08743285270002821,
+        "away_ev": -0.17264176663031622,
+        "selected_side_by_ev": "home",
+        "actual_result_home_side": "loss",
+        "actual_result_away_side": "win"
+      },
+      {
+        "season": 2024,
+        "week": 9,
+        "game_id": "2024_09_DET_GB",
+        "home_line": -2.5,
+        "away_line": 2.5,
+        "home_win_prob": 0.3583815028901734,
+        "away_win_prob": 0.6416184971098265,
+        "home_push_prob": 0.0,
+        "away_push_prob": 0.0,
+        "home_ev": -0.28323699421965326,
+        "away_ev": 0.17630057803468213,
+        "selected_side_by_ev": "away",
+        "actual_result_home_side": "loss",
+        "actual_result_away_side": "win"
+      },
+      {
+        "season": 2023,
+        "week": 16,
+        "game_id": "2023_16_JAX_TB",
+        "home_line": -2.0,
+        "away_line": 2.0,
+        "home_win_prob": 0.5078740157480315,
+        "away_win_prob": 0.4547244094488189,
+        "home_push_prob": 0.03740157480314961,
+        "away_push_prob": 0.03740157480314961,
+        "home_ev": 0.006979241231209743,
+        "away_ev": -0.09448818897637778,
+        "selected_side_by_ev": "home",
+        "actual_result_home_side": "win",
+        "actual_result_away_side": "loss"
+      },
+      {
+        "season": 2023,
+        "week": 7,
+        "game_id": "2023_07_CLE_IND",
+        "home_line": -3.5,
+        "away_line": 3.5,
+        "home_win_prob": 0.40318302387267907,
+        "away_win_prob": 0.596816976127321,
+        "home_push_prob": 0.0,
+        "away_push_prob": 0.0,
+        "home_ev": -0.23683213338385756,
+        "away_ev": 0.149425287356322,
+        "selected_side_by_ev": "away",
+        "actual_result_home_side": "loss",
+        "actual_result_away_side": "win"
+      }
+    ]
+  },
+  "market_timing": {
+    "historical_market_line_type": "UNKNOWN_REFERENCE_LINE",
+    "historical_price_type": "UNKNOWN_REFERENCE_PRICE",
+    "executable_or_reference": "MARKET_REFERENCE_ROI",
+    "details": "Source files contain one spread/odds snapshot per game with no offer timestamp history; cannot prove executable quoting window."
+  },
+  "odds_sanity": {
+    "N": 2278,
+    "median": -110.0,
+    "mean": -87.73397717295873,
+    "p05": -120.0,
+    "p95": 102.0,
+    "min": -125.0,
+    "max": 113.0,
+    "malformed_non_finite": 0
+  },
+  "duplicates": {
+    "walkforward_duplicate_game_rows": 0,
+    "validation_duplicate_game_rows": 0,
+    "walkforward_rows": 1139,
+    "validation_rows": 1139
+  },
+  "future_best_line_bias_found": false,
+  "reproducibility_10_game_check": {
+    "sample_size": 10,
+    "mismatch_count": 0,
+    "rows": [
+      {
+        "game": "2022_16_LAC_IND",
+        "decision": "2022-W16",
+        "model_margin_home": -2.7481623511297366,
+        "market_line_home": -3.5,
+        "selected_side": "away",
+        "residual_sample_size": 224,
+        "residual_source_range": "2022-W01 to 2022-W15",
+        "P_win": 0.7098214285714286,
+        "P_push": 0.0,
+        "P_loss": 0.2901785714285714,
+        "price": -102.0,
+        "EV": 0.4057247899159665,
+        "actual_result": "win",
+        "independent_recompute_match": true
+      },
+      {
+        "game": "2022_21_SF_PHI",
+        "decision": "2022-W21",
+        "model_margin_home": -2.388977213610201,
+        "market_line_home": 2.5,
+        "selected_side": "home",
+        "residual_sample_size": 281,
+        "residual_source_range": "2022-W01 to 2022-W20",
+        "P_win": 0.5516014234875445,
+        "P_push": 0.0,
+        "P_loss": 0.4483985765124555,
+        "price": -116.0,
+        "EV": 0.027119892011289726,
+        "actual_result": "win",
+        "independent_recompute_match": true
+      },
+      {
+        "game": "2023_06_PHI_NYJ",
+        "decision": "2023-W06",
+        "model_margin_home": -5.067715963246375,
+        "market_line_home": -6.5,
+        "selected_side": "away",
+        "residual_sample_size": 362,
+        "residual_source_range": "2022-W01 to 2023-W22",
+        "P_win": 0.8176795580110497,
+        "P_push": 0.0,
+        "P_loss": 0.18232044198895025,
+        "price": -115.0,
+        "EV": 0.5287052606293537,
+        "actual_result": "win",
+        "independent_recompute_match": true
+      },
+      {
+        "game": "2023_17_SF_WAS",
+        "decision": "2023-W17",
+        "model_margin_home": -13.218917696518709,
+        "market_line_home": -14.0,
+        "selected_side": "away",
+        "residual_sample_size": 524,
+        "residual_source_range": "2022-W01 to 2023-W22",
+        "P_win": 0.9790076335877863,
+        "P_push": 0.0,
+        "P_loss": 0.020992366412213692,
+        "price": -115.0,
+        "EV": 0.830318619316296,
+        "actual_result": "win",
+        "independent_recompute_match": true
+      },
+      {
+        "game": "2023_18_HOU_IND",
+        "decision": "2023-W18",
+        "model_margin_home": 3.1468898292404104,
+        "market_line_home": -1.5,
+        "selected_side": "home",
+        "residual_sample_size": 540,
+        "residual_source_range": "2022-W01 to 2023-W22",
+        "P_win": 0.5925925925925926,
+        "P_push": 0.0,
+        "P_loss": 0.40740740740740744,
+        "price": -110.0,
+        "EV": 0.13131313131313127,
+        "actual_result": "loss",
+        "independent_recompute_match": true
+      },
+      {
+        "game": "2023_18_PHI_NYG",
+        "decision": "2023-W18",
+        "model_margin_home": -3.3453971817004016,
+        "market_line_home": -4.5,
+        "selected_side": "away",
+        "residual_sample_size": 540,
+        "residual_source_range": "2022-W01 to 2023-W22",
+        "P_win": 0.75,
+        "P_push": 0.0,
+        "P_loss": 0.25,
+        "price": -112.0,
+        "EV": 0.4196428571428571,
+        "actual_result": "loss",
+        "independent_recompute_match": true
+      },
+      {
+        "game": "2024_05_LV_DEN",
+        "decision": "2024-W05",
+        "model_margin_home": 0.2281782719357448,
+        "market_line_home": 3.0,
+        "selected_side": "home",
+        "residual_sample_size": 633,
+        "residual_source_range": "2022-W01 to 2024-W22",
+        "P_win": 0.6145339652448657,
+        "P_push": 0.03475513428120063,
+        "P_loss": 0.35071090047393366,
+        "price": -108.0,
+        "EV": 0.21830203030834944,
+        "actual_result": "win",
+        "independent_recompute_match": true
+      },
+      {
+        "game": "2024_16_LA_NYJ",
+        "decision": "2024-W16",
+        "model_margin_home": -2.345298373065924,
+        "market_line_home": -3.0,
+        "selected_side": "away",
+        "residual_sample_size": 793,
+        "residual_source_range": "2022-W01 to 2024-W22",
+        "P_win": 0.6607818411097099,
+        "P_push": 0.03656998738965952,
+        "P_loss": 0.30264817150063056,
+        "price": -105.0,
+        "EV": 0.3266678676514741,
+        "actual_result": "win",
+        "independent_recompute_match": true
+      },
+      {
+        "game": "2024_16_SF_MIA",
+        "decision": "2024-W16",
+        "model_margin_home": 8.835755723584901,
+        "market_line_home": -2.0,
+        "selected_side": "home",
+        "residual_sample_size": 793,
+        "residual_source_range": "2022-W01 to 2024-W22",
+        "P_win": 0.733921815889029,
+        "P_push": 0.02648171500630517,
+        "P_loss": 0.23959646910466578,
+        "price": -112.0,
+        "EV": 0.41569086651053866,
+        "actual_result": "win",
+        "independent_recompute_match": true
+      },
+      {
+        "game": "2025_10_CLE_NYJ",
+        "decision": "2025-W10",
+        "model_margin_home": 4.898920538304021,
+        "market_line_home": -1.5,
+        "selected_side": "home",
+        "residual_sample_size": 989,
+        "residual_source_range": "2022-W01 to 2025-W22",
+        "P_win": 0.6349848331648129,
+        "P_push": 0.0,
+        "P_loss": 0.3650151668351871,
+        "price": -105.0,
+        "EV": 0.2397322933217776,
+        "actual_result": "win",
+        "independent_recompute_match": true
+      }
+    ]
+  },
+  "high_ev_group_ge_40pct": {
+    "N": 521,
+    "win_rate_ex_push": 0.8745173745173745,
+    "roi": 0.6701146060359661,
+    "sample_rows": [
+      {
+        "season": 2022,
+        "week": 15,
+        "matchup": "KC @ HOU",
+        "selection": "KC +14.5",
+        "line": 14.5,
+        "price": 109.0,
+        "model_margin_home": -10.950965026574536,
+        "win_probability": 0.9903846153846154,
+        "EV": 1.0699038461538461,
+        "actual_margin_home": -6.0,
+        "result": "win"
+      },
+      {
+        "season": 2022,
+        "week": 15,
+        "matchup": "LA @ GB",
+        "selection": "GB +8",
+        "line": 8.0,
+        "price": 101.0,
+        "model_margin_home": 5.455525198118083,
+        "win_probability": 0.8942307692307693,
+        "EV": 0.8022115384615384,
+        "actual_margin_home": 12.0,
+        "result": "win"
+      },
+      {
+        "season": 2022,
+        "week": 15,
+        "matchup": "NYG @ WAS",
+        "selection": "WAS +4.5",
+        "line": 4.5,
+        "price": 103.0,
+        "model_margin_home": 8.083322900038148,
+        "win_probability": 0.8846153846153846,
+        "EV": 0.7957692307692309,
+        "actual_margin_home": -8.0,
+        "result": "loss"
+      },
+      {
+        "season": 2022,
+        "week": 15,
+        "matchup": "PHI @ CHI",
+        "selection": "PHI +8.5",
+        "line": 8.5,
+        "price": -104.0,
+        "model_margin_home": -8.352483469991787,
+        "win_probability": 0.9134615384615384,
+        "EV": 0.7917899408284025,
+        "actual_margin_home": -5.0,
+        "result": "win"
+      },
+      {
+        "season": 2022,
+        "week": 15,
+        "matchup": "CIN @ TB",
+        "selection": "CIN +3.5",
+        "line": 3.5,
+        "price": 108.0,
+        "model_margin_home": -4.737153527677274,
+        "win_probability": 0.7740384615384616,
+        "EV": 0.6100000000000001,
+        "actual_margin_home": -11.0,
+        "result": "win"
+      },
+      {
+        "season": 2022,
+        "week": 15,
+        "matchup": "DAL @ JAX",
+        "selection": "DAL +4",
+        "line": 4.0,
+        "price": 100.0,
+        "model_margin_home": -4.561684627418844,
+        "win_probability": 0.7644230769230769,
+        "EV": 0.5528846153846153,
+        "actual_margin_home": 6.0,
+        "result": "loss"
+      },
+      {
+        "season": 2022,
+        "week": 15,
+        "matchup": "MIA @ BUF",
+        "selection": "BUF +7",
+        "line": 7.0,
+        "price": -106.0,
+        "model_margin_home": 0.3702628097084106,
+        "win_probability": 0.7644230769230769,
+        "EV": 0.5048076923076923,
+        "actual_margin_home": 3.0,
+        "result": "win"
+      },
+      {
+        "season": 2022,
+        "week": 15,
+        "matchup": "TEN @ LAC",
+        "selection": "LAC +3",
+        "line": 3.0,
+        "price": -102.0,
+        "model_margin_home": 3.5064594201911667,
+        "win_probability": 0.75,
+        "EV": 0.4997171945701358,
+        "actual_margin_home": 3.0,
+        "result": "win"
+      },
+      {
+        "season": 2022,
+        "week": 15,
+        "matchup": "IND @ MIN",
+        "selection": "MIN +3.5",
+        "line": 3.5,
+        "price": -107.0,
+        "model_margin_home": 2.9177875292795887,
+        "win_probability": 0.7596153846153846,
+        "EV": 0.46953630481667863,
+        "actual_margin_home": 3.0,
+        "result": "win"
+      },
+      {
+        "season": 2022,
+        "week": 16,
+        "matchup": "SEA @ KC",
+        "selection": "KC +10.5",
+        "line": 10.5,
+        "price": -103.0,
+        "model_margin_home": 8.504033567818873,
+        "win_probability": 0.9508928571428571,
+        "EV": 0.8740898058252426,
+        "actual_margin_home": 14.0,
+        "result": "win"
+      },
+      {
+        "season": 2022,
+        "week": 16,
+        "matchup": "WAS @ SF",
+        "selection": "SF +6.5",
+        "line": 6.5,
+        "price": -103.0,
+        "model_margin_home": 7.4568258267480765,
+        "win_probability": 0.9017857142857143,
+        "EV": 0.7773058252427185,
+        "actual_margin_home": 17.0,
+        "result": "win"
+      },
+      {
+        "season": 2022,
+        "week": 16,
+        "matchup": "ATL @ BAL",
+        "selection": "BAL +6.5",
+        "line": 6.5,
+        "price": -102.0,
+        "model_margin_home": 3.517009225577711,
+        "win_probability": 0.8482142857142857,
+        "EV": 0.679796918767507,
+        "actual_margin_home": 8.0,
+        "result": "win"
+      },
+      {
+        "season": 2022,
+        "week": 16,
+        "matchup": "BUF @ CHI",
+        "selection": "BUF +8",
+        "line": 8.0,
+        "price": -110.0,
+        "model_margin_home": -4.2544170495852045,
+        "win_probability": 0.84375,
+        "EV": 0.6286525974025974,
+        "actual_margin_home": -22.0,
+        "result": "win"
+      },
+      {
+        "season": 2022,
+        "week": 16,
+        "matchup": "TB @ ARI",
+        "selection": "TB +7.5",
+        "line": 7.5,
+        "price": 102.0,
+        "model_margin_home": -1.7161021613003895,
+        "win_probability": 0.7946428571428571,
+        "EV": 0.6051785714285713,
+        "actual_margin_home": -3.0,
+        "result": "win"
+      },
+      {
+        "season": 2022,
+        "week": 16,
+        "matchup": "LV @ PIT",
+        "selection": "PIT +2.5",
+        "line": 2.5,
+        "price": -102.0,
+        "model_margin_home": 3.8861668579801,
+        "win_probability": 0.7723214285714286,
+        "EV": 0.5294992997198881,
+        "actual_margin_home": 3.0,
+        "result": "win"
+      },
+      {
+        "season": 2022,
+        "week": 16,
+        "matchup": "HOU @ TEN",
+        "selection": "TEN +3",
+        "line": 3.0,
+        "price": -113.0,
+        "model_margin_home": 4.508113516996412,
+        "win_probability": 0.7767857142857143,
+        "EV": 0.48206384323640966,
+        "actual_margin_home": -5.0,
+        "result": "loss"
+      },
+      {
+        "season": 2022,
+        "week": 16,
+        "matchup": "NO @ CLE",
+        "selection": "CLE +3",
+        "line": 3.0,
+        "price": -123.0,
+        "model_margin_home": 5.17992861639094,
+        "win_probability": 0.7901785714285714,
+        "EV": 0.45045731707317066,
+        "actual_margin_home": -7.0,
+        "result": "loss"
+      },
+      {
+        "season": 2022,
+        "week": 16,
+        "matchup": "PHI @ DAL",
+        "selection": "DAL +4",
+        "line": 4.0,
+        "price": -106.0,
+        "model_margin_home": 1.3849586128633444,
+        "win_probability": 0.71875,
+        "EV": 0.43699460916442046,
+        "actual_margin_home": 6.0,
+        "result": "win"
+      },
+      {
+        "season": 2022,
+        "week": 16,
+        "matchup": "NYG @ MIN",
+        "selection": "MIN +4.5",
+        "line": 4.5,
+        "price": -108.0,
+        "model_margin_home": 0.8679230199174812,
+        "win_probability": 0.7410714285714286,
+        "EV": 0.42724867724867743,
+        "actual_margin_home": 3.0,
+        "result": "win"
+      },
+      {
+        "season": 2022,
+        "week": 16,
+        "matchup": "LAC @ IND",
+        "selection": "LAC +3.5",
+        "line": 3.5,
+        "price": -102.0,
+        "model_margin_home": -2.7481623511297366,
+        "win_probability": 0.7098214285714286,
+        "EV": 0.4057247899159665,
+        "actual_margin_home": -17.0,
+        "result": "win"
+      }
+    ]
+  },
+  "edge_group_ge_20pp": {
+    "N": 575,
+    "win_rate_ex_push": 0.8671328671328671,
+    "roi": 0.6550058812135692,
+    "model_vs_market_side_summary": {
+      "mean": -0.8309450671544663,
+      "median": -0.7373701836662603,
+      "p10": -5.3992566340993635,
+      "p90": 3.692533257079765
+    },
+    "market_spread_summary": {
+      "mean_abs": 6.573913043478261,
+      "median_abs": 6.0,
+      "p10_abs": 3.0,
+      "p90_abs": 12.5
+    },
+    "favdog": {
+      "underdog": 569,
+      "favorite": 6
+    },
+    "homeaway": {
+      "home": 406,
+      "away": 169
+    },
+    "season": {
+      "2022": 50,
+      "2023": 172,
+      "2024": 181,
+      "2025": 172
+    },
+    "spread_magnitude_bucket": {
+      "3-7": 295,
+      "7-10": 143,
+      "10+": 94,
+      "0-3": 43
+    }
+  },
+  "market_baselines": {
+    "current_brier": 0.15703777831720578,
+    "market_raw_brier": 0.25600480032323647,
+    "market_novig_brier": 0.24942505660423922,
+    "current_logloss": 0.48045979242874676,
+    "market_raw_logloss": 0.705170545477118,
+    "market_novig_logloss": 0.6919970772568521
+  },
+  "strict_replay": {
+    "current_ev_top1": {
+      "bets": 74,
+      "wins": 69,
+      "losses": 5,
+      "pushes": 0,
+      "win_rate_ex_push": 0.9324324324324325,
+      "roi": 0.7909856324197664,
+      "by_season": [
+        {
+          "season": 2022,
+          "bets": 8,
+          "wins": 7,
+          "losses": 1,
+          "pushes": 0,
+          "roi": 0.7670442658201255
+        },
+        {
+          "season": 2023,
+          "bets": 22,
+          "wins": 21,
+          "losses": 1,
+          "pushes": 0,
+          "roi": 0.8258655930240978
+        },
+        {
+          "season": 2024,
+          "bets": 22,
+          "wins": 20,
+          "losses": 2,
+          "pushes": 0,
+          "roi": 0.7357225558806587
+        },
+        {
+          "season": 2025,
+          "bets": 22,
+          "wins": 21,
+          "losses": 1,
+          "pushes": 0,
+          "roi": 0.8200746998453212
+        }
+      ],
+      "by_rank": [
+        {
+          "pick_rank": 1,
+          "bets": 74,
+          "wins": 69,
+          "losses": 5,
+          "pushes": 0,
+          "roi": 0.7909856324197664
+        }
+      ]
+    },
+    "current_edge_top1": {
+      "bets": 74,
+      "wins": 68,
+      "losses": 6,
+      "pushes": 0,
+      "win_rate_ex_push": 0.918918918918919,
+      "roi": 0.7604973184016071,
+      "by_season": [
+        {
+          "season": 2022,
+          "bets": 8,
+          "wins": 7,
+          "losses": 1,
+          "pushes": 0,
+          "roi": 0.7670442658201255
+        },
+        {
+          "season": 2023,
+          "bets": 22,
+          "wins": 21,
+          "losses": 1,
+          "pushes": 0,
+          "roi": 0.8240689706741158
+        },
+        {
+          "season": 2024,
+          "bets": 22,
+          "wins": 19,
+          "losses": 3,
+          "pushes": 0,
+          "roi": 0.6385881508059441
+        },
+        {
+          "season": 2025,
+          "bets": 22,
+          "wins": 21,
+          "losses": 1,
+          "pushes": 0,
+          "roi": 0.816454125572573
+        }
+      ],
+      "by_rank": [
+        {
+          "pick_rank": 1,
+          "bets": 74,
+          "wins": 68,
+          "losses": 6,
+          "pushes": 0,
+          "roi": 0.7604973184016071
+        }
+      ]
+    },
+    "production_proxy_top1": {
+      "bets": 74,
+      "wins": 20,
+      "losses": 54,
+      "pushes": 0,
+      "win_rate_ex_push": 0.2702702702702703,
+      "roi": -0.4818434784233455,
+      "by_season": [
+        {
+          "season": 2022,
+          "bets": 8,
+          "wins": 1,
+          "losses": 7,
+          "pushes": 0,
+          "roi": -0.7536407766990292
+        },
+        {
+          "season": 2023,
+          "bets": 22,
+          "wins": 7,
+          "losses": 15,
+          "pushes": 0,
+          "roi": -0.37967509317776693
+        },
+        {
+          "season": 2024,
+          "bets": 22,
+          "wins": 6,
+          "losses": 16,
+          "pushes": 0,
+          "roi": -0.48267981779404034
+        },
+        {
+          "season": 2025,
+          "bets": 22,
+          "wins": 6,
+          "losses": 16,
+          "pushes": 0,
+          "roi": -0.48434014310707113
+        }
+      ],
+      "by_rank": [
+        {
+          "pick_rank": 1,
+          "bets": 74,
+          "wins": 20,
+          "losses": 54,
+          "pushes": 0,
+          "roi": -0.4818434784233454
+        }
+      ]
+    },
+    "current_ev_top1_win_rate": 0.9324324324324325,
+    "current_edge_top1_win_rate": 0.918918918918919,
+    "production_proxy_top1_win_rate": 0.2702702702702703,
+    "current_ev_top1_bets": 74,
+    "current_edge_top1_bets": 74,
+    "production_proxy_top1_bets": 74
+  },
+  "historical_si_score_available_as_of_time": false,
+  "canonical_snapshot_spec_ready": true,
+  "canonical_snapshot_spec_fields": {
+    "decision_fields": [
+      "decisionId",
+      "publishedAtUTC",
+      "season",
+      "week",
+      "eventId",
+      "selection",
+      "market",
+      "side",
+      "point",
+      "price",
+      "sportsbook",
+      "modelVersion",
+      "probabilityEngineVersion",
+      "calibrationVersion",
+      "siScoreVersion",
+      "rankingVersion",
+      "currentWinProbability",
+      "currentPushProbability",
+      "currentLossProbability",
+      "currentEV",
+      "modelEdge",
+      "fairLine",
+      "truePlayableTo",
+      "siScore",
+      "siaRank",
+      "qualificationStatus",
+      "sourceOddsTimestamp",
+      "sourceModelTimestamp",
+      "sourceMarketTimestamp",
+      "payloadHash"
+    ],
+    "outcome_fields_append_only": [
+      "closingLine",
+      "closingPrice",
+      "closingTimestamp",
+      "CLV",
+      "gameResult",
+      "betResult",
+      "realizedProfitPerDollar"
+    ]
+  },
+  "validity_status": "INVALID",
+  "invalid_reason": "SPREAD SIGN BUG"
+}

@@ -33,6 +33,8 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 !.env.example
+.env
+.env.local
 
 # vercel
 .vercel
@@ -45,3 +47,27 @@ next-env.d.ts
 backend/.venv/
 backend/**/__pycache__/
 *.pyc
+.pytest_cache/
+backend/.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Runtime/local databases
+sports_intelligence.db
+backend/*.db
+backend/*.sqlite
+backend/*.sqlite3
+backend/*.sqlite-journal
+backend/*_test.db
+backend/*_mock.db
+
+# Research outputs (generated)
+backend/research_outputs/*
+!backend/research_outputs/sia_corrected_historical_baseline_report.md
+!backend/research_outputs/sia_corrected_historical_baseline_report.json
+
+# Logs and temp
+*.log
+backend/logs/
+tmp/
+backend/tmp/
