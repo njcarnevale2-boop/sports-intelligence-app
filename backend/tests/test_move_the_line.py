@@ -89,6 +89,8 @@ def test_exact_playable_to_boundary(monkeypatch):
     result = move_the_line.evaluate_move_the_line(event_id="evt-1", hypothetical_spread=-5.0, assumed_odds=-115)
     assert result["hypothetical"]["insidePlayableRange"] is True
     assert result["hypothetical"]["atPlayableBoundary"] is True
+    assert result["hypothetical"]["decisionStatus"] == "PLAYABLE"
+    assert result["hypothetical"]["boundaryStatus"] == "AT_BOUNDARY"
     assert result["hypothetical"]["status"] == "PLAYABLE"
 
 
@@ -99,8 +101,22 @@ def test_half_point_beyond_playable_to(monkeypatch):
 
     result = move_the_line.evaluate_move_the_line(event_id="evt-1", hypothetical_spread=-5.5, assumed_odds=-115)
     assert result["hypothetical"]["insidePlayableRange"] is False
+    assert result["hypothetical"]["decisionStatus"] == "PASS"
+    assert result["hypothetical"]["boundaryStatus"] == "OUTSIDE"
     assert result["hypothetical"]["status"] == "PASS"
     assert "Outside" in result["hypothetical"]["statusReason"]
+
+
+def test_canonical_decision_state_not_contradicted(monkeypatch):
+    context = _base_context()
+    monkeypatch.setattr(move_the_line, "_build_base_context", lambda event_id, snapshot_id: context)
+    monkeypatch.setattr(move_the_line, "_load_model_margin_home", lambda event_id: 1.5)
+    monkeypatch.setattr(move_the_line, "spread_outcome_probabilities", lambda model_margin_home, side, spread_point: FakeProbs(win=0.535, push=0.015, loss=0.45))
+
+    result = move_the_line.evaluate_move_the_line(event_id="evt-1", hypothetical_spread=-5.0, assumed_odds=-115)
+    assert result["hypothetical"]["decisionStatus"] == "PLAYABLE"
+    assert result["hypothetical"]["boundaryStatus"] == "AT_BOUNDARY"
+    assert result["hypothetical"]["recommendation"] in {"ELITE BET", "STRONG BET", "BET", "LEAN", "PASS"}
 
 
 def test_favorite_semantics_worse_line(monkeypatch):

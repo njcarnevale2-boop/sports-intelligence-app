@@ -147,7 +147,9 @@ type MoveTheLineResult = {
     atPlayableBoundary?: boolean;
     qualificationStatus: string;
     recommendation: string;
-    status: "PLAYABLE" | "PASS";
+    decisionStatus: "PLAYABLE" | "PASS" | "UNKNOWN";
+    boundaryStatus: "AT_BOUNDARY" | "INSIDE" | "OUTSIDE" | "UNKNOWN";
+    status: "PLAYABLE" | "PASS" | "UNKNOWN";
     statusReason: string;
     decisionSummary: string;
     priceDisclosure: string;
@@ -700,10 +702,12 @@ export default function GameIntelligencePage() {
 
               {moveResult ? (
                 <div className="mt-4 space-y-4">
-                  <div className={`rounded-2xl border p-4 ${moveResult.hypothetical.status === "PLAYABLE" ? "border-emerald-400/30 bg-emerald-400/[0.06]" : "border-rose-400/30 bg-rose-400/[0.06]"}`}>
+                  <div className={`rounded-2xl border p-4 ${moveResult.hypothetical.decisionStatus === "PLAYABLE" ? "border-emerald-400/30 bg-emerald-400/[0.06]" : "border-rose-400/30 bg-rose-400/[0.06]"}`}>
                     <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Decision Summary</p>
                     <p className="mt-2 text-sm text-zinc-100">{moveResult.hypothetical.decisionSummary}</p>
-                    <p className="mt-2 text-xs text-zinc-300">{moveResult.hypothetical.status}: {moveResult.hypothetical.statusReason}</p>
+                    <p className="mt-2 text-xs text-zinc-300">Decision: {moveResult.hypothetical.decisionStatus}</p>
+                    <p className="mt-1 text-xs text-zinc-300">Boundary: {moveResult.hypothetical.boundaryStatus}</p>
+                    <p className="mt-1 text-xs text-zinc-300">{moveResult.hypothetical.statusReason}</p>
                   </div>
 
                   <div className="grid gap-3 md:grid-cols-2">
@@ -713,7 +717,9 @@ export default function GameIntelligencePage() {
                       <p className="mt-1 text-sm text-zinc-300">Win/Cover: {formatProbabilityUnit(moveResult.current.winProbability)} → {formatProbabilityUnit(moveResult.hypothetical.winProbability)}</p>
                       <p className="mt-1 text-sm text-zinc-300">Push: {formatProbabilityUnit(moveResult.current.pushProbability)} → {formatProbabilityUnit(moveResult.hypothetical.pushProbability)}</p>
                       <p className="mt-1 text-sm text-zinc-300">Push-aware EV: {formatEv(moveResult.current.pushAwareEV)} → {formatEv(moveResult.hypothetical.pushAwareEV)}</p>
-                      <p className="mt-1 text-sm text-zinc-300">Status: {moveResult.current.recommendation} → {moveResult.hypothetical.recommendation}</p>
+                      <p className="mt-1 text-sm text-zinc-300">Original recommendation: {moveResult.current.recommendation}</p>
+                      <p className="mt-1 text-sm text-zinc-300">Hypothetical decision: {moveResult.hypothetical.decisionStatus}</p>
+                      <p className="mt-1 text-sm text-zinc-300">Hypothetical strength: {moveResult.hypothetical.recommendation}</p>
                     </div>
 
                     <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">

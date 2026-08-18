@@ -205,6 +205,24 @@ def _decision_summary(selection: str, inside_playable: Optional[bool], at_bounda
     return "I don't have enough verified SIA data to determine playable status for this hypothetical line."
 
 
+def _decision_status(inside_playable: Optional[bool]) -> str:
+    if inside_playable is False:
+        return "PASS"
+    if inside_playable is True:
+        return "PLAYABLE"
+    return "UNKNOWN"
+
+
+def _boundary_status(at_boundary: bool, inside_playable: Optional[bool]) -> str:
+    if at_boundary and inside_playable is True:
+        return "AT_BOUNDARY"
+    if inside_playable is True:
+        return "INSIDE"
+    if inside_playable is False:
+        return "OUTSIDE"
+    return "UNKNOWN"
+
+
 def evaluate_move_the_line(
     *,
     event_id: str,
@@ -317,7 +335,9 @@ def evaluate_move_the_line(
             "atPlayableBoundary": at_boundary,
             "qualificationStatus": qualification_status,
             "recommendation": recommendation,
-            "status": "PLAYABLE" if inside_playable else "PASS",
+            "decisionStatus": _decision_status(inside_playable),
+            "boundaryStatus": _boundary_status(at_boundary, inside_playable),
+            "status": _decision_status(inside_playable),
             "statusReason": "At SIA's current boundary." if at_boundary else ("Still inside SIA's current playable range." if inside_playable else "Outside SIA's current playable range."),
             "decisionSummary": _decision_summary(hypothetical_selection, inside_playable, at_boundary, ev_change),
         },
