@@ -118,6 +118,47 @@ type AskSiaResponse = {
   missingData?: string[];
 };
 
+type MoveTheLineResult = {
+  sourceSnapshotId?: string | null;
+  contextMode: "LIVE" | "SNAPSHOT";
+  current: {
+    selection: string;
+    spread: number;
+    recommendation: string;
+    winProbability?: number | null;
+    pushProbability?: number | null;
+    pushAwareEV?: number | null;
+    edge?: number | null;
+    truePlayableTo?: number | null;
+  };
+  hypothetical: {
+    selection: string;
+    hypotheticalSpread: number;
+    assumedOdds: number;
+    winProbability: number;
+    pushProbability: number;
+    lossProbability: number;
+    pushAwareEV: number;
+    marketImpliedProbability: number;
+    edge: number;
+    fairLine?: number | null;
+    truePlayableTo?: number | null;
+    insidePlayableRange?: boolean | null;
+    atPlayableBoundary?: boolean;
+    qualificationStatus: string;
+    recommendation: string;
+    status: "PLAYABLE" | "PASS";
+    statusReason: string;
+    decisionSummary: string;
+    priceDisclosure: string;
+  };
+  valueChange: {
+    probabilityChange?: number | null;
+    evChange?: number | null;
+    edgeChange?: number | null;
+  };
+};
+
 type AskSiaMessage = {
   question: string;
   response: AskSiaResponse;
@@ -132,6 +173,32 @@ function formatKickoff(iso: string) {
 
 function signed(value: number) {
   return value > 0 ? `+${value}` : `${value}`;
+}
+
+function normalizeSpread(value: number) {
+  return Math.abs(value) < 0.0001 ? 0 : value;
+}
+
+function formatSpread(value: number) {
+  const n = normalizeSpread(value);
+  if (n === 0) return "PK";
+  return n > 0 ? `+${n}` : `${n}`;
+}
+
+function stepHalf(value: number, delta: number) {
+  const next = Math.round((value + delta) * 2) / 2;
+  return normalizeSpread(next);
+}
+
+function formatProbabilityUnit(probability: number | null | undefined) {
+  if (probability == null) return "Unavailable";
+  return `${(probability * 100).toFixed(1)}%`;
+}
+
+function formatEv(value: number | null | undefined) {
+  if (value == null) return "Unavailable";
+  const sign = value >= 0 ? "+" : "";
+  return `${sign}$${value.toFixed(3)} per $1`;
 }
 
 function formatBestPrice(opp: Opportunity | null) {
@@ -218,6 +285,11 @@ export default function GameIntelligencePage() {
   const [askLoading, setAskLoading] = useState(false);
   const [askError, setAskError] = useState("");
   const [presetAsked, setPresetAsked] = useState(false);
+  const [moveSpread, setMoveSpread] = useState<number | null>(null);
+  const [moveAssumedOdds, setMoveAssumedOdds] = useState<number | null>(null);
+  const [moveResult, setMoveResult] = useState<MoveTheLineResult | null>(null);
+  const [moveLoading, setMoveLoading] = useState(false);
+  const [moveError, setMoveError] = useState("");
 
   useEffect(() => {
     if (!eventId) return;
@@ -242,6 +314,10 @@ export default function GameIntelligencePage() {
         if (oppResult.status === "fulfilled") {
           setOpportunity(oppResult.value.opportunity);
           if (oppResult.value.intelligenceReport) setIntelligenceReport(oppResult.value.intelligenceReport);
+          if (oppResult.value.opportunity?.market === "spread") {
+            setMoveSpread(oppResult.value.opportunity.point);
+            setMoveAssumedOdds(oppResult.value.opportunity.price);
+          }
         }
         if (weatherResult.status === "fulfilled") setWeather(weatherResult.value);
         if (injuryResult.status === "fulfilled") setInjury(injuryResult.value.injuryContext);
@@ -280,7 +356,7 @@ export default function GameIntelligencePage() {
     if (result.success) setAdded(true);
   }
 
-  async function submitAsk(questionOverride?: string) {
+  async function submitAsk(questionOverride?: string, moveTheLinePayload?: MoveTheLineResult | null) {
     if (!eventId) return;
     const question = (questionOverride ?? askInput).trim();
     if (!question) return;
@@ -291,7 +367,7 @@ export default function GameIntelligencePage() {
       const response = await fetchJson<AskSiaResponse>("/api/ask-sia", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ eventId, question, snapshotId }),
+        body: JSON.stringify({ eventId, question, snapshotId, moveTheLine: moveTheLinePayload ?? undefined }),
       });
 
       setAskMessages((prev) => [...prev, { question, response }]);
@@ -309,6 +385,41 @@ export default function GameIntelligencePage() {
     void submitAsk(presetAsk);
     setPresetAsked(true);
   }, [eventId, loading, presetAsk, presetAsked]);
+
+  async function runMoveTheLine(nextSpread?: number, nextOdds?: number) {
+    if (!eventId || opportunity?.market !== "spread") return;
+    const spreadToUse = nextSpread ?? moveSpread;
+    const oddsToUse = nextOdds ?? moveAssumedOdds ?? opportunity.price;
+    if (spreadToUse == null || oddsToUse == null) return;
+
+    try {
+      setMoveLoading(true);
+      setMoveError("");
+      const result = await fetchJson<MoveTheLineResult>("/api/move-the-line", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          eventId,
+          hypotheticalSpread: spreadToUse,
+          assumedOdds: oddsToUse,
+          snapshotId,
+        }),
+      });
+      setMoveResult(result);
+    } catch {
+      setMoveError("Move-the-Line is unavailable for this game right now.");
+      setMoveResult(null);
+    } finally {
+      setMoveLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!eventId || loading) return;
+    if (opportunity?.market !== "spread") return;
+    if (moveSpread == null) return;
+    void runMoveTheLine(moveSpread, moveAssumedOdds ?? opportunity.price);
+  }, [eventId, loading, moveSpread, moveAssumedOdds, opportunity?.market, opportunity?.price]);
 
   const reasonSummary = useMemo(() => {
     if (intelligenceReport?.whySummary) return intelligenceReport.whySummary;
@@ -505,6 +616,153 @@ export default function GameIntelligencePage() {
               </div>
             ))}
           </div>
+        </section>
+
+        <section className="rounded-3xl border border-white/[0.08] bg-[#0B1119] p-6 md:p-8">
+          <p className="text-xs uppercase tracking-[0.2em] text-zinc-600">Move The Line</p>
+          <p className="mt-2 text-sm text-zinc-400">Test a hypothetical spread using SIA's existing probability engine while holding price constant.</p>
+
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+              <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Current Recommendation</p>
+              <p className="mt-2 text-lg font-semibold">{opportunity ? `${opportunity.pick} (${signed(opportunity.price)})` : "Unavailable"}</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+              <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">SIA Playable-To</p>
+              <p className="mt-2 text-lg font-semibold">{opportunity?.truePlayableTo != null ? `${opportunity.pick.split(" ")[0]} ${formatSpread(opportunity.truePlayableTo)}` : "Unavailable"}</p>
+            </div>
+          </div>
+
+          {opportunity?.market === "spread" ? (
+            <>
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-10 border-white/10 bg-transparent text-white hover:bg-white/[0.05]"
+                  onClick={() => {
+                    if (moveSpread == null) return;
+                    setMoveSpread(stepHalf(moveSpread, -0.5));
+                  }}
+                >
+                  -
+                </Button>
+                <div className="min-w-[180px] rounded-xl border border-white/10 bg-black/20 px-4 py-2 text-center text-sm text-zinc-100">
+                  {opportunity.pick.split(" ")[0]} {moveSpread != null ? formatSpread(moveSpread) : "--"}
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-10 border-white/10 bg-transparent text-white hover:bg-white/[0.05]"
+                  onClick={() => {
+                    if (moveSpread == null) return;
+                    setMoveSpread(stepHalf(moveSpread, +0.5));
+                  }}
+                >
+                  +
+                </Button>
+
+                <input
+                  value={moveSpread == null ? "" : String(moveSpread)}
+                  onChange={(e) => {
+                    const parsed = Number.parseFloat(e.target.value);
+                    if (Number.isNaN(parsed)) {
+                      setMoveSpread(null);
+                      return;
+                    }
+                    setMoveSpread(stepHalf(parsed, 0));
+                  }}
+                  placeholder="Direct spread"
+                  className="h-10 w-32 rounded-xl border border-white/10 bg-black/20 px-3 text-sm text-white outline-none placeholder:text-zinc-600"
+                />
+
+                <Button
+                  type="button"
+                  className="h-10 bg-white text-black hover:bg-zinc-200"
+                  onClick={() => void runMoveTheLine()}
+                  disabled={moveLoading || moveSpread == null}
+                >
+                  {moveLoading ? "Updating..." : "Update"}
+                </Button>
+              </div>
+
+              <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Hypothetical Line</p>
+                <p className="mt-2 text-sm text-zinc-300">{opportunity.pick.split(" ")[0]} {moveSpread != null ? formatSpread(moveSpread) : "--"}</p>
+                <p className="mt-2 text-[10px] uppercase tracking-[0.18em] text-zinc-600">Price Assumption</p>
+                <p className="mt-2 text-sm text-zinc-300">{signed(moveAssumedOdds ?? opportunity.price)} (held constant from current recommendation)</p>
+                <p className="mt-2 text-xs text-zinc-500">
+                  Move-the-Line holds the current price constant to isolate the effect of changing the spread. This does not represent a currently available sportsbook quote.
+                </p>
+              </div>
+
+              {moveError ? <p className="mt-3 text-sm text-rose-400">{moveError}</p> : null}
+
+              {moveResult ? (
+                <div className="mt-4 space-y-4">
+                  <div className={`rounded-2xl border p-4 ${moveResult.hypothetical.status === "PLAYABLE" ? "border-emerald-400/30 bg-emerald-400/[0.06]" : "border-rose-400/30 bg-rose-400/[0.06]"}`}>
+                    <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Decision Summary</p>
+                    <p className="mt-2 text-sm text-zinc-100">{moveResult.hypothetical.decisionSummary}</p>
+                    <p className="mt-2 text-xs text-zinc-300">{moveResult.hypothetical.status}: {moveResult.hypothetical.statusReason}</p>
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                      <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Current → Hypothetical</p>
+                      <p className="mt-2 text-sm text-zinc-300">Line: {formatSpread(moveResult.current.spread)} → {formatSpread(moveResult.hypothetical.hypotheticalSpread)}</p>
+                      <p className="mt-1 text-sm text-zinc-300">Win/Cover: {formatProbabilityUnit(moveResult.current.winProbability)} → {formatProbabilityUnit(moveResult.hypothetical.winProbability)}</p>
+                      <p className="mt-1 text-sm text-zinc-300">Push: {formatProbabilityUnit(moveResult.current.pushProbability)} → {formatProbabilityUnit(moveResult.hypothetical.pushProbability)}</p>
+                      <p className="mt-1 text-sm text-zinc-300">Push-aware EV: {formatEv(moveResult.current.pushAwareEV)} → {formatEv(moveResult.hypothetical.pushAwareEV)}</p>
+                      <p className="mt-1 text-sm text-zinc-300">Status: {moveResult.current.recommendation} → {moveResult.hypothetical.recommendation}</p>
+                    </div>
+
+                    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                      <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Value Lost vs Original</p>
+                      <p className="mt-2 text-sm text-zinc-300">Cover probability: {moveResult.valueChange.probabilityChange != null ? `${(moveResult.valueChange.probabilityChange * 100).toFixed(1)} pts` : "Unavailable"}</p>
+                      <p className="mt-1 text-sm text-zinc-300">EV: {moveResult.valueChange.evChange != null ? `${moveResult.valueChange.evChange >= 0 ? "+" : ""}$${moveResult.valueChange.evChange.toFixed(3)} per $1` : "Unavailable"}</p>
+                      <p className="mt-1 text-sm text-zinc-300">Edge: {moveResult.valueChange.edgeChange != null ? `${(moveResult.valueChange.edgeChange * 100).toFixed(1)} pts` : "Unavailable"}</p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                    <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Playable-To Visual</p>
+                    <p className="mt-2 text-xs text-zinc-400">
+                      BETTER PRICE {formatSpread((moveResult.current.spread ?? 0) + 1)} {formatSpread((moveResult.current.spread ?? 0) + 0.5)} {formatSpread(moveResult.current.spread ?? 0)} {formatSpread((moveResult.current.spread ?? 0) - 0.5)} {formatSpread((moveResult.current.spread ?? 0) - 1)} | {moveResult.hypothetical.truePlayableTo != null ? formatSpread(moveResult.hypothetical.truePlayableTo) : "N/A"} PLAYABLE TO
+                    </p>
+                  </div>
+
+                  <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                    <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Ask SIA About This Line</p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className="rounded-full border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs text-zinc-300 transition hover:bg-white/[0.08]"
+                        onClick={() => void submitAsk("Why is this still playable?", moveResult)}
+                      >
+                        Why is this still playable?
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-full border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs text-zinc-300 transition hover:bg-white/[0.08]"
+                        onClick={() => void submitAsk("How much value did I lose?", moveResult)}
+                      >
+                        How much value did I lose?
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-full border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs text-zinc-300 transition hover:bg-white/[0.08]"
+                        onClick={() => void submitAsk("Why does this become a pass?", moveResult)}
+                      >
+                        Why does this become a pass?
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <p className="mt-4 text-sm text-zinc-500">Move-the-Line currently supports spread recommendations.</p>
+          )}
         </section>
 
         <section id="why" className="rounded-3xl border border-white/[0.08] bg-[#0B1119] p-6 md:p-8">

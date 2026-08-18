@@ -415,6 +415,87 @@ def test_unknown_question_safe_fallback_no_fabrication():
     assert result["answer"] == "I don't have enough verified SIA data to answer that yet."
 
 
+def test_move_the_line_why_still_playable_is_deterministic():
+    move = {
+        "current": {"selection": "NO +7", "truePlayableTo": -5.0, "winProbability": 0.61, "pushAwareEV": 0.18, "edge": 0.08},
+        "hypothetical": {
+            "selection": "NO +2",
+            "status": "PLAYABLE",
+            "statusReason": "Still inside SIA's current playable range.",
+            "insidePlayableRange": True,
+            "atPlayableBoundary": False,
+            "truePlayableTo": -5.0,
+            "winProbability": 0.59,
+            "pushAwareEV": 0.11,
+            "edge": 0.06,
+        },
+        "valueChange": {"probabilityChange": -0.02, "evChange": -0.07, "edgeChange": -0.02},
+    }
+
+    result = ask_sia.answer_from_context(
+        event_id="evt-1",
+        question="Why is this still playable?",
+        live_context=_base_live_context(),
+        move_the_line=move,
+    )
+    assert result["intent"] == "WHY_STILL_PLAYABLE"
+    assert "still PLAYABLE" in result["answer"]
+
+
+def test_move_the_line_why_pass_is_deterministic():
+    move = {
+        "current": {"selection": "NO +7", "truePlayableTo": -5.0, "winProbability": 0.61, "pushAwareEV": 0.18, "edge": 0.08},
+        "hypothetical": {
+            "selection": "NO -5.5",
+            "status": "PASS",
+            "statusReason": "Outside SIA's current playable range.",
+            "insidePlayableRange": False,
+            "atPlayableBoundary": False,
+            "truePlayableTo": -5.0,
+            "winProbability": 0.51,
+            "pushAwareEV": -0.02,
+            "edge": -0.01,
+        },
+        "valueChange": {"probabilityChange": -0.1, "evChange": -0.2, "edgeChange": -0.09},
+    }
+
+    result = ask_sia.answer_from_context(
+        event_id="evt-1",
+        question="Why does this become a pass?",
+        live_context=_base_live_context(),
+        move_the_line=move,
+    )
+    assert result["intent"] == "WHY_PASS"
+    assert "outside SIA's current playable range" in result["answer"]
+
+
+def test_move_the_line_value_lost_is_deterministic():
+    move = {
+        "current": {"selection": "NO +7", "truePlayableTo": -5.0, "winProbability": 0.61, "pushAwareEV": 0.18, "edge": 0.08},
+        "hypothetical": {
+            "selection": "NO +2",
+            "status": "PLAYABLE",
+            "statusReason": "Still inside SIA's current playable range.",
+            "insidePlayableRange": True,
+            "atPlayableBoundary": False,
+            "truePlayableTo": -5.0,
+            "winProbability": 0.59,
+            "pushAwareEV": 0.11,
+            "edge": 0.06,
+        },
+        "valueChange": {"probabilityChange": -0.02, "evChange": -0.07, "edgeChange": -0.02},
+    }
+
+    result = ask_sia.answer_from_context(
+        event_id="evt-1",
+        question="How much value did I lose?",
+        live_context=_base_live_context(),
+        move_the_line=move,
+    )
+    assert result["intent"] == "VALUE_LOST"
+    assert "Value change versus original" in result["answer"]
+
+
 def test_endpoint_accepts_snapshot_and_returns_context(monkeypatch):
     monkeypatch.setattr(ask_sia, "_build_live_context", lambda event_id: _base_live_context())
     monkeypatch.setattr(ask_sia, "_build_snapshot_context", lambda sid: {"selection": "NYG +3", "price": -110.0, "sportsbook": "DraftKings"})

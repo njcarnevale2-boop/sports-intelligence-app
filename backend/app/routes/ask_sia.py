@@ -15,6 +15,7 @@ class AskSiaRequest(BaseModel):
     eventId: str
     question: str
     snapshotId: Optional[str] = None
+    moveTheLine: Optional[dict] = None
 
 
 @router.post("/ask-sia")
@@ -30,4 +31,5 @@ def ask_sia(request: AskSiaRequest):
         event_id=event_id,
         question=question,
         snapshot_id=request.snapshotId,
+        move_the_line=request.moveTheLine,
     )

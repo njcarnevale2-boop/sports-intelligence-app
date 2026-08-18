@@ -35,6 +35,12 @@ def classify_intent(question: str) -> str:
 
     if "best sportsbook" in q or "best price" in q:
         return "BEST_SPORTSBOOK"
+    if "value" in q and ("lost" in q or "lose" in q):
+        return "VALUE_LOST"
+    if "why is this still playable" in q or "why still playable" in q:
+        return "WHY_STILL_PLAYABLE"
+    if "why does" in q and "pass" in q:
+        return "WHY_PASS"
     if "social" in q or "news" in q:
         return "SOCIAL"
     if "playable to mean" in q or "what does playable" in q:
@@ -353,6 +359,29 @@ def _decision_boundary_text(context: Dict[str, Any]) -> str:
     )
 
 
+def _move_value_summary(move: Dict[str, Any]) -> Dict[str, Any]:
+    current = move.get("current") or {}
+    hypothetical = move.get("hypothetical") or {}
+    value_change = move.get("valueChange") or {}
+    return {
+        "selection": hypothetical.get("selection") or current.get("selection") or "this line",
+        "status": hypothetical.get("status"),
+        "statusReason": hypothetical.get("statusReason"),
+        "inside": hypothetical.get("insidePlayableRange"),
+        "boundary": hypothetical.get("atPlayableBoundary"),
+        "playableTo": hypothetical.get("truePlayableTo") or current.get("truePlayableTo"),
+        "currentWin": current.get("winProbability"),
+        "hypoWin": hypothetical.get("winProbability"),
+        "currentEv": current.get("pushAwareEV"),
+        "hypoEv": hypothetical.get("pushAwareEV"),
+        "currentEdge": current.get("edge"),
+        "hypoEdge": hypothetical.get("edge"),
+        "probabilityChange": value_change.get("probabilityChange"),
+        "evChange": value_change.get("evChange"),
+        "edgeChange": value_change.get("edgeChange"),
+    }
+
+
 def _build_structured_explanation(
     *,
     question: str,
@@ -360,6 +389,7 @@ def _build_structured_explanation(
     intent: str,
     top_sia3: Optional[List[Dict[str, Any]]] = None,
     snapshot_context: Optional[Dict[str, Any]] = None,
+    move_the_line: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     weather = context.get("weather") or {}
     injury = context.get("injuryContext") or {}
@@ -417,8 +447,50 @@ def _build_structured_explanation(
     answer = UNKNOWN_FALLBACK
     why = supporting_reasons[:3]
     what_changes = decision_boundary
+    move_summary = _move_value_summary(move_the_line) if isinstance(move_the_line, dict) else None
 
-    if intent == "WHY":
+    if move_summary and intent == "WHY_STILL_PLAYABLE":
+        if move_summary.get("inside"):
+            selection_line = str(move_summary.get("selection") or selection)
+            answer = f"{selection_line} is still PLAYABLE because it remains inside SIA's current Playable-To boundary."
+            why = [
+                f"Status is PLAYABLE via canonical boundary check against {_format_playable_to_with_selection(selection_line, _to_float(move_summary.get('playableTo')))}.",
+                f"Line-specific win probability is {(_to_float(move_summary.get('hypoWin')) or 0.0) * 100:.1f}% and push-aware EV is {(_to_float(move_summary.get('hypoEv')) or 0.0):+.3f} per $1.",
+            ]
+            what_changes = "It becomes PASS once the line moves beyond the current Playable-To boundary."
+        else:
+            answer = "This line is currently PASS, not playable, based on SIA's canonical boundary."
+            why = ["Deterministic status for the selected hypothetical line is PASS."]
+        primary_reason = "Move-the-Line deterministic boundary check."
+
+    elif move_summary and intent == "WHY_PASS":
+        if move_summary.get("inside"):
+            answer = "This hypothetical line is currently PLAYABLE, not PASS, under SIA's canonical boundary."
+            why = ["Deterministic status is PLAYABLE for this line at the assumed price."]
+        else:
+            answer = f"It becomes PASS because the hypothetical line is outside SIA's current playable range ({move_summary.get('statusReason')})."
+            why = [
+                f"SIA Playable-To boundary: {_format_playable_to_with_selection(selection, _to_float(move_summary.get('playableTo')))}.",
+                "Status is determined directly from canonical inside/outside boundary semantics.",
+            ]
+        primary_reason = "Move-the-Line deterministic PASS status."
+
+    elif move_summary and intent == "VALUE_LOST":
+        prob_change = _to_float(move_summary.get("probabilityChange"))
+        ev_change = _to_float(move_summary.get("evChange"))
+        edge_change = _to_float(move_summary.get("edgeChange"))
+        prob_text = f"{(prob_change or 0.0) * 100:+.1f} pts"
+        ev_text = f"{(ev_change or 0.0):+.3f} per $1"
+        edge_text = f"{(edge_change or 0.0) * 100:+.1f} pts"
+        answer = f"Value change versus original: cover probability {prob_text}, EV {ev_text}, edge {edge_text}."
+        why = [
+            "These deltas come from canonical Move-the-Line engine outputs at the selected hypothetical spread and assumed odds.",
+            f"Deterministic status remains {move_summary.get('status') or 'UNKNOWN'} for this line.",
+        ]
+        what_changes = "As the line worsens, probability/edge/EV can deteriorate until the Playable-To boundary is crossed."
+        primary_reason = "Move-the-Line value deterioration metrics."
+
+    elif intent == "WHY":
         answer = f"SIA currently favors {selection}."
         primary_reason = "Positive value based on calibrated probability versus price."
         if calibrated_prob is not None and implied_prob is not None:
@@ -441,6 +513,62 @@ def _build_structured_explanation(
         primary_reason = "Risk concentration"
 
     elif intent == "PLAYABLE_CHECK":
+        if move_summary:
+            inside = move_summary.get("inside")
+            selection_line = str(move_summary.get("selection") or selection)
+            if inside is True:
+                answer = f"Yes — {selection_line} remains playable."
+            elif inside is False:
+                answer = f"No — {selection_line} is outside SIA's current playable range."
+            else:
+                answer = "I don't have enough verified SIA data to answer that yet."
+            why = [
+                f"Current recommendation: {context.get('selection')}",
+                f"SIA Playable-To: {_format_playable_to_with_selection(str(context.get('selection') or selection), _to_float(move_summary.get('playableTo')))}",
+            ]
+            what_changes = str(move_summary.get("statusReason") or what_changes)
+            primary_reason = "Deterministic playable-to boundary check."
+            missing_data = _missing_messages_for_intent(intent, context)
+            snapshot_note = _snapshot_note(snapshot_context=snapshot_context, live_context=context)
+
+            return {
+                "intent": intent,
+                "answer": answer,
+                "why": why,
+                "whatChangesDecision": what_changes,
+                "structured": {
+                    "primaryReason": primary_reason,
+                    "supportingReasons": supporting_reasons,
+                    "riskFactors": risk_factors,
+                    "decisionBoundary": decision_boundary,
+                    "missingData": missing_data,
+                    "marketContext": market_context,
+                    "confidenceSummary": confidence_summary,
+                    "comparison": comparison_structured,
+                },
+                "snapshotNote": snapshot_note,
+                "missingData": missing_data,
+                "citations": [
+                    "selection",
+                    "price",
+                    "sportsbook",
+                    "calibratedProbability",
+                    "pushProbability",
+                    "lossProbability",
+                    "calibratedEdge",
+                    "currentEV",
+                    "truePlayableTo",
+                    "siScore",
+                    "recommendation",
+                    "marketIntelligence",
+                    "injuryContext",
+                    "weather",
+                    "socialIntelligence",
+                    "qualificationReasons",
+                    "snapshotTimestamp",
+                ],
+            }
+
         hypo = _extract_hypothetical_value(question)
         playable = _playable_check(market=market, side=side, true_playable_to=true_playable_to, hypothetical=hypo)
         if playable is None:
@@ -674,6 +802,7 @@ def answer_from_context(
     question: str,
     live_context: Dict[str, Any],
     snapshot_id: Optional[str] = None,
+    move_the_line: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     snapshot_context = _build_snapshot_context(snapshot_id) if snapshot_id else None
     intent = classify_intent(question)
@@ -684,6 +813,7 @@ def answer_from_context(
         intent=intent,
         top_sia3=live_context.get("topSia3"),
         snapshot_context=snapshot_context,
+        move_the_line=move_the_line,
     )
 
     return {
@@ -730,11 +860,18 @@ def answer_from_context(
     }
 
 
-def get_ask_sia_response(*, event_id: str, question: str, snapshot_id: Optional[str] = None) -> Dict[str, Any]:
+def get_ask_sia_response(
+    *,
+    event_id: str,
+    question: str,
+    snapshot_id: Optional[str] = None,
+    move_the_line: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     live_context = _build_live_context(event_id)
     return answer_from_context(
         event_id=event_id,
         question=question,
         live_context=live_context,
         snapshot_id=snapshot_id,
+        move_the_line=move_the_line,
     )
