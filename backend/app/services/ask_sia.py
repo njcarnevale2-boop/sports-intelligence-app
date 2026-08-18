@@ -35,6 +35,8 @@ def classify_intent(question: str) -> str:
 
     if "best sportsbook" in q or "best price" in q:
         return "BEST_SPORTSBOOK"
+    if "social" in q or "news" in q:
+        return "SOCIAL"
     if "playable to mean" in q or "what does playable" in q:
         return "PLAYABLE_TO_MEANING"
     if "still bet" in q or "still playable" in q or re.search(r"\bat\s*[+-]?\d", q):
@@ -123,6 +125,234 @@ def _snapshot_note(snapshot_context: Optional[Dict[str, Any]], live_context: Opt
     return f"{snap_part} {live_part}"
 
 
+def _missing_flags(context: Dict[str, Any]) -> Dict[str, bool]:
+    weather = context.get("weather") or {}
+    social = context.get("socialIntelligence") or {}
+    injury = context.get("injuryContext") or {}
+
+    weather_missing = str(weather.get("dataStatus") or "").upper() in {"UNAVAILABLE", ""}
+    social_missing = bool(social) and social.get("isLive") is False
+    injury_missing = str(injury.get("summary") or "").strip() == ""
+
+    return {
+        "weatherMissing": weather_missing,
+        "socialMissing": social_missing,
+        "injuryMissing": injury_missing,
+    }
+
+
+def _missing_messages_for_intent(intent: str, context: Dict[str, Any]) -> List[str]:
+    flags = _missing_flags(context)
+    messages: List[str] = []
+
+    if intent == "WEATHER" and flags["weatherMissing"]:
+        messages.append("Weather data is not currently available for this matchup.")
+    if intent == "SOCIAL" and flags["socialMissing"]:
+        messages.append("Live social intelligence is not connected yet.")
+    if intent == "INJURY" and flags["injuryMissing"]:
+        messages.append("SIA currently has no verified injury edge for this game.")
+    if intent == "BIGGEST_RISK":
+        if flags["weatherMissing"]:
+            messages.append("Weather data is not currently available.")
+        if flags["socialMissing"]:
+            messages.append("Live social intelligence is not connected yet.")
+
+    return messages
+
+
+def _format_playable_to_with_selection(selection: str, playable_to: Optional[float]) -> str:
+    if playable_to is None:
+        return "Unavailable"
+    team = str(selection or "").split(" ")[0] or "Selection"
+    return f"{team} {playable_to:+g}"
+
+
+def _is_qualified_pick(item: Dict[str, Any]) -> bool:
+    q = str(item.get("qualificationStatus") or "").upper()
+    if q:
+        return q == "QUALIFIED"
+    rec = str(item.get("recommendation") or "").upper()
+    return "LEAN" not in rec and "WATCH" not in rec and rec != ""
+
+
+def _build_sia3_rankings(top_sia3: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    rows = [item for item in (top_sia3 or []) if _is_qualified_pick(item)]
+    rows = sorted(rows, key=lambda item: int(item.get("rank") or 999))
+    rankings: List[Dict[str, Any]] = []
+    for item in rows:
+        score = _to_float((item.get("sportsIntelligenceScore") or {}).get("score"))
+        rankings.append(
+            {
+                "rank": int(item.get("rank") or 0),
+                "eventId": item.get("eventId"),
+                "pick": item.get("pick"),
+                "siScore": score,
+                "recommendation": item.get("recommendation"),
+                "calibratedProbability": _to_float(item.get("calibratedProbability") or item.get("currentWinProbability")),
+                "impliedProbability": _to_float(item.get("impliedProbability")),
+                "calibratedEdge": _to_float(item.get("calibratedEdge")),
+                "pushAwareEV": _to_float(item.get("currentEV")),
+            }
+        )
+    return rankings
+
+
+def _comparison_structured(context: Dict[str, Any], rankings: List[Dict[str, Any]]) -> Dict[str, Any]:
+    selection = str(context.get("selection") or "this pick")
+    current_event = str(context.get("eventId") or "")
+    current_pick = None
+    for item in rankings:
+        if str(item.get("eventId") or "") == current_event:
+            current_pick = item
+            break
+        if str(item.get("pick") or "") == selection:
+            current_pick = item
+            break
+
+    leader = rankings[0] if rankings else None
+
+    current_rank = int(current_pick.get("rank")) if current_pick else None
+    total = len(rankings)
+
+    if current_pick is None:
+        current_pick_reason = "This game is not currently in the qualified SIA 3 set."
+    elif current_rank == 1:
+        current_pick_reason = "This is currently SIA's #1 ranked selection."
+    else:
+        current_pick_reason = (
+            f"{selection} has strong value signals, but {leader.get('pick')} currently has the higher overall SI Score and ranks ahead."
+            if leader is not None
+            else f"{selection} is currently ranked #{current_rank}."
+        )
+
+    leader_reason = ""
+    if leader is not None and current_pick is not None and leader is not current_pick:
+        leader_reason = f"{leader.get('pick')} leads due to stronger combined SI Score and value profile."
+    elif leader is not None and current_pick is leader:
+        leader_reason = "It leads on the current SI Score/value profile versus the other qualified picks."
+
+    if current_pick is None:
+        bottom_line = "This game is not currently one of the qualified SIA 3 picks."
+    else:
+        bottom_line = f"{selection} remains a {current_pick.get('recommendation')} in the current SIA 3 board."
+
+    return {
+        "currentPick": selection,
+        "currentRank": current_rank,
+        "totalQualified": total,
+        "rankings": rankings,
+        "currentPickReason": current_pick_reason,
+        "leaderReason": leader_reason,
+        "bottomLine": bottom_line,
+    }
+
+
+def _format_comparison_answer(structured: Dict[str, Any]) -> str:
+    current_pick = structured.get("currentPick") or "This pick"
+    current_rank = structured.get("currentRank")
+    total = int(structured.get("totalQualified") or 0)
+    rankings = structured.get("rankings") or []
+
+    if total == 0:
+        return "I don't have enough verified SIA data to compare qualified SIA 3 picks right now."
+
+    if current_rank is None:
+        headline = f"{current_pick} is not currently one of the qualified SIA 3 picks."
+    else:
+        headline = f"{current_pick} currently ranks #{current_rank} of {total} in The SIA 3."
+
+    lines = [headline, "", "SIA 3 RANKING", ""]
+    for item in rankings:
+        si = _to_float(item.get("siScore"))
+        score_text = f"{si:.1f}" if si is not None else "N/A"
+        lines.append(f"#{item.get('rank')} {item.get('pick')} — SI Score {score_text} — {item.get('recommendation')}")
+
+    lines.extend(
+        [
+            "",
+            "WHY THIS PICK RANKS HERE",
+            "",
+            str(structured.get("currentPickReason") or ""),
+        ]
+    )
+
+    leader_reason = str(structured.get("leaderReason") or "").strip()
+    if leader_reason:
+        lines.append(leader_reason)
+
+    lines.extend(
+        [
+            "",
+            "BOTTOM LINE",
+            "",
+            str(structured.get("bottomLine") or ""),
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _verified_game_specific_risk(context: Dict[str, Any]) -> Optional[str]:
+    selection = str(context.get("selection") or "this pick")
+    side = str(context.get("side") or "").lower()
+    market_intel = context.get("marketIntelligence") or {}
+    injury = context.get("injuryContext") or {}
+    rest = (context.get("restTravel") or {}).get("rest") or {}
+    travel = (context.get("restTravel") or {}).get("travel") or {}
+    weather = context.get("weather") or {}
+    social = context.get("socialIntelligence") or {}
+
+    severity = str(injury.get("severity") or "").lower()
+    if severity in {"moderate", "significant", "major"}:
+        return f"The biggest verified risk is injury pressure on {selection}."
+
+    books_moving = _to_float(market_intel.get("booksMoving"))
+    books_tracked = _to_float(market_intel.get("booksTracked"))
+    if books_moving is not None and books_tracked and books_tracked > 0 and books_moving <= 1:
+        return f"The biggest verified risk is market resistance. Only {int(books_moving)} of {int(books_tracked)} tracked books are moving with this side."
+
+    rest_adv_home = _to_float(rest.get("advantageHomeDays"))
+    if rest_adv_home is not None:
+        if side == "home" and rest_adv_home < -0.5:
+            return "The biggest verified risk is a rest disadvantage for the selected side."
+        if side == "away" and rest_adv_home > 0.5:
+            return "The biggest verified risk is a rest disadvantage for the selected side."
+
+    away_miles = _to_float(travel.get("awayMiles"))
+    tz_shift = _to_float(travel.get("awayTimezoneShiftHours"))
+    if side == "away" and ((away_miles is not None and away_miles >= 1000) or (tz_shift is not None and abs(tz_shift) >= 2)):
+        return "The biggest verified risk is travel burden for the selected side."
+
+    weather_text = str(weather.get("summary") or "").lower()
+    if str(weather.get("dataStatus") or "").upper() not in {"UNAVAILABLE", ""}:
+        if any(token in weather_text for token in ["wind", "rain", "snow", "storm", "extreme"]):
+            return "The biggest verified risk is weather volatility for this matchup."
+
+    key_signals = social.get("keySignals") if isinstance(social, dict) else None
+    if isinstance(key_signals, list):
+        verified = [
+            s
+            for s in key_signals
+            if str(s.get("status") or "").upper() in {"CORROBORATED", "OFFICIAL"}
+            and _to_float(s.get("estimatedPointImpact")) is not None
+        ]
+        if verified:
+            return "The biggest verified risk is a corroborated social signal that could move availability or pricing."
+
+    return None
+
+
+def _decision_boundary_text(context: Dict[str, Any]) -> str:
+    selection = str(context.get("selection") or "Current pick")
+    playable_to = _to_float(context.get("truePlayableTo"))
+    if playable_to is None:
+        return "I don't have enough verified SIA data to compute a Playable-To boundary right now."
+
+    return (
+        f"SIA would move this to PASS if {selection} moved beyond its current Playable-To of {_format_playable_to_with_selection(selection, playable_to)}, "
+        "or if updated probability/price caused the opportunity to fail SIA's qualification policy."
+    )
+
+
 def _build_structured_explanation(
     *,
     question: str,
@@ -131,20 +361,10 @@ def _build_structured_explanation(
     top_sia3: Optional[List[Dict[str, Any]]] = None,
     snapshot_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    missing_data: List[str] = []
-    weather = context.get("weather")
+    weather = context.get("weather") or {}
     injury = context.get("injuryContext") or {}
     social = context.get("socialIntelligence") or {}
-
-    if not weather or str((weather or {}).get("dataStatus", "")).upper() in {"UNAVAILABLE", ""}:
-        missing_data.append("Weather data is not currently available for this matchup.")
-
-    if social and social.get("isLive") is False:
-        missing_data.append("Live social intelligence is not connected yet.")
-
     injury_summary = str(injury.get("summary") or "").strip()
-    if not injury_summary or injury_summary.lower() in {"neutral", "no material edge"}:
-        missing_data.append("SIA currently has no verified injury edge for this game.")
 
     selection = str(context.get("selection") or "this side")
     calibrated_prob = _to_float(context.get("calibratedProbability"))
@@ -163,6 +383,7 @@ def _build_structured_explanation(
     decision_boundary = ""
     market_context = ""
     confidence_summary = ""
+    comparison_structured = None
 
     if calibrated_prob is not None and implied_prob is not None:
         supporting_reasons.append(
@@ -182,21 +403,14 @@ def _build_structured_explanation(
         books_tracked = market_intel.get("booksTracked")
         market_context = f"Market signal: {signal}. Books moving: {books_moving}/{books_tracked}."
 
-    severity = str(injury.get("severity") or "").lower()
-    if severity in {"moderate", "significant", "major"}:
-        risk_factors.append("Injury context is a meaningful risk factor.")
-
-    if weather and str(weather.get("dataStatus") or "").upper() not in {"UNAVAILABLE", ""}:
-        if str(weather.get("summary") or "").strip():
-            risk_factors.append("Weather could affect execution and volatility.")
+    verified_risk = _verified_game_specific_risk(context)
+    if verified_risk:
+        risk_factors.append(verified_risk)
 
     if not risk_factors:
-        risk_factors.append("The biggest risk is price deterioration relative to SIA's playable boundary.")
+        risk_factors.append("No major game-specific risk is currently verified.")
 
-    if true_playable_to is not None:
-        decision_boundary = f"SIA's current True Playable-To is {true_playable_to:+g} for {selection}."
-    else:
-        decision_boundary = "I don't have enough verified SIA data to compute a Playable-To boundary right now."
+    decision_boundary = _decision_boundary_text(context)
 
     confidence_summary = f"SIA currently labels this as {recommendation}."
 
@@ -207,9 +421,23 @@ def _build_structured_explanation(
     if intent == "WHY":
         answer = f"SIA currently favors {selection}."
         primary_reason = "Positive value based on calibrated probability versus price."
+        if calibrated_prob is not None and implied_prob is not None:
+            why = [
+                f"SIA gives {selection} a {calibrated_prob * 100:.1f}% win/cover probability versus {implied_prob:.1f}% implied by the market.",
+                f"Push-aware EV is {current_ev:+.3f} per $1 at the current price." if current_ev is not None else "Current push-aware EV is positive at the quoted price.",
+            ]
 
     elif intent == "BIGGEST_RISK":
-        answer = risk_factors[0]
+        if verified_risk:
+            answer = verified_risk
+            why = [
+                "This is a verified risk from current SIA context, not a hypothetical scenario.",
+            ]
+        else:
+            answer = "No major game-specific risk is currently verified."
+            why = [
+                "The primary measurable risk is price deterioration beyond SIA's playable range.",
+            ]
         primary_reason = "Risk concentration"
 
     elif intent == "PLAYABLE_CHECK":
@@ -218,19 +446,20 @@ def _build_structured_explanation(
         if playable is None:
             answer = "I don't have enough verified SIA data to answer that yet."
         else:
-            answer = (
-                f"Yes — SIA still likes {selection} at {hypo:+g}."
-                if playable
-                else f"No — that price/line is outside SIA's current playable range for {selection}."
-            )
+            answer = f"Yes — {selection.split(' ')[0]} {hypo:+g} remains playable." if playable else f"No — {selection.split(' ')[0]} {hypo:+g} is outside SIA's current playable range."
             why = [
-                f"This check uses the canonical True Playable-To threshold ({true_playable_to:+g}).",
+                f"Current recommendation: {selection}",
+                f"SIA Playable-To: {_format_playable_to_with_selection(selection, true_playable_to)}",
             ]
-            what_changes = f"At {hypo:+g}, this is {'inside' if playable else 'outside'} the current playable range."
+            what_changes = f"{hypo:+g} remains {'inside' if playable else 'outside'} SIA's current playable range."
         primary_reason = "Deterministic playable-to boundary check."
 
     elif intent == "PASS_CONDITION":
-        answer = "SIA would move this to PASS if price/line moves outside the current playable boundary or if edge/EV deteriorates."
+        answer = decision_boundary
+        why = [
+            f"CURRENT BET: {selection}",
+            f"PLAYABLE THROUGH: {_format_playable_to_with_selection(selection, true_playable_to)}" if true_playable_to is not None else "PLAYABLE THROUGH: Unavailable",
+        ]
         primary_reason = "Boundary and value deterioration."
 
     elif intent == "MARKET_VS_MODEL":
@@ -238,16 +467,11 @@ def _build_structured_explanation(
         primary_reason = "Calibrated probability disagreement with market."
 
     elif intent == "SIA3_COMPARE":
-        if not top_sia3:
-            answer = "I don't have enough verified SIA data to compare the current SIA 3 right now."
-        else:
-            ranked = sorted(top_sia3, key=lambda item: int(item.get("rank") or 999))
-            best = ranked[0]
-            answer = (
-                f"SIA currently ranks {best.get('pick')} first in The SIA 3 "
-                f"(SI Score {float((best.get('sportsIntelligenceScore') or {}).get('score') or 0):.1f}, "
-                f"edge {float(best.get('calibratedEdge') or 0) * 100:.1f}pp, EV {float(best.get('currentEV') or 0):+.3f})."
-            )
+        rankings = _build_sia3_rankings(top_sia3)
+        comparison_structured = _comparison_structured(context, rankings)
+        answer = _format_comparison_answer(comparison_structured)
+        why = [str(comparison_structured.get("currentPickReason") or "")]
+        what_changes = "Ranking order can change as SI Score, calibrated edge, and EV update."
         primary_reason = "Canonical SIA 3 ranking."
 
     elif intent == "LINE_TREND":
@@ -270,6 +494,14 @@ def _build_structured_explanation(
         else:
             answer = "Weather data is not currently available for this matchup."
         primary_reason = "Weather availability check."
+
+    elif intent == "SOCIAL":
+        if social and social.get("isLive") is False:
+            answer = "Live social intelligence is not connected yet."
+        else:
+            summary = str(social.get("summary") or "").strip()
+            answer = f"Social context: {summary}" if summary else "I don't have enough verified SIA social intelligence data to answer that yet."
+        primary_reason = "Social intelligence availability check."
 
     elif intent == "PLAYABLE_TO_MEANING":
         answer = "Playable-To is SIA's current boundary where value remains acceptable for this exact recommendation."
@@ -299,7 +531,8 @@ def _build_structured_explanation(
         if calibrated_prob is None:
             answer = "I don't have enough verified SIA data to provide probability for this game right now."
         else:
-            answer = f"SIA's calibrated probability is {calibrated_prob * 100:.1f}% (push {(_to_float(context.get('pushProbability')) or 0) * 100:.1f}%, loss {(_to_float(context.get('lossProbability')) or 0) * 100:.1f}%)."
+            implied_text = f"{implied_prob:.1f}%" if implied_prob is not None else "the market implied probability"
+            answer = f"SIA gives {selection} a {calibrated_prob * 100:.1f}% win/cover probability versus {implied_text}."
         primary_reason = "Probability lookup."
 
     elif intent == "RANK":
@@ -314,6 +547,7 @@ def _build_structured_explanation(
         answer = f"SIA currently sees this as {recommendation}."
         primary_reason = "Current recommendation label."
 
+    missing_data = _missing_messages_for_intent(intent, context)
     snapshot_note = _snapshot_note(snapshot_context=snapshot_context, live_context=context)
 
     return {
@@ -329,6 +563,7 @@ def _build_structured_explanation(
             "missingData": missing_data,
             "marketContext": market_context,
             "confidenceSummary": confidence_summary,
+            "comparison": comparison_structured,
         },
         "snapshotNote": snapshot_note,
         "missingData": missing_data,

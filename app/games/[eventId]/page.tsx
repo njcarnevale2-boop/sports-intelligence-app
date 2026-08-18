@@ -439,7 +439,7 @@ export default function GameIntelligencePage() {
           <p className="mt-2 text-sm text-zinc-400">Complex Engine. Simple Answer.</p>
 
           <div className="mt-4 flex flex-wrap gap-2">
-            {["Why does SIA like this?", "Biggest risk?", "Still playable at +2?", "What changes the bet?", "Compare to SIA 3."].map((prompt) => (
+            {["Why does SIA like this?", "Biggest risk?", "Still playable at +2?", "What changes the bet?", "Compare SIA 3 Picks"].map((prompt) => (
               <button
                 key={prompt}
                 className="rounded-full border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs text-zinc-300 transition hover:bg-white/[0.08]"
