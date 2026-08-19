@@ -18,6 +18,7 @@ import pandas as pd
 from app.config import settings
 from app.services.calibration import apply_guarded_isotonic
 from app.services.closing_line import calculate_clv, get_closing_line
+from app.services.cross_market_normalization import attach_shadow_global_scores
 from app.services.probability_engine import (
     ev_per_dollar_with_push,
     load_historical_residuals,
@@ -103,6 +104,12 @@ CREATE TABLE IF NOT EXISTS shadow_candidates (
     market_rank INTEGER,
     week_rank INTEGER,
     qualification_status TEXT,
+    global_research_score REAL,
+    global_research_rank INTEGER,
+    normalization_method TEXT,
+    normalization_version TEXT,
+    production_eligible INTEGER,
+    cross_market_comparable INTEGER,
 
     FOREIGN KEY(run_id) REFERENCES shadow_candidate_runs(run_id)
 );
@@ -175,6 +182,12 @@ CREATE TABLE IF NOT EXISTS shadow_publication_items (
     market_rank INTEGER,
     week_rank INTEGER,
     qualification_status TEXT,
+    global_research_score REAL,
+    global_research_rank INTEGER,
+    normalization_method TEXT,
+    normalization_version TEXT,
+    production_eligible INTEGER,
+    cross_market_comparable INTEGER,
 
     FOREIGN KEY(shadow_snapshot_id) REFERENCES shadow_publications(shadow_snapshot_id),
     UNIQUE(shadow_snapshot_id, candidate_id)
@@ -194,6 +207,7 @@ CREATE TABLE IF NOT EXISTS shadow_outcomes (
 
     closing_line REAL,
     closing_price REAL,
+    closing_market_novig_probability REAL,
     closing_timestamp TEXT,
     clv REAL,
     clv_type TEXT,
@@ -277,6 +291,26 @@ def _connect() -> sqlite3.Connection:
 def _ensure_schema() -> None:
     con = _connect()
     con.executescript(SHADOW_SCHEMA)
+    # Backward-compatible migrations for databases created before research score fields existed.
+    for table, column_def in [
+        ("shadow_candidates", "global_research_score REAL"),
+        ("shadow_candidates", "global_research_rank INTEGER"),
+        ("shadow_candidates", "normalization_method TEXT"),
+        ("shadow_candidates", "normalization_version TEXT"),
+        ("shadow_candidates", "production_eligible INTEGER"),
+        ("shadow_candidates", "cross_market_comparable INTEGER"),
+        ("shadow_publication_items", "global_research_score REAL"),
+        ("shadow_publication_items", "global_research_rank INTEGER"),
+        ("shadow_publication_items", "normalization_method TEXT"),
+        ("shadow_publication_items", "normalization_version TEXT"),
+        ("shadow_publication_items", "production_eligible INTEGER"),
+        ("shadow_publication_items", "cross_market_comparable INTEGER"),
+        ("shadow_outcomes", "closing_market_novig_probability REAL"),
+    ]:
+        try:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN {column_def}")
+        except sqlite3.OperationalError:
+            pass
     con.commit()
     con.close()
 
@@ -481,6 +515,12 @@ def _save_shadow_run(run_payload: dict[str, Any], candidates: list[dict[str, Any
             row.get("marketRank"),
             row.get("weekRank"),
             row.get("qualificationStatus"),
+            row.get("globalResearchScore"),
+            row.get("globalResearchRank"),
+            row.get("normalizationMethod"),
+            row.get("normalizationVersion"),
+            1 if bool(row.get("productionEligible")) else 0,
+            1 if bool(row.get("crossMarketComparable")) else 0,
         ]
 
         con.execute(
@@ -497,7 +537,10 @@ def _save_shadow_run(run_payload: dict[str, Any], candidates: list[dict[str, Any
                 model_version, probability_engine_version, calibration_version,
                 ranking_version, qualification_version, git_commit_hash,
                 market_snapshot_timestamp, source_odds_snapshot_id,
-                market_rank, week_rank, qualification_status
+                market_rank, week_rank, qualification_status,
+                global_research_score, global_research_rank,
+                normalization_method, normalization_version,
+                production_eligible, cross_market_comparable
             ) VALUES ({','.join(['?'] * len(values))})
             """,
             values,
@@ -694,6 +737,8 @@ def build_shadow_boards(week: Optional[int] = None, season: Optional[int] = None
             "marketRank": None,
             "weekRank": None,
             "qualificationStatus": "QUALIFIED" if ev >= float(settings.MIN_PLAYABLE_EV) else "WATCH",
+            "productionEligible": False,
+            "crossMarketComparable": False,
         }
         candidates.append(candidate)
 
@@ -719,6 +764,8 @@ def build_shadow_boards(week: Optional[int] = None, season: Optional[int] = None
         )
         for idx, c in enumerate(fam, start=1):
             c["weekRank"] = idx
+
+    attach_shadow_global_scores(candidates)
 
     source_market_timestamp = ""
     if len(working):
@@ -882,8 +929,11 @@ def publish_shadow_snapshot(
                 model_version, probability_engine_version, calibration_version,
                 ranking_version, qualification_version, git_commit_hash,
                 market_snapshot_timestamp, source_odds_snapshot_id,
-                market_rank, week_rank, qualification_status
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                market_rank, week_rank, qualification_status,
+                global_research_score, global_research_rank,
+                normalization_method, normalization_version,
+                production_eligible, cross_market_comparable
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             [
                 shadow_snapshot_id,
@@ -921,6 +971,12 @@ def publish_shadow_snapshot(
                 r["market_rank"],
                 r["week_rank"],
                 r["qualification_status"],
+                r["global_research_score"],
+                r["global_research_rank"],
+                r["normalization_method"],
+                r["normalization_version"],
+                r["production_eligible"],
+                r["cross_market_comparable"],
             ],
         )
 
@@ -1017,6 +1073,7 @@ def append_shadow_outcomes(
         # Closing and CLV from immutable recommendation price/line, never substituted by current odds.
         closing_line = None
         closing_price = None
+        closing_market_novig_probability = None
         closing_timestamp = None
         clv = None
         clv_type = None
@@ -1036,6 +1093,9 @@ def append_shadow_outcomes(
                 if close.closing_status == "AVAILABLE":
                     closing_line = close.closing_point
                     closing_price = close.closing_price
+                    if closing_price is not None:
+                        # True no-vig requires both sides; persist implied probability for this side when only one quote is available.
+                        closing_market_novig_probability = _implied_probability(float(closing_price))
                     closing_timestamp = close.closing_timestamp.isoformat() if close.closing_timestamp else None
 
                     clv_obj = calculate_clv(
@@ -1063,6 +1123,7 @@ def append_shadow_outcomes(
             "profitPerDollar": _profit_per_dollar(price, result),
             "closingLine": closing_line,
             "closingPrice": closing_price,
+            "closingMarketNoVigProbability": closing_market_novig_probability,
             "closingTimestamp": closing_timestamp,
             "clv": clv,
             "clvType": clv_type,
@@ -1077,10 +1138,10 @@ def append_shadow_outcomes(
             INSERT OR IGNORE INTO shadow_outcomes (
                 outcome_id, shadow_snapshot_id, candidate_id, captured_at_utc,
                 final_away_score, final_home_score, result, profit_per_dollar,
-                closing_line, closing_price, closing_timestamp,
+                closing_line, closing_price, closing_market_novig_probability, closing_timestamp,
                 clv, clv_type,
                 source_odds_snapshot_id, payload_hash, canonical_payload, idempotency_key
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             [
                 outcome_id,
@@ -1093,6 +1154,7 @@ def append_shadow_outcomes(
                 payload["profitPerDollar"],
                 closing_line,
                 closing_price,
+                closing_market_novig_probability,
                 closing_timestamp,
                 clv,
                 clv_type,
@@ -1194,6 +1256,7 @@ def shadow_performance_report() -> dict[str, Any]:
 
         # Breakdown
         by_rank: dict[str, int] = {}
+        by_global_research_rank: dict[str, int] = {}
         by_edge_band: dict[str, int] = {}
         by_ev_band: dict[str, int] = {}
         by_book: dict[str, int] = {}
@@ -1202,6 +1265,10 @@ def shadow_performance_report() -> dict[str, Any]:
             rank = int(r["market_rank"] or 0)
             if rank:
                 by_rank[f"{rank}"] = by_rank.get(f"{rank}", 0) + 1
+
+            global_rank = int(r["global_research_rank"] or 0)
+            if global_rank:
+                by_global_research_rank[f"{global_rank}"] = by_global_research_rank.get(f"{global_rank}", 0) + 1
 
             edge = float(r["calibrated_edge"] or 0.0)
             ev = float(r["current_ev"] or 0.0)
@@ -1233,6 +1300,7 @@ def shadow_performance_report() -> dict[str, Any]:
             "averageCLV": avg_clv,
             "bySeasonWeek": by_week,
             "byRank": by_rank,
+            "byGlobalResearchRank": by_global_research_rank,
             "byEdgeBand": by_edge_band,
             "byEVBand": by_ev_band,
             "bySportsbook": by_book,
@@ -1242,6 +1310,13 @@ def shadow_performance_report() -> dict[str, Any]:
                 "top3": by_rank.get("3", 0),
                 "top5": sum(v for k, v in by_rank.items() if k.isdigit() and int(k) <= 5),
                 "top10": sum(v for k, v in by_rank.items() if k.isdigit() and int(k) <= 10),
+            },
+            "globalResearchTopRanksTracked": {
+                "top1": by_global_research_rank.get("1", 0),
+                "top2": by_global_research_rank.get("2", 0),
+                "top3": by_global_research_rank.get("3", 0),
+                "top5": sum(v for k, v in by_global_research_rank.items() if k.isdigit() and int(k) <= 5),
+                "top10": sum(v for k, v in by_global_research_rank.items() if k.isdigit() and int(k) <= 10),
             },
         }
 
