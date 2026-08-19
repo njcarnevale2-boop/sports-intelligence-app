@@ -207,6 +207,50 @@ def total_outcome_probabilities(
     return OutcomeProbabilities(win=win, push=push, loss=loss, status="AVAILABLE", reason=None)
 
 
+def moneyline_outcome_probabilities(
+    model_margin_home: Optional[float],
+    side: str,
+) -> OutcomeProbabilities:
+    historical = load_historical_residuals()
+    if historical is None:
+        return OutcomeProbabilities(
+            win=0.0,
+            push=0.0,
+            loss=0.0,
+            status="UNAVAILABLE",
+            reason="Historical residual distribution is unavailable or too small.",
+        )
+
+    if model_margin_home is None:
+        return OutcomeProbabilities(
+            win=0.0,
+            push=0.0,
+            loss=0.0,
+            status="UNAVAILABLE",
+            reason="Model margin is missing.",
+        )
+
+    side_key = str(side or "").strip().lower()
+    if side_key not in {"home", "away"}:
+        return OutcomeProbabilities(
+            win=0.0,
+            push=0.0,
+            loss=0.0,
+            status="UNAVAILABLE",
+            reason="Unsupported moneyline side.",
+        )
+
+    margins = _simulated_margins(model_margin_home, historical.margin_residuals)
+    home_win = float(np.mean(margins > 0))
+    tie = float(np.mean(margins == 0))
+    p_home = home_win + (0.5 * tie)
+    p_home = max(1e-6, min(1 - 1e-6, p_home))
+
+    win = p_home if side_key == "home" else (1.0 - p_home)
+    loss = max(0.0, 1.0 - win)
+    return OutcomeProbabilities(win=win, push=0.0, loss=loss, status="AVAILABLE", reason=None)
+
+
 def fair_price_from_win_push(win_probability: float, push_probability: float) -> Optional[int]:
     non_push = 1.0 - push_probability
     if non_push <= 0:
@@ -290,3 +334,39 @@ def true_playable_to_total(
         return ThresholdResult(playable_to=None, status="UNAVAILABLE", reason="Current total line does not meet minimum EV.")
 
     return ThresholdResult(playable_to=threshold, status="AVAILABLE", reason=None)
+
+
+def true_playable_to_moneyline(
+    win_probability: Optional[float],
+    start_price: Optional[float],
+    minimum_playable_ev: float,
+) -> ThresholdResult:
+    if win_probability is None or start_price is None:
+        return ThresholdResult(playable_to=None, status="UNAVAILABLE", reason="Insufficient inputs for moneyline threshold.")
+
+    p = float(win_probability)
+    if p <= 0.0 or p >= 1.0:
+        return ThresholdResult(playable_to=None, status="UNAVAILABLE", reason="Win probability is outside valid bounds.")
+
+    current = int(round(float(start_price)))
+    threshold: Optional[int] = None
+
+    for _ in range(1200):
+        ev = ev_per_dollar_with_push(win_probability=p, push_probability=0.0, american_odds=float(current))
+        if ev >= minimum_playable_ev:
+            threshold = current
+            if current > 100:
+                current -= 1
+                if current <= 100:
+                    break
+            else:
+                current -= 1
+            if current in {-100, 0}:
+                current = -101
+            continue
+        break
+
+    if threshold is None:
+        return ThresholdResult(playable_to=None, status="UNAVAILABLE", reason="Current moneyline price does not meet minimum EV.")
+
+    return ThresholdResult(playable_to=float(threshold), status="AVAILABLE", reason=None)

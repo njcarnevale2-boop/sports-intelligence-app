@@ -9,8 +9,10 @@ from app.services.probability_engine import (
     american_odds_from_probability,
     ev_per_dollar_with_push,
     fair_price_from_win_push,
+    moneyline_outcome_probabilities,
     spread_outcome_probabilities,
     total_outcome_probabilities,
+    true_playable_to_moneyline,
     true_playable_to_spread,
     true_playable_to_total,
 )
@@ -130,14 +132,35 @@ def build_fair_price_result(
     current_push_probability: Optional[float] = None
     current_loss_probability: Optional[float] = None
 
-    if market in {"moneyline", "h2h"}:
-        fair_price = american_odds_from_probability(model_probability)
-        current_win_probability = model_probability
-        current_push_probability = 0.0
-
     model_margin_home: Optional[float] = None
-    if market == "spread" and game_projection_row is not None:
+    if game_projection_row is not None:
         model_margin_home = safe_float(game_projection_row.get("model_margin_home"))
+
+    if market in {"moneyline", "h2h"}:
+        probs = moneyline_outcome_probabilities(model_margin_home=model_margin_home, side=side)
+        if probs.status == "AVAILABLE":
+            current_win_probability = probs.win
+            current_push_probability = probs.push
+        else:
+            current_win_probability = model_probability
+            current_push_probability = 0.0 if model_probability is not None else None
+
+        if current_win_probability is not None:
+            fair_price = fair_price_from_win_push(
+                win_probability=current_win_probability,
+                push_probability=float(current_push_probability or 0.0),
+            )
+        else:
+            fair_price = american_odds_from_probability(model_probability)
+
+        if row_price is not None and current_win_probability is not None:
+            current_ev = ev_per_dollar_with_push(
+                win_probability=current_win_probability,
+                push_probability=float(current_push_probability or 0.0),
+                american_odds=row_price,
+            )
+
+    if market == "spread" and game_projection_row is not None:
         if model_margin_home is not None:
             fair_line = -model_margin_home if side == "home" else model_margin_home
 
@@ -214,6 +237,16 @@ def build_fair_price_result(
             side=side,
             start_point=row_point,
             price=row_price,
+            minimum_playable_ev=minimum_playable_ev,
+        )
+        true_playable_to = threshold.playable_to
+        true_playable_to_status = threshold.status
+        true_playable_to_reason = threshold.reason
+
+    if market in {"moneyline", "h2h"}:
+        threshold = true_playable_to_moneyline(
+            win_probability=current_win_probability,
+            start_price=row_price,
             minimum_playable_ev=minimum_playable_ev,
         )
         true_playable_to = threshold.playable_to

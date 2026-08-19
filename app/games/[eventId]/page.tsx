@@ -53,7 +53,7 @@ type Opportunity = {
   market: string;
   pick: string;
   book: string;
-  point: number;
+  point: number | null;
   price: number;
   modelProbability: number;
   impliedProbability: number;
@@ -74,6 +74,15 @@ type Opportunity = {
   kelly20: number;
   marketIntelligence: MarketIntelligence;
   sportsIntelligenceScore: SportsIntelligenceScore;
+  productionEligible?: boolean;
+  marketValidationStatus?: string;
+  qualificationStatus?: string;
+};
+
+type GameOpportunityResponse = {
+  opportunity: Opportunity | null;
+  bestByMarket?: Record<string, Opportunity>;
+  intelligenceReport?: IntelligenceReport;
 };
 
 type IntelligenceReport = {
@@ -216,7 +225,18 @@ function formatTruePlayableTo(opp: Opportunity | null) {
   if (opp.truePlayableToStatus !== "AVAILABLE" || opp.truePlayableTo == null) {
     return "Not available yet";
   }
+  if (opp.market === "spread" || opp.market === "total") {
+    return `${opp.truePlayableTo > 0 ? "+" : ""}${opp.truePlayableTo}`;
+  }
   return signed(opp.truePlayableTo);
+}
+
+function marketLabel(opp: Opportunity | null) {
+  if (!opp) return "Unavailable";
+  if (opp.market === "moneyline") return `${opp.pick} ${signed(opp.price)}`;
+  if (opp.market === "total" && opp.point != null) return `${opp.pick} (${signed(opp.price)})`;
+  if (opp.market === "spread" && opp.point != null) return `${opp.pick} (${signed(opp.price)})`;
+  return `${opp.pick} (${signed(opp.price)})`;
 }
 
 function displayWinProbability(opp: Opportunity | null) {
@@ -274,6 +294,7 @@ export default function GameIntelligencePage() {
   const [projection, setProjection] = useState<GameProjection | null>(null);
   const [context, setContext] = useState<ScheduleContext | null>(null);
   const [opportunity, setOpportunity] = useState<Opportunity | null>(null);
+  const [bestByMarket, setBestByMarket] = useState<Record<string, Opportunity>>({});
   const [intelligenceReport, setIntelligenceReport] = useState<IntelligenceReport | null>(null);
   const [weather, setWeather] = useState<WeatherStatus | null>(null);
   const [injury, setInjury] = useState<InjuryContext | null>(null);
@@ -306,7 +327,7 @@ export default function GameIntelligencePage() {
 
         const [ctxResult, oppResult, weatherResult, injuryResult, socialResult] = await Promise.allSettled([
           fetchJson<ScheduleContext>(`/api/games/${eventId}/context`),
-          fetchJson<{ opportunity: Opportunity | null; intelligenceReport?: IntelligenceReport }>(`/api/games/${eventId}/opportunity`),
+          fetchJson<GameOpportunityResponse>(`/api/games/${eventId}/opportunity`),
           fetchJson<WeatherStatus>(`/api/games/${eventId}/weather`),
           fetchJson<{ injuryContext: InjuryContext }>(`/api/games/${eventId}/injuries`),
           fetchJson<SocialGameContext>(`/api/games/${eventId}/social-intelligence`),
@@ -315,6 +336,7 @@ export default function GameIntelligencePage() {
         if (ctxResult.status === "fulfilled") setContext(ctxResult.value);
         if (oppResult.status === "fulfilled") {
           setOpportunity(oppResult.value.opportunity);
+          setBestByMarket(oppResult.value.bestByMarket ?? {});
           if (oppResult.value.intelligenceReport) setIntelligenceReport(oppResult.value.intelligenceReport);
           if (oppResult.value.opportunity?.market === "spread") {
             setMoveSpread(oppResult.value.opportunity.point);
@@ -526,6 +548,34 @@ export default function GameIntelligencePage() {
               <p className="mt-2 text-lg font-semibold">{betSize.headline}</p>
               <p className="mt-1 text-xs text-zinc-500">{betSize.detail}</p>
             </div>
+          </div>
+
+          <div className="mt-5 grid gap-3 md:grid-cols-3">
+            {["spread", "moneyline", "total"].map((marketKey) => {
+              const item = bestByMarket[marketKey] ?? null;
+              const isShadow = item != null && item.productionEligible === false;
+              const title = marketKey === "spread" ? "BEST SPREAD" : marketKey === "moneyline" ? "BEST MONEYLINE" : "BEST TOTAL";
+              return (
+                <div key={marketKey} className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">{title}</p>
+                  <p className="mt-2 text-sm font-semibold text-zinc-100">{marketLabel(item)}</p>
+                  <p className="mt-1 text-xs text-zinc-400">{item?.book ?? "No current quote"}</p>
+                  {isShadow ? (
+                    <p className="mt-2 text-[11px] text-amber-300">Shadow intelligence - not currently eligible for The SIA 3.</p>
+                  ) : null}
+                  {item ? (
+                    <div className="mt-2 space-y-1 text-xs text-zinc-400">
+                      <p>SIA probability: {item.currentWinProbability != null ? `${(item.currentWinProbability * 100).toFixed(1)}%` : `${item.modelProbability.toFixed(1)}%`}</p>
+                      <p>Market probability: {item.impliedProbability.toFixed(1)}%</p>
+                      <p>Edge: {item.edge.toFixed(1)} pts</p>
+                      <p>EV: {item.currentEV != null ? `${item.currentEV >= 0 ? "+" : ""}${item.currentEV.toFixed(3)}` : "Unavailable"}</p>
+                      <p>Playable-To: {formatTruePlayableTo(item)}</p>
+                      <p>Qualification: {item.qualificationStatus ?? "UNKNOWN"}</p>
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
           </div>
 
           <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4">

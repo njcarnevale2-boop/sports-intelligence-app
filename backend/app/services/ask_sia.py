@@ -33,6 +33,9 @@ def classify_intent(question: str) -> str:
     if not q:
         return "UNKNOWN"
 
+    if "stronger" in q and (("spread" in q and "moneyline" in q) or ("spread" in q and "total" in q) or ("moneyline" in q and "total" in q)):
+        return "CROSS_MARKET_COMPARE"
+
     if "best sportsbook" in q or "best price" in q:
         return "BEST_SPORTSBOOK"
     if "value" in q and ("lost" in q or "lose" in q):
@@ -406,6 +409,8 @@ def _build_structured_explanation(
     market = str(context.get("market") or "")
     recommendation = str(context.get("recommendation") or "PASS")
     si_score = _to_float(context.get("siScore"))
+    production_eligible = bool(context.get("productionEligible")) if context.get("productionEligible") is not None else (market.lower() in {"spread", "spreads"})
+    validation_status = str(context.get("marketValidationStatus") or "UNKNOWN")
 
     primary_reason = ""
     supporting_reasons: List[str] = []
@@ -498,6 +503,8 @@ def _build_structured_explanation(
                 f"SIA gives {selection} a {calibrated_prob * 100:.1f}% win/cover probability versus {implied_prob:.1f}% implied by the market.",
                 f"Push-aware EV is {current_ev:+.3f} per $1 at the current price." if current_ev is not None else "Current push-aware EV is positive at the quoted price.",
             ]
+        if not production_eligible:
+            why.append("This market is currently in shadow validation and is not eligible for The SIA 3.")
 
     elif intent == "BIGGEST_RISK":
         if verified_risk:
@@ -602,6 +609,18 @@ def _build_structured_explanation(
         what_changes = "Ranking order can change as SI Score, calibrated edge, and EV update."
         primary_reason = "Canonical SIA 3 ranking."
 
+    elif intent == "CROSS_MARKET_COMPARE":
+        answer = (
+            "SIA can compare the underlying metrics, but moneyline and totals are still in shadow validation "
+            "and are not currently eligible to outrank a spread in The SIA 3."
+        )
+        why = [
+            "Cross-market comparability is not yet statistically validated for production ranking.",
+            "Production SIA 3 ranking currently evaluates only production-eligible market families.",
+        ]
+        what_changes = "Universal cross-market ranking requires validated prospective market-family comparability research."
+        primary_reason = "Shadow-validation disclosure."
+
     elif intent == "LINE_TREND":
         if market_intel and market_intel.get("booksMoving") is not None:
             answer = f"SIA sees current line movement signal as {market_intel.get('signal')} across {market_intel.get('booksMoving')}/{market_intel.get('booksTracked')} books."
@@ -675,6 +694,11 @@ def _build_structured_explanation(
         answer = f"SIA currently sees this as {recommendation}."
         primary_reason = "Current recommendation label."
 
+    if not production_eligible and intent in {"WHY", "PLAYABLE_CHECK", "PROBABILITY", "BET_OR_PASS", "RANK"}:
+        what_changes = (
+            f"{what_changes} This market remains {validation_status} and is not currently production-eligible for The SIA 3."
+        ).strip()
+
     missing_data = _missing_messages_for_intent(intent, context)
     snapshot_note = _snapshot_note(snapshot_context=snapshot_context, live_context=context)
 
@@ -720,6 +744,7 @@ def _build_structured_explanation(
 def _build_live_context(event_id: str) -> Dict[str, Any]:
     game_bundle = get_game_best_opportunity(event_id)
     opportunity = game_bundle.get("opportunity") or {}
+    best_by_market = game_bundle.get("bestByMarket") or {}
     report = game_bundle.get("intelligenceReport") or {}
 
     games_payload = games_service.list_games()
@@ -769,7 +794,60 @@ def _build_live_context(event_id: str) -> Dict[str, Any]:
         "rank": opportunity.get("rank"),
         "snapshotId": opportunities_payload.get("snapshotId"),
         "topSia3": top_sia3,
+        "bestByMarket": best_by_market,
+        "marketValidationStatus": opportunity.get("marketValidationStatus"),
+        "productionEligible": opportunity.get("productionEligible"),
     }
+
+
+def _market_hint_from_question(question: str) -> Optional[str]:
+    q = str(question or "").lower()
+    if "moneyline" in q or "ml" in q:
+        return "moneyline"
+    if "total" in q or "over" in q or "under" in q:
+        return "total"
+    if "spread" in q:
+        return "spread"
+    return None
+
+
+def _context_for_market(live_context: Dict[str, Any], market_key: Optional[str]) -> Dict[str, Any]:
+    if not market_key:
+        return live_context
+
+    best_by_market = live_context.get("bestByMarket") or {}
+    selected = best_by_market.get(market_key)
+    if not isinstance(selected, dict):
+        return live_context
+
+    merged = dict(live_context)
+    merged.update(
+        {
+            "selection": selected.get("pick"),
+            "market": selected.get("market"),
+            "side": selected.get("side"),
+            "point": selected.get("point"),
+            "price": selected.get("price"),
+            "sportsbook": selected.get("book"),
+            "calibratedProbability": selected.get("calibratedProbability") or selected.get("currentWinProbability"),
+            "pushProbability": selected.get("currentPushProbability"),
+            "lossProbability": selected.get("currentLossProbability"),
+            "impliedProbability": selected.get("impliedProbability"),
+            "calibratedEdge": selected.get("calibratedEdge"),
+            "currentEV": selected.get("currentEV"),
+            "fairLine": selected.get("fairLine"),
+            "truePlayableTo": selected.get("truePlayableTo"),
+            "siScore": (selected.get("sportsIntelligenceScore") or {}).get("score"),
+            "recommendation": selected.get("recommendation"),
+            "marketIntelligence": selected.get("marketIntelligence"),
+            "qualificationReasons": selected.get("qualificationReasons") or [],
+            "snapshotTimestamp": selected.get("marketLastUpdated"),
+            "rank": selected.get("rank"),
+            "marketValidationStatus": selected.get("marketValidationStatus"),
+            "productionEligible": selected.get("productionEligible"),
+        }
+    )
+    return merged
 
 
 def _build_snapshot_context(snapshot_id: str) -> Optional[Dict[str, Any]]:
@@ -806,10 +884,12 @@ def answer_from_context(
 ) -> Dict[str, Any]:
     snapshot_context = _build_snapshot_context(snapshot_id) if snapshot_id else None
     intent = classify_intent(question)
+    market_hint = _market_hint_from_question(question)
+    scoped_context = _context_for_market(live_context, market_hint)
 
     response = _build_structured_explanation(
         question=question,
-        context=live_context,
+        context=scoped_context,
         intent=intent,
         top_sia3=live_context.get("topSia3"),
         snapshot_context=snapshot_context,
@@ -832,30 +912,32 @@ def answer_from_context(
         "context": {
             "eventId": live_context.get("eventId"),
             "teams": live_context.get("teams"),
-            "selection": live_context.get("selection"),
-            "market": live_context.get("market"),
-            "bestPrice": live_context.get("price"),
-            "sportsbook": live_context.get("sportsbook"),
+            "selection": scoped_context.get("selection"),
+            "market": scoped_context.get("market"),
+            "bestPrice": scoped_context.get("price"),
+            "sportsbook": scoped_context.get("sportsbook"),
             "consensusLine": live_context.get("consensusLine"),
-            "rawProbability": live_context.get("rawProbability"),
-            "calibratedProbability": live_context.get("calibratedProbability"),
-            "pushProbability": live_context.get("pushProbability"),
-            "lossProbability": live_context.get("lossProbability"),
-            "calibratedEdge": live_context.get("calibratedEdge"),
-            "pushAwareEV": live_context.get("currentEV"),
-            "fairLine": live_context.get("fairLine"),
-            "playableTo": live_context.get("truePlayableTo"),
-            "siScore": live_context.get("siScore"),
-            "recommendation": live_context.get("recommendation"),
-            "marketIntelligence": live_context.get("marketIntelligence"),
+            "rawProbability": scoped_context.get("rawProbability"),
+            "calibratedProbability": scoped_context.get("calibratedProbability"),
+            "pushProbability": scoped_context.get("pushProbability"),
+            "lossProbability": scoped_context.get("lossProbability"),
+            "calibratedEdge": scoped_context.get("calibratedEdge"),
+            "pushAwareEV": scoped_context.get("currentEV"),
+            "fairLine": scoped_context.get("fairLine"),
+            "playableTo": scoped_context.get("truePlayableTo"),
+            "siScore": scoped_context.get("siScore"),
+            "recommendation": scoped_context.get("recommendation"),
+            "marketIntelligence": scoped_context.get("marketIntelligence"),
             "lineMovement": live_context.get("lineMovement"),
             "restTravel": live_context.get("restTravel"),
             "injuries": live_context.get("injuryContext"),
             "weather": live_context.get("weather"),
             "socialIntelligence": live_context.get("socialIntelligence"),
-            "qualificationReasons": live_context.get("qualificationReasons"),
-            "snapshotTimestamp": live_context.get("snapshotTimestamp"),
+            "qualificationReasons": scoped_context.get("qualificationReasons"),
+            "snapshotTimestamp": scoped_context.get("snapshotTimestamp"),
             "snapshotId": live_context.get("snapshotId"),
+            "marketValidationStatus": scoped_context.get("marketValidationStatus"),
+            "productionEligible": scoped_context.get("productionEligible"),
         },
     }
 

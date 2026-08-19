@@ -20,7 +20,9 @@ def test_american_odds_from_probability_handles_favorite_and_dog() -> None:
     assert american_odds_from_probability(0.40) == 150
 
 
-def test_build_fair_price_result_moneyline_playable_threshold() -> None:
+def test_build_fair_price_result_moneyline_playable_threshold(monkeypatch) -> None:
+    monkeypatch.setattr(probability_engine, "load_historical_residuals", _mock_residuals)
+
     row = pd.Series(
         {
             "market": "moneyline",
@@ -42,22 +44,25 @@ def test_build_fair_price_result_moneyline_playable_threshold() -> None:
     result = build_fair_price_result(
         row=row,
         group_rows=group,
-        game_projection_row=None,
+        game_projection_row=pd.Series({"model_margin_home": -1.5}),
         minimum_playable_ev=0.02,
     )
 
-    assert result.fair_price == -122
+    assert result.fair_price is not None
+    assert result.fair_price < 0
     assert result.fair_line is None
-    assert result.true_playable_to is None
-    assert result.true_playable_to_status == "UNAVAILABLE"
+    assert result.true_playable_to is not None
+    assert result.true_playable_to_status == "AVAILABLE"
     assert result.worst_observed_playable_price == -120
     assert result.playable_to == -120
     assert result.playable_to_status == "AVAILABLE"
     assert result.playable_to_reason is None
-    assert result.current_win_probability == 0.55
+    assert result.current_win_probability is not None
+    assert 0.0 < result.current_win_probability < 1.0
     assert result.current_push_probability == 0.0
-    assert result.current_loss_probability == 0.45
-    assert result.current_ev == 0.04
+    assert result.current_loss_probability is not None
+    assert abs((result.current_win_probability + result.current_loss_probability) - 1.0) < 1e-6
+    assert result.current_ev is not None
     assert result.minimum_playable_ev == 0.02
 
 

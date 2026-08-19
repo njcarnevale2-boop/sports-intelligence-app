@@ -279,6 +279,38 @@ def test_sia3_comparison_with_fewer_than_three_qualified():
     assert "#3" not in result["answer"]
 
 
+def test_cross_market_compare_discloses_shadow_validation():
+    context = _base_live_context()
+    context["bestByMarket"] = {
+        "spread": {
+            "pick": "NO +7",
+            "market": "spread",
+            "side": "away",
+            "price": -115,
+            "productionEligible": True,
+            "marketValidationStatus": "PRODUCTION_VALIDATED",
+        },
+        "moneyline": {
+            "pick": "NO",
+            "market": "moneyline",
+            "side": "away",
+            "price": 130,
+            "productionEligible": False,
+            "marketValidationStatus": "SHADOW_VALIDATION",
+        },
+    }
+
+    result = ask_sia.answer_from_context(
+        event_id="evt-1",
+        question="Which is stronger, the spread or moneyline?",
+        live_context=context,
+    )
+
+    assert result["intent"] == "CROSS_MARKET_COMPARE"
+    assert "shadow validation" in result["answer"].lower()
+    assert "not currently eligible to outrank a spread" in result["answer"].lower()
+
+
 def test_comparison_no_mixed_context_text():
     result = ask_sia.answer_from_context(
         event_id="evt-1",

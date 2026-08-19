@@ -4,7 +4,9 @@ from app.services import probability_engine
 from app.services.probability_engine import (
     HistoricalResiduals,
     ev_per_dollar_with_push,
+    moneyline_outcome_probabilities,
     spread_outcome_probabilities,
+    true_playable_to_moneyline,
     total_outcome_probabilities,
     true_playable_to_spread,
     true_playable_to_total,
@@ -106,6 +108,75 @@ def test_true_playable_to_total_threshold(monkeypatch) -> None:
     assert threshold.status == "AVAILABLE"
     assert threshold.playable_to is not None
     assert threshold.playable_to >= 46.5
+
+
+def test_moneyline_probability_and_playable_to_price(monkeypatch) -> None:
+    monkeypatch.setattr(probability_engine, "load_historical_residuals", _residuals)
+
+    probs_home = moneyline_outcome_probabilities(model_margin_home=2.0, side="home")
+    probs_away = moneyline_outcome_probabilities(model_margin_home=2.0, side="away")
+
+    assert probs_home.status == "AVAILABLE"
+    assert probs_away.status == "AVAILABLE"
+    assert abs((probs_home.win + probs_away.win) - 1.0) < 1e-9
+
+    threshold = true_playable_to_moneyline(
+        win_probability=probs_home.win,
+        start_price=-110,
+        minimum_playable_ev=0.02,
+    )
+    assert threshold.status == "AVAILABLE"
+    assert threshold.playable_to is not None
+    assert threshold.playable_to <= -110
+
+
+def test_moneyline_playable_to_price_direction_crosses_hundred(monkeypatch) -> None:
+    monkeypatch.setattr(probability_engine, "load_historical_residuals", _residuals)
+
+    probs_away = moneyline_outcome_probabilities(model_margin_home=0.0, side="away")
+    assert probs_away.status == "AVAILABLE"
+
+    threshold = true_playable_to_moneyline(
+        win_probability=probs_away.win,
+        start_price=130,
+        minimum_playable_ev=0.02,
+    )
+    assert threshold.status == "AVAILABLE"
+    assert threshold.playable_to is not None
+    assert threshold.playable_to <= 130
+    assert threshold.playable_to >= 100
+
+
+def test_total_playable_to_direction_and_push_semantics(monkeypatch) -> None:
+    monkeypatch.setattr(probability_engine, "load_historical_residuals", _residuals)
+
+    over_threshold = true_playable_to_total(
+        model_total=47.0,
+        side="over",
+        start_point=46.5,
+        price=-110,
+        minimum_playable_ev=0.02,
+    )
+    under_threshold = true_playable_to_total(
+        model_total=47.0,
+        side="under",
+        start_point=47.5,
+        price=-110,
+        minimum_playable_ev=0.02,
+    )
+
+    assert over_threshold.status == "AVAILABLE"
+    assert over_threshold.playable_to is not None
+    assert over_threshold.playable_to >= 46.5
+
+    assert under_threshold.status == "AVAILABLE"
+    assert under_threshold.playable_to is not None
+    assert under_threshold.playable_to <= 47.5
+
+    integer_probs = total_outcome_probabilities(model_total=47.0, side="over", total_point=47.0)
+    half_point_probs = total_outcome_probabilities(model_total=47.0, side="over", total_point=47.5)
+    assert integer_probs.push > 0
+    assert half_point_probs.push == 0
 
 
 def test_unavailable_when_residuals_missing(monkeypatch) -> None:

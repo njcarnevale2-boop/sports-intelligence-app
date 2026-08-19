@@ -636,6 +636,17 @@ def _to_float(value: Any) -> Optional[float]:
         return None
 
 
+def _is_production_eligible_market(market: Any) -> bool:
+    return normalize_market(str(market or "")) == "spread"
+
+
+def _opportunity_production_eligible(opportunity: Dict[str, Any]) -> bool:
+    explicit = opportunity.get("productionEligible")
+    if explicit is not None:
+        return bool(explicit)
+    return _is_production_eligible_market(opportunity.get("market"))
+
+
 def _snapshot_linkage(
     *,
     event_id: str,
@@ -866,7 +877,8 @@ def build_official_sia3_preview(
     threshold = max_odds_age_minutes if max_odds_age_minutes is not None else settings.OFFICIAL_PUBLICATION_MAX_ODDS_AGE_MINUTES
     published_at_utc = _utc_now_iso()
 
-    top_three = opportunities[:3]
+    eligible = [o for o in opportunities if _opportunity_production_eligible(o)]
+    top_three = eligible[:3]
     slots = []
     stale_count = 0
     missing_linkage_count = 0
@@ -935,11 +947,14 @@ def publish_official_sia3_from_preview(preview: Dict[str, Any], *, override_stal
 
     slots_payload = []
     for slot in preview.get("slots", []):
+        decision = slot.get("decision") or {}
+        if decision and not _is_production_eligible_market(decision.get("market")):
+            raise ValueError("Official SIA 3 publication rejects non-production market families.")
         slots_payload.append(
             {
                 "slotLabel": slot.get("slotLabel"),
                 "qualificationStatus": slot.get("qualificationStatus"),
-                "decision": slot.get("decision"),
+                "decision": decision,
             }
         )
 
@@ -984,6 +999,8 @@ def publish_sia3(payload: Dict[str, Any]) -> Dict[str, Any]:
 
             if decision_id is None and source.get("decision") is not None:
                 decision_payload = dict(source["decision"])
+                if is_official and not _is_production_eligible_market(decision_payload.get("market")):
+                    raise ValueError("Official SIA 3 publication rejects non-production market families.")
                 decision_payload.setdefault("publishedAtUTC", published_at_utc)
                 decision_payload.setdefault("season", season)
                 decision_payload.setdefault("week", week)
@@ -998,6 +1015,8 @@ def publish_sia3(payload: Dict[str, Any]) -> Dict[str, Any]:
                 drow = _fetch_decision_row(con, decision_id)
                 if drow is None:
                     raise ValueError(f"Unknown decisionId: {decision_id}")
+                if is_official and not _is_production_eligible_market(drow["market"]):
+                    raise ValueError("Official SIA 3 publication rejects non-production market families.")
                 if qualification_status is None:
                     qualification_status = drow["qualification_status"]
 

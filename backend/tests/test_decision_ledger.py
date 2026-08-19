@@ -462,6 +462,91 @@ def test_publish_official_sia3_from_preview_requires_overrides(tmp_path, monkeyp
     assert published["qualifiedPickCount"] == 1
 
 
+def test_official_preview_filters_non_production_markets(tmp_path, monkeypatch):
+    import app.services.decision_ledger as dl
+
+    monkeypatch.setattr(dl, "_DB_PATH", tmp_path / "ledger.db")
+    monkeypatch.setattr(
+        dl,
+        "_snapshot_linkage",
+        lambda **kwargs: {
+            "verified": True,
+            "reason": "VERIFIED",
+            "sourceSnapshotId": "snap-1",
+            "oddsTimestamp": "2026-09-13T15:00:00+00:00",
+            "snapshotAgeMinutes": 1.0,
+            "linePriceMatch": True,
+        },
+    )
+
+    opportunities = [
+        {
+            "eventId": "evt-ml",
+            "commenceTime": "2026-09-13T17:00:00+00:00",
+            "awayTeam": "NO",
+            "homeTeam": "ATL",
+            "pick": "NO",
+            "market": "moneyline",
+            "side": "away",
+            "point": None,
+            "price": 130,
+            "book": "DraftKings",
+            "qualificationStatus": "QUALIFIED",
+            "productionEligible": False,
+        },
+        {
+            "eventId": "evt-sp",
+            "commenceTime": "2026-09-13T17:00:00+00:00",
+            "awayTeam": "NO",
+            "homeTeam": "ATL",
+            "pick": "NO +3",
+            "market": "spread",
+            "side": "away",
+            "point": 3.0,
+            "price": -110,
+            "book": "DraftKings",
+            "qualificationStatus": "QUALIFIED",
+            "productionEligible": True,
+        },
+    ]
+
+    preview = dl.build_official_sia3_preview(opportunities, season=2026, week=1)
+    decisions = [s.get("decision") for s in preview.get("slots", []) if s.get("decision")]
+    assert decisions
+    assert all(str(d.get("market") or "").lower() in {"spread", "spreads"} for d in decisions)
+
+
+def test_official_publish_rejects_non_production_market_family(tmp_path, monkeypatch):
+    import app.services.decision_ledger as dl
+
+    monkeypatch.setattr(dl, "_DB_PATH", tmp_path / "ledger.db")
+
+    preview = {
+        "publishedAtUTC": "2026-09-13T16:00:00+00:00",
+        "season": 2026,
+        "week": 1,
+        "staleSlotCount": 0,
+        "missingSnapshotLinkageCount": 0,
+        "slots": [
+            {
+                "rank": 1,
+                "slotLabel": "BET",
+                "qualificationStatus": "QUALIFIED",
+                "decision": {
+                    **_decision_payload("evt-ml-reject"),
+                    "market": "moneyline",
+                    "selection": "NO",
+                    "point": None,
+                    "price": 130,
+                },
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="rejects non-production"):
+        dl.publish_official_sia3_from_preview(preview)
+
+
 def test_auto_append_outcomes_from_scores_appends_once(tmp_path, monkeypatch):
     import app.services.decision_ledger as dl
 

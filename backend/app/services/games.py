@@ -425,6 +425,7 @@ class GamesService:
 
         board_df = board_df.copy()
         board_df["api_event_id"] = board_df["api_event_id"].astype(str)
+        board_df = board_df[board_df["market"].astype(str).str.strip().str.lower().isin(["spread", "spreads"])]
         if event_ids is not None:
             event_ids = {str(event_id) for event_id in event_ids}
             board_df = board_df[board_df["api_event_id"].isin(event_ids)]
