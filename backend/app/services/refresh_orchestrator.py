@@ -126,6 +126,10 @@ _EMPTY_STATE: Dict[str, Any] = {
     "ledgerOutcomesAppended": 0,
     "ledgerOutcomesStillPending": 0,
     "lastLedgerOutcomeError": None,
+    "shadowOutcomeChecked": 0,
+    "shadowOutcomesAppended": 0,
+    "shadowOutcomesStillPending": 0,
+    "lastShadowOutcomeError": None,
     # Injury refresh stats (updated each run)
     "injuryPlayersUpdated": 0,
     "injuryTeamsUpdated": 0,
@@ -239,6 +243,23 @@ def _run_once() -> bool:
             ledger_outcome_error = str(exc)[:300]
             log.warning("Ledger outcome append step failed (non-fatal): %s", exc)
 
+        # Step 3c: append shadow outcomes for frozen shadow snapshots (append-only).
+        shadow_outcomes: Dict[str, int] = {"checked": 0, "appended": 0, "pending": 0}
+        shadow_outcome_error: Optional[str] = None
+        try:
+            from app.services.shadow_markets import append_shadow_outcomes
+
+            shadow_outcomes = append_shadow_outcomes(fetch_scores_fn=_fetch_final_score_from_duckdb)
+            log.info(
+                "Shadow outcome append: checked=%d appended=%d pending=%d",
+                shadow_outcomes.get("checked", 0),
+                shadow_outcomes.get("appended", 0),
+                shadow_outcomes.get("pending", 0),
+            )
+        except Exception as exc:
+            shadow_outcome_error = str(exc)[:300]
+            log.warning("Shadow outcome append step failed (non-fatal): %s", exc)
+
         # Step 4: refresh performance metrics after CLV capture (non-fatal).
         try:
             from app.services.performance import get_performance_service
@@ -271,6 +292,10 @@ def _run_once() -> bool:
         state["ledgerOutcomesAppended"] = int(ledger_outcomes.get("appended", 0))
         state["ledgerOutcomesStillPending"] = int(ledger_outcomes.get("pending", 0))
         state["lastLedgerOutcomeError"] = ledger_outcome_error
+        state["shadowOutcomeChecked"] = int(shadow_outcomes.get("checked", 0))
+        state["shadowOutcomesAppended"] = int(shadow_outcomes.get("appended", 0))
+        state["shadowOutcomesStillPending"] = int(shadow_outcomes.get("pending", 0))
+        state["lastShadowOutcomeError"] = shadow_outcome_error
 
         # Step 5: refresh injury data (non-fatal – never blocks odds refresh)
         try:
