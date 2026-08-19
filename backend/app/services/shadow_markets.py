@@ -9,7 +9,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -207,8 +207,12 @@ CREATE TABLE IF NOT EXISTS shadow_outcomes (
 
     closing_line REAL,
     closing_price REAL,
+    raw_closing_implied_probability REAL,
     closing_market_novig_probability REAL,
+    closing_no_vig_status TEXT,
     closing_timestamp TEXT,
+    line_clv_points REAL,
+    price_clv_probability REAL,
     clv REAL,
     clv_type TEXT,
 
@@ -305,7 +309,11 @@ def _ensure_schema() -> None:
         ("shadow_publication_items", "normalization_version TEXT"),
         ("shadow_publication_items", "production_eligible INTEGER"),
         ("shadow_publication_items", "cross_market_comparable INTEGER"),
+        ("shadow_outcomes", "raw_closing_implied_probability REAL"),
         ("shadow_outcomes", "closing_market_novig_probability REAL"),
+        ("shadow_outcomes", "closing_no_vig_status TEXT"),
+        ("shadow_outcomes", "line_clv_points REAL"),
+        ("shadow_outcomes", "price_clv_probability REAL"),
     ]:
         try:
             con.execute(f"ALTER TABLE {table} ADD COLUMN {column_def}")
@@ -369,6 +377,14 @@ def _line_desirability(market_key: str, side: str, line: Optional[float], price:
     # Higher tuple is better.
     if market_key == "moneyline":
         return (float(price or -9999.0), 0.0)
+
+    if market_key == "spread":
+        p = float(line or 0.0)
+        if side == "away":
+            # Away spread: higher line is better (+3.5 beats +3, -2.5 beats -3).
+            return (p, float(price or -9999.0))
+        # Home spread: lower line is better (-2.5 beats -3.0).
+        return (-p, float(price or -9999.0))
 
     p = float(line or 0.0)
     if market_key == "total" and side == "over":
@@ -438,6 +454,116 @@ def _parse_commence(value: Any) -> Optional[datetime]:
         return ts.to_pydatetime()
     except Exception:
         return None
+
+
+def _two_sided_closing_no_vig(
+    *,
+    event_id: str,
+    sportsbook: str,
+    market_family: str,
+    side: str,
+    kickoff: datetime,
+    recommended_line: Optional[float],
+) -> tuple[Optional[float], str]:
+    """Return no-vig probability for the candidate side from a two-sided closing market.
+
+    Status values:
+      AVAILABLE_TWO_SIDED_MARKET
+      UNAVAILABLE_TWO_SIDED_MARKET
+      MISMATCHED_TOTAL_POINTS
+    """
+    try:
+        import duckdb  # type: ignore
+    except Exception:
+        return None, "UNAVAILABLE_TWO_SIDED_MARKET"
+
+    db_path = MODEL_ROOT / "database" / "nfl_model.duckdb"
+    if not db_path.exists():
+        return None, "UNAVAILABLE_TWO_SIDED_MARKET"
+
+    if market_family == "MONEYLINE":
+        market_key = "h2h"
+        sides = ("home", "away")
+    elif market_family == "TOTAL":
+        market_key = "totals"
+        sides = ("over", "under")
+    elif market_family == "SPREAD":
+        market_key = "spreads"
+        sides = ("home", "away")
+    else:
+        return None, "UNAVAILABLE_TWO_SIDED_MARKET"
+
+    cutoff = kickoff.astimezone(timezone.utc) - timedelta(minutes=2)
+    cutoff_naive = cutoff.replace(tzinfo=None)
+
+    con = duckdb.connect(str(db_path), read_only=True)
+    rows = con.execute(
+        """
+        SELECT fetched_at, outcome_code, point, price
+        FROM odds_snapshots
+        WHERE api_event_id = ?
+          AND bookmaker_key = ?
+          AND market_key = ?
+          AND outcome_code IN (?, ?)
+          AND fetched_at <= ?
+        ORDER BY fetched_at DESC
+        """,
+        [event_id, sportsbook, market_key, sides[0], sides[1], cutoff_naive],
+    ).fetchall()
+    con.close()
+
+    if not rows:
+        return None, "UNAVAILABLE_TWO_SIDED_MARKET"
+
+    by_ts: dict[Any, dict[str, tuple[Optional[float], Optional[float]]]] = {}
+    for fetched_at, outcome_code, point, price in rows:
+        ts_map = by_ts.setdefault(fetched_at, {})
+        ts_map[str(outcome_code)] = (_safe_float(point), _safe_float(price))
+
+    for ts in sorted(by_ts.keys(), reverse=True):
+        snap = by_ts[ts]
+        if any(s not in snap or snap[s][1] is None for s in sides):
+            continue
+
+        if market_family == "TOTAL":
+            over_point = snap["over"][0]
+            under_point = snap["under"][0]
+            if over_point is None or under_point is None or abs(over_point - under_point) > 1e-9:
+                continue
+            if recommended_line is not None and abs(float(recommended_line) - float(over_point)) > 1e-9:
+                return None, "MISMATCHED_TOTAL_POINTS"
+
+        if market_family == "SPREAD" and recommended_line is not None:
+            side_point = snap.get(side, (None, None))[0]
+            if side_point is not None and abs(float(side_point) - float(recommended_line)) > 1e-9:
+                continue
+
+        p_a = float(snap[sides[0]][1])
+        p_b = float(snap[sides[1]][1])
+        novig_a, novig_b = _devig_two_way(p_a, p_b)
+        if side == sides[0]:
+            return novig_a, "AVAILABLE_TWO_SIDED_MARKET"
+        if side == sides[1]:
+            return novig_b, "AVAILABLE_TWO_SIDED_MARKET"
+        break
+
+    return None, "UNAVAILABLE_TWO_SIDED_MARKET"
+
+
+def _line_clv_points(market_family: str, side: str, recommended_line: Optional[float], closing_line: Optional[float]) -> Optional[float]:
+    if recommended_line is None or closing_line is None:
+        return None
+    market = market_family.upper()
+    sd = str(side).lower()
+
+    if market == "SPREAD":
+        return float(round(float(recommended_line) - float(closing_line), 3))
+    if market == "TOTAL":
+        if sd == "over":
+            return float(round(float(closing_line) - float(recommended_line), 3))
+        if sd == "under":
+            return float(round(float(recommended_line) - float(closing_line), 3))
+    return None
 
 
 def _score_to_band(value: float, bands: list[tuple[float, float, str]]) -> str:
@@ -551,16 +677,16 @@ def _save_shadow_run(run_payload: dict[str, Any], candidates: list[dict[str, Any
 
 
 def build_shadow_boards(week: Optional[int] = None, season: Optional[int] = None) -> dict[str, Any]:
-    """Build moneyline/total shadow candidates for one week and persist as immutable run rows."""
+    """Build spread/moneyline/total shadow candidates for one week and persist as immutable run rows."""
     board = _load_line_board()
     proj = _load_projection_lookup()
 
     if board.empty or not proj:
         raise ValueError("Required data unavailable: line_movement_board or current_game_projections")
 
-    working = board[board["market"].isin(["moneyline", "total"])].copy()
+    working = board[board["market"].isin(["spread", "moneyline", "total"])].copy()
     if working.empty:
-        raise ValueError("No moneyline/total rows available in line_movement_board")
+        raise ValueError("No spread/moneyline/total rows available in line_movement_board")
 
     # Determine season/week from available events.
     if season is None or week is None:
@@ -622,6 +748,16 @@ def build_shadow_boards(week: Optional[int] = None, season: Optional[int] = None
                 h_novig, a_novig = _devig_two_way(hp, ap)
                 no_vig_map[(event_id, "moneyline")] = {"home": h_novig, "away": a_novig}
 
+        # spread pair
+        sh = selected.get((event_id, "spread", "home"))
+        sa = selected.get((event_id, "spread", "away"))
+        if sh is not None and sa is not None:
+            shp = _safe_float(sh.get("latest_price"))
+            sap = _safe_float(sa.get("latest_price"))
+            if shp is not None and sap is not None:
+                h_novig, a_novig = _devig_two_way(shp, sap)
+                no_vig_map[(event_id, "spread")] = {"home": h_novig, "away": a_novig}
+
         # total pair
         over = selected.get((event_id, "total", "over"))
         under = selected.get((event_id, "total", "under"))
@@ -649,7 +785,14 @@ def build_shadow_boards(week: Optional[int] = None, season: Optional[int] = None
         push_prob = 0.0
         loss_prob = None
 
-        if market_key == "moneyline":
+        if market_key == "spread":
+            raw_prob = _safe_float(row.get("model_prob"))
+            if raw_prob is None:
+                continue
+            raw_prob = max(1e-6, min(1.0 - 1e-6, float(raw_prob)))
+            push_prob = _safe_float(row.get("push_probability")) or 0.0
+            loss_prob = max(0.0, 1.0 - raw_prob - push_prob)
+        elif market_key == "moneyline":
             if model_margin is None:
                 continue
             raw_prob, push_prob, loss_prob = _moneyline_probability_from_margin(model_margin, side)
@@ -678,7 +821,15 @@ def build_shadow_boards(week: Optional[int] = None, season: Optional[int] = None
         cal_edge = float(calibrated_prob - novig)
         ev = float(ev_per_dollar_with_push(win_probability=calibrated_prob, push_probability=push_prob, american_odds=price))
 
-        if market_key == "moneyline":
+        if market_key == "spread":
+            family = "SPREAD"
+            team = str(row.get("home_team") if side == "home" else row.get("away_team"))
+            if line is not None:
+                selection = f"{team} {line:+g}"
+            else:
+                selection = team
+            period = "FULL_GAME"
+        elif market_key == "moneyline":
             family = "MONEYLINE"
             team = str(row.get("home_team") if side == "home" else row.get("away_team"))
             selection = team
@@ -740,18 +891,20 @@ def build_shadow_boards(week: Optional[int] = None, season: Optional[int] = None
             "productionEligible": False,
             "crossMarketComparable": False,
         }
+        if family == "SPREAD":
+            candidate["productionEligible"] = True
         candidates.append(candidate)
 
     # Independent ranking by market family.
     qualified = [c for c in candidates if c["qualificationStatus"] == "QUALIFIED"]
-    for family in ["MONEYLINE", "TOTAL"]:
+    for family in ["SPREAD", "MONEYLINE", "TOTAL"]:
         fam = [c for c in qualified if c["marketFamily"] == family]
         fam.sort(key=lambda x: (-x["calibratedEdge"], -x["ev"], -x["rawModelProbability"], x["eventId"], x["side"]))
         for idx, c in enumerate(fam, start=1):
             c["marketRank"] = idx
 
     # week rank per family includes non-qualified after qualified.
-    for family in ["MONEYLINE", "TOTAL"]:
+    for family in ["SPREAD", "MONEYLINE", "TOTAL"]:
         fam = [c for c in candidates if c["marketFamily"] == family]
         fam.sort(
             key=lambda x: (
@@ -790,6 +943,7 @@ def build_shadow_boards(week: Optional[int] = None, season: Optional[int] = None
         "sourceSnapshotId": run_payload["sourceSnapshotId"],
         "sourceMarketTimestamp": source_market_timestamp,
         "candidateCount": len(candidates),
+        "spreadCount": len([c for c in candidates if c["marketFamily"] == "SPREAD"]),
         "moneylineCount": len([c for c in candidates if c["marketFamily"] == "MONEYLINE"]),
         "totalCount": len([c for c in candidates if c["marketFamily"] == "TOTAL"]),
     }
@@ -1065,6 +1219,27 @@ def append_shadow_outcomes(
                 result = "WIN" if total > line else "LOSS" if total < line else "PUSH"
             elif side == "under":
                 result = "WIN" if total < line else "LOSS" if total > line else "PUSH"
+        elif market_family == "SPREAD":
+            if line is None:
+                still_pending += 1
+                continue
+            away_score = float(away)
+            home_score = float(home)
+            if side == "away":
+                ats_margin = (away_score + float(line)) - home_score
+            elif side == "home":
+                ats_margin = (home_score + float(line)) - away_score
+            else:
+                ats_margin = None
+            if ats_margin is None:
+                still_pending += 1
+                continue
+            if ats_margin > 0:
+                result = "WIN"
+            elif ats_margin < 0:
+                result = "LOSS"
+            else:
+                result = "PUSH"
 
         if result is None:
             still_pending += 1
@@ -1073,15 +1248,19 @@ def append_shadow_outcomes(
         # Closing and CLV from immutable recommendation price/line, never substituted by current odds.
         closing_line = None
         closing_price = None
+        raw_closing_implied_probability = None
         closing_market_novig_probability = None
+        closing_no_vig_status = "UNAVAILABLE_TWO_SIDED_MARKET"
         closing_timestamp = None
+        line_clv_points = None
+        price_clv_probability = None
         clv = None
         clv_type = None
 
         commence = str(r["commence_time"] or "")
         kickoff = _parse_commence(commence)
         if kickoff is not None:
-            market_key = "h2h" if market_family == "MONEYLINE" else "totals"
+            market_key = "h2h" if market_family == "MONEYLINE" else "totals" if market_family == "TOTAL" else "spreads"
             try:
                 close = get_closing_line(
                     event_id=str(r["event_id"]),
@@ -1094,9 +1273,28 @@ def append_shadow_outcomes(
                     closing_line = close.closing_point
                     closing_price = close.closing_price
                     if closing_price is not None:
-                        # True no-vig requires both sides; persist implied probability for this side when only one quote is available.
-                        closing_market_novig_probability = _implied_probability(float(closing_price))
+                        raw_closing_implied_probability = _implied_probability(float(closing_price))
+
+                    closing_market_novig_probability, closing_no_vig_status = _two_sided_closing_no_vig(
+                        event_id=str(r["event_id"]),
+                        sportsbook=str(r["sportsbook"] or ""),
+                        market_family=market_family,
+                        side=side,
+                        kickoff=kickoff,
+                        recommended_line=_safe_float(r["line"]),
+                    )
+
                     closing_timestamp = close.closing_timestamp.isoformat() if close.closing_timestamp else None
+
+                    line_clv_points = _line_clv_points(
+                        market_family=market_family,
+                        side=side,
+                        recommended_line=_safe_float(r["line"]),
+                        closing_line=closing_line,
+                    )
+
+                    if closing_market_novig_probability is not None and r["market_no_vig_probability"] is not None:
+                        price_clv_probability = float(round(closing_market_novig_probability - float(r["market_no_vig_probability"]), 6))
 
                     clv_obj = calculate_clv(
                         recommended_point=_safe_float(r["line"]),
@@ -1123,8 +1321,12 @@ def append_shadow_outcomes(
             "profitPerDollar": _profit_per_dollar(price, result),
             "closingLine": closing_line,
             "closingPrice": closing_price,
+            "rawClosingImpliedProbability": raw_closing_implied_probability,
             "closingMarketNoVigProbability": closing_market_novig_probability,
+            "closingNoVigStatus": closing_no_vig_status,
             "closingTimestamp": closing_timestamp,
+            "lineCLVPoints": line_clv_points,
+            "priceCLVProbability": price_clv_probability,
             "clv": clv,
             "clvType": clv_type,
         }
@@ -1138,10 +1340,12 @@ def append_shadow_outcomes(
             INSERT OR IGNORE INTO shadow_outcomes (
                 outcome_id, shadow_snapshot_id, candidate_id, captured_at_utc,
                 final_away_score, final_home_score, result, profit_per_dollar,
-                closing_line, closing_price, closing_market_novig_probability, closing_timestamp,
+                closing_line, closing_price, raw_closing_implied_probability,
+                closing_market_novig_probability, closing_no_vig_status, closing_timestamp,
+                line_clv_points, price_clv_probability,
                 clv, clv_type,
                 source_odds_snapshot_id, payload_hash, canonical_payload, idempotency_key
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             [
                 outcome_id,
@@ -1154,8 +1358,12 @@ def append_shadow_outcomes(
                 payload["profitPerDollar"],
                 closing_line,
                 closing_price,
+                raw_closing_implied_probability,
                 closing_market_novig_probability,
+                closing_no_vig_status,
                 closing_timestamp,
+                line_clv_points,
+                price_clv_probability,
                 clv,
                 clv_type,
                 r["source_odds_snapshot_id"],
@@ -1174,7 +1382,9 @@ def append_shadow_outcomes(
 def _extract_numeric_rows(con: sqlite3.Connection) -> list[sqlite3.Row]:
     return con.execute(
         """
-        SELECT i.*, o.result, o.profit_per_dollar, o.clv
+        SELECT i.*, o.result, o.profit_per_dollar, o.clv,
+               o.line_clv_points, o.price_clv_probability,
+               o.closing_market_novig_probability, o.closing_no_vig_status
         FROM shadow_publication_items i
         LEFT JOIN shadow_outcomes o ON o.candidate_id = i.candidate_id
         """
@@ -1195,6 +1405,39 @@ def _logloss(y: list[float], p: list[float]) -> Optional[float]:
         q = min(1 - 1e-6, max(1e-6, pi))
         vals.append(-(yi * math.log(q) + (1 - yi) * math.log(1 - q)))
     return float(sum(vals) / len(vals))
+
+
+def _ece(y: list[float], p: list[float], bins: int = 10) -> Optional[float]:
+    if not y or not p or len(y) != len(p):
+        return None
+    import numpy as np
+
+    y_arr = np.asarray(y, dtype=float)
+    p_arr = np.clip(np.asarray(p, dtype=float), 0.0, 1.0)
+    edges = np.linspace(0.0, 1.0, bins + 1)
+    bucket = np.clip(np.digitize(p_arr, edges, right=True) - 1, 0, bins - 1)
+
+    score = 0.0
+    for b in range(bins):
+        mask = bucket == b
+        if not mask.any():
+            continue
+        w = float(mask.mean())
+        conf = float(p_arr[mask].mean())
+        acc = float(y_arr[mask].mean())
+        score += w * abs(acc - conf)
+    return float(score)
+
+
+def _rolling_roi(points: list[float], window: int = 20) -> list[float]:
+    if not points:
+        return []
+    out: list[float] = []
+    for idx in range(len(points)):
+        lo = max(0, idx - window + 1)
+        segment = points[lo : idx + 1]
+        out.append(float(sum(segment) / len(segment)))
+    return out
 
 
 def _roi_ci(profits: list[float], n_boot: int = 1000) -> Optional[tuple[float, float]]:
@@ -1221,7 +1464,7 @@ def shadow_performance_report() -> dict[str, Any]:
     con.close()
 
     by_market: dict[str, dict[str, Any]] = {}
-    for fam in ["MONEYLINE", "TOTAL"]:
+    for fam in ["SPREAD", "MONEYLINE", "TOTAL"]:
         fam_rows = [r for r in rows if str(r["market_family"]).upper() == fam]
         graded = [r for r in fam_rows if r["result"] in {"WIN", "LOSS", "PUSH"}]
 
@@ -1253,6 +1496,9 @@ def shadow_performance_report() -> dict[str, Any]:
 
         clv_vals = [float(r["clv"]) for r in graded if r["clv"] is not None]
         avg_clv = (sum(clv_vals) / len(clv_vals)) if clv_vals else None
+        line_clv_vals = [float(r["line_clv_points"]) for r in graded if r["line_clv_points"] is not None]
+        price_clv_vals = [float(r["price_clv_probability"]) for r in graded if r["price_clv_probability"] is not None]
+        clv_cov = (sum(1 for r in graded if r["clv"] is not None) / len(graded)) if graded else 0.0
 
         # Breakdown
         by_rank: dict[str, int] = {}
@@ -1295,9 +1541,13 @@ def shadow_performance_report() -> dict[str, Any]:
             "marketLogLoss": l_mkt,
             "modelMinusMarketBrier": None if b_model is None or b_mkt is None else (b_model - b_mkt),
             "modelMinusMarketLogLoss": None if l_model is None or l_mkt is None else (l_model - l_mkt),
+            "ece": _ece(y, p_model),
             "averageEdge": avg_edge,
             "averageEV": avg_ev,
             "averageCLV": avg_clv,
+            "averageLineCLVPoints": (sum(line_clv_vals) / len(line_clv_vals)) if line_clv_vals else None,
+            "averagePriceCLVProbability": (sum(price_clv_vals) / len(price_clv_vals)) if price_clv_vals else None,
+            "clvCoverage": clv_cov,
             "bySeasonWeek": by_week,
             "byRank": by_rank,
             "byGlobalResearchRank": by_global_research_rank,
@@ -1317,6 +1567,9 @@ def shadow_performance_report() -> dict[str, Any]:
                 "top3": by_global_research_rank.get("3", 0),
                 "top5": sum(v for k, v in by_global_research_rank.items() if k.isdigit() and int(k) <= 5),
                 "top10": sum(v for k, v in by_global_research_rank.items() if k.isdigit() and int(k) <= 10),
+            },
+            "rolling": {
+                "roi20": _rolling_roi(profits, window=20),
             },
         }
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from app.services import shadow_markets
@@ -300,3 +301,507 @@ def test_shadow_path_does_not_touch_production_sia3_tables(shadow_db):
 
     assert int(decision_ledger_exists) == 0
     assert int(pub_exists) == 0
+
+
+def test_spread_outcome_settlement_win_loss_push(shadow_db):
+    _seed_run_and_candidate(
+        shadow_db,
+        run_id="run-s-1",
+        season=2026,
+        week=8,
+        candidate_id="cand-s-win",
+        market_family="SPREAD",
+        market_key="spread",
+        side="away",
+        period="FULL_GAME",
+        line=3.0,
+        price=-110,
+    )
+    _seed_run_and_candidate(
+        shadow_db,
+        run_id="run-s-2",
+        season=2026,
+        week=8,
+        candidate_id="cand-s-loss",
+        market_family="SPREAD",
+        market_key="spread",
+        side="away",
+        period="FULL_GAME",
+        line=3.0,
+        price=-110,
+    )
+    _seed_run_and_candidate(
+        shadow_db,
+        run_id="run-s-3",
+        season=2026,
+        week=8,
+        candidate_id="cand-s-push",
+        market_family="SPREAD",
+        market_key="spread",
+        side="away",
+        period="FULL_GAME",
+        line=3.0,
+        price=-110,
+    )
+
+    shadow_markets.publish_shadow_snapshot(run_id="run-s-1", is_official=False)
+    shadow_markets.publish_shadow_snapshot(run_id="run-s-2", is_official=False)
+    shadow_markets.publish_shadow_snapshot(run_id="run-s-3", is_official=False)
+
+    def _scores(event_id: str):
+        if event_id == "2026_01_AWAY_HOME":
+            return {"finalAwayScore": 20, "finalHomeScore": 17}
+        return None
+
+    # WIN for away +3
+    out = shadow_markets.append_shadow_outcomes(fetch_scores_fn=_scores)
+    assert out["appended"] >= 1
+
+    con = sqlite3.connect(str(shadow_db))
+    row = con.execute(
+        "SELECT result FROM shadow_outcomes WHERE candidate_id = ?",
+        ["cand-s-win"],
+    ).fetchone()
+    con.close()
+    assert row is not None
+    assert row[0] == "WIN"
+
+
+def test_spread_outcome_settlement_loss(shadow_db):
+    _seed_run_and_candidate(
+        shadow_db,
+        run_id="run-s-loss",
+        season=2026,
+        week=9,
+        candidate_id="cand-s-loss-only",
+        market_family="SPREAD",
+        market_key="spread",
+        side="away",
+        period="FULL_GAME",
+        line=3.0,
+        price=-110,
+    )
+    shadow_markets.publish_shadow_snapshot(run_id="run-s-loss", is_official=False)
+
+    out = shadow_markets.append_shadow_outcomes(
+        fetch_scores_fn=lambda _: {"finalAwayScore": 14, "finalHomeScore": 20}
+    )
+    assert out["appended"] == 1
+
+    con = sqlite3.connect(str(shadow_db))
+    row = con.execute(
+        "SELECT result FROM shadow_outcomes WHERE candidate_id = ?",
+        ["cand-s-loss-only"],
+    ).fetchone()
+    con.close()
+    assert row is not None
+    assert row[0] == "LOSS"
+
+
+def test_spread_outcome_settlement_push(shadow_db):
+    _seed_run_and_candidate(
+        shadow_db,
+        run_id="run-s-push",
+        season=2026,
+        week=10,
+        candidate_id="cand-s-push-only",
+        market_family="SPREAD",
+        market_key="spread",
+        side="away",
+        period="FULL_GAME",
+        line=3.0,
+        price=-110,
+    )
+    shadow_markets.publish_shadow_snapshot(run_id="run-s-push", is_official=False)
+
+    out = shadow_markets.append_shadow_outcomes(
+        fetch_scores_fn=lambda _: {"finalAwayScore": 17, "finalHomeScore": 20}
+    )
+    assert out["appended"] == 1
+
+    con = sqlite3.connect(str(shadow_db))
+    row = con.execute(
+        "SELECT result, profit_per_dollar FROM shadow_outcomes WHERE candidate_id = ?",
+        ["cand-s-push-only"],
+    ).fetchone()
+    con.close()
+    assert row is not None
+    assert row[0] == "PUSH"
+    assert float(row[1]) == 0.0
+
+
+def test_build_shadow_boards_creates_three_market_candidates(monkeypatch, shadow_db):
+    board = pd.DataFrame(
+        [
+            {
+                "api_event_id": "2026_01_AWAY_HOME",
+                "commence_time": "2026-09-10T17:00:00+00:00",
+                "market": "spread",
+                "side": "away",
+                "latest_point": 3.0,
+                "latest_price": -110,
+                "sportsbook": "DraftKings",
+                "last_seen": "2026-09-10T16:00:00+00:00",
+                "home_team": "HOME",
+                "away_team": "AWAY",
+                "model_prob": 0.55,
+            },
+            {
+                "api_event_id": "2026_01_AWAY_HOME",
+                "commence_time": "2026-09-10T17:00:00+00:00",
+                "market": "spread",
+                "side": "home",
+                "latest_point": -3.0,
+                "latest_price": -110,
+                "sportsbook": "DraftKings",
+                "last_seen": "2026-09-10T16:00:00+00:00",
+                "home_team": "HOME",
+                "away_team": "AWAY",
+                "model_prob": 0.45,
+            },
+            {
+                "api_event_id": "2026_01_AWAY_HOME",
+                "commence_time": "2026-09-10T17:00:00+00:00",
+                "market": "moneyline",
+                "side": "away",
+                "latest_point": None,
+                "latest_price": 130,
+                "sportsbook": "DraftKings",
+                "last_seen": "2026-09-10T16:00:00+00:00",
+                "home_team": "HOME",
+                "away_team": "AWAY",
+            },
+            {
+                "api_event_id": "2026_01_AWAY_HOME",
+                "commence_time": "2026-09-10T17:00:00+00:00",
+                "market": "moneyline",
+                "side": "home",
+                "latest_point": None,
+                "latest_price": -150,
+                "sportsbook": "DraftKings",
+                "last_seen": "2026-09-10T16:00:00+00:00",
+                "home_team": "HOME",
+                "away_team": "AWAY",
+            },
+            {
+                "api_event_id": "2026_01_AWAY_HOME",
+                "commence_time": "2026-09-10T17:00:00+00:00",
+                "market": "total",
+                "side": "over",
+                "latest_point": 45.5,
+                "latest_price": -110,
+                "sportsbook": "DraftKings",
+                "last_seen": "2026-09-10T16:00:00+00:00",
+                "home_team": "HOME",
+                "away_team": "AWAY",
+            },
+            {
+                "api_event_id": "2026_01_AWAY_HOME",
+                "commence_time": "2026-09-10T17:00:00+00:00",
+                "market": "total",
+                "side": "under",
+                "latest_point": 45.5,
+                "latest_price": -110,
+                "sportsbook": "DraftKings",
+                "last_seen": "2026-09-10T16:00:00+00:00",
+                "home_team": "HOME",
+                "away_team": "AWAY",
+            },
+        ]
+    )
+    proj = {
+        "2026_01_AWAY_HOME": pd.Series(
+            {
+                "api_event_id": "2026_01_AWAY_HOME",
+                "model_margin_home": -2.0,
+                "model_total_baseline": 45.2,
+            }
+        )
+    }
+
+    monkeypatch.setattr(shadow_markets, "_load_line_board", lambda: board)
+    monkeypatch.setattr(shadow_markets, "_load_projection_lookup", lambda: proj)
+
+    out = shadow_markets.build_shadow_boards(week=1, season=2026)
+    assert out["spreadCount"] >= 1
+    assert out["moneylineCount"] >= 1
+    assert out["totalCount"] >= 1
+
+    con = sqlite3.connect(str(shadow_db))
+    con.row_factory = sqlite3.Row
+    rows = con.execute("SELECT market_family, production_eligible, cross_market_comparable FROM shadow_candidates").fetchall()
+    con.close()
+    families = {str(r["market_family"]) for r in rows}
+    assert families == {"SPREAD", "MONEYLINE", "TOTAL"}
+
+    spread_rows = [r for r in rows if str(r["market_family"]) == "SPREAD"]
+    assert spread_rows
+    assert all(int(r["production_eligible"]) == 1 for r in spread_rows)
+    assert all(int(r["cross_market_comparable"]) == 0 for r in spread_rows)
+
+
+def test_shadow_candidate_identity_unique_across_market_families(monkeypatch, shadow_db):
+    board = pd.DataFrame(
+        [
+            {"api_event_id": "2026_02_A_B", "commence_time": "2026-09-17T17:00:00+00:00", "market": "spread", "side": "away", "latest_point": 3.0, "latest_price": -110, "sportsbook": "DraftKings", "last_seen": "2026-09-17T16:00:00+00:00", "home_team": "B", "away_team": "A", "model_prob": 0.56},
+            {"api_event_id": "2026_02_A_B", "commence_time": "2026-09-17T17:00:00+00:00", "market": "spread", "side": "home", "latest_point": -3.0, "latest_price": -110, "sportsbook": "DraftKings", "last_seen": "2026-09-17T16:00:00+00:00", "home_team": "B", "away_team": "A", "model_prob": 0.44},
+            {"api_event_id": "2026_02_A_B", "commence_time": "2026-09-17T17:00:00+00:00", "market": "moneyline", "side": "away", "latest_point": None, "latest_price": 130, "sportsbook": "DraftKings", "last_seen": "2026-09-17T16:00:00+00:00", "home_team": "B", "away_team": "A"},
+            {"api_event_id": "2026_02_A_B", "commence_time": "2026-09-17T17:00:00+00:00", "market": "moneyline", "side": "home", "latest_point": None, "latest_price": -150, "sportsbook": "DraftKings", "last_seen": "2026-09-17T16:00:00+00:00", "home_team": "B", "away_team": "A"},
+            {"api_event_id": "2026_02_A_B", "commence_time": "2026-09-17T17:00:00+00:00", "market": "total", "side": "over", "latest_point": 47.5, "latest_price": -110, "sportsbook": "DraftKings", "last_seen": "2026-09-17T16:00:00+00:00", "home_team": "B", "away_team": "A"},
+            {"api_event_id": "2026_02_A_B", "commence_time": "2026-09-17T17:00:00+00:00", "market": "total", "side": "under", "latest_point": 47.5, "latest_price": -110, "sportsbook": "DraftKings", "last_seen": "2026-09-17T16:00:00+00:00", "home_team": "B", "away_team": "A"},
+        ]
+    )
+    proj = {"2026_02_A_B": pd.Series({"api_event_id": "2026_02_A_B", "model_margin_home": -2.0, "model_total_baseline": 47.3})}
+
+    monkeypatch.setattr(shadow_markets, "_load_line_board", lambda: board)
+    monkeypatch.setattr(shadow_markets, "_load_projection_lookup", lambda: proj)
+    out = shadow_markets.build_shadow_boards(week=2, season=2026)
+    assert out["candidateCount"] >= 3
+
+    con = sqlite3.connect(str(shadow_db))
+    ids = [r[0] for r in con.execute("SELECT candidate_id FROM shadow_candidates").fetchall()]
+    con.close()
+    assert len(ids) == len(set(ids))
+
+
+def test_line_clv_sign_semantics() -> None:
+    assert shadow_markets._line_clv_points("SPREAD", "away", 3.0, 2.5) > 0
+    assert shadow_markets._line_clv_points("SPREAD", "away", 3.0, 3.5) < 0
+    assert shadow_markets._line_clv_points("TOTAL", "over", 45.5, 46.5) > 0
+    assert shadow_markets._line_clv_points("TOTAL", "under", 45.5, 44.5) > 0
+
+
+def test_two_sided_no_vig_moneyline_and_single_sided_rejection(monkeypatch, tmp_path):
+    import duckdb  # type: ignore
+
+    model_root = tmp_path / "model"
+    db_dir = model_root / "database"
+    db_dir.mkdir(parents=True)
+    db = db_dir / "nfl_model.duckdb"
+
+    con = duckdb.connect(str(db))
+    con.execute(
+        """
+        CREATE TABLE odds_snapshots (
+            api_event_id VARCHAR,
+            bookmaker_key VARCHAR,
+            market_key VARCHAR,
+            outcome_code VARCHAR,
+            fetched_at TIMESTAMP,
+            point DOUBLE,
+            price DOUBLE
+        )
+        """
+    )
+    con.execute(
+        """
+        INSERT INTO odds_snapshots VALUES
+        ('evt-1','DraftKings','h2h','home','2026-09-10 16:50:00',NULL,-150),
+        ('evt-1','DraftKings','h2h','away','2026-09-10 16:50:00',NULL,130)
+        """
+    )
+    con.close()
+
+    monkeypatch.setattr(shadow_markets, "MODEL_ROOT", model_root)
+    kickoff = pd.Timestamp("2026-09-10T17:00:00+00:00").to_pydatetime()
+    p, status = shadow_markets._two_sided_closing_no_vig(
+        event_id="evt-1",
+        sportsbook="DraftKings",
+        market_family="MONEYLINE",
+        side="away",
+        kickoff=kickoff,
+        recommended_line=None,
+    )
+    assert status == "AVAILABLE_TWO_SIDED_MARKET"
+    assert p is not None
+
+    # Remove away side => single-sided should be rejected.
+    con = duckdb.connect(str(db))
+    con.execute("DELETE FROM odds_snapshots WHERE outcome_code = 'away'")
+    con.close()
+    p2, status2 = shadow_markets._two_sided_closing_no_vig(
+        event_id="evt-1",
+        sportsbook="DraftKings",
+        market_family="MONEYLINE",
+        side="home",
+        kickoff=kickoff,
+        recommended_line=None,
+    )
+    assert p2 is None
+    assert status2 == "UNAVAILABLE_TWO_SIDED_MARKET"
+
+
+def test_two_sided_no_vig_total_mismatch_rejected(monkeypatch, tmp_path):
+    import duckdb  # type: ignore
+
+    model_root = tmp_path / "model2"
+    db_dir = model_root / "database"
+    db_dir.mkdir(parents=True)
+    db = db_dir / "nfl_model.duckdb"
+
+    con = duckdb.connect(str(db))
+    con.execute(
+        """
+        CREATE TABLE odds_snapshots (
+            api_event_id VARCHAR,
+            bookmaker_key VARCHAR,
+            market_key VARCHAR,
+            outcome_code VARCHAR,
+            fetched_at TIMESTAMP,
+            point DOUBLE,
+            price DOUBLE
+        )
+        """
+    )
+    con.execute(
+        """
+        INSERT INTO odds_snapshots VALUES
+        ('evt-t','DraftKings','totals','over','2026-09-10 16:50:00',47.5,-110),
+        ('evt-t','DraftKings','totals','under','2026-09-10 16:50:00',46.5,-110)
+        """
+    )
+    con.close()
+
+    monkeypatch.setattr(shadow_markets, "MODEL_ROOT", model_root)
+    kickoff = pd.Timestamp("2026-09-10T17:00:00+00:00").to_pydatetime()
+    p, status = shadow_markets._two_sided_closing_no_vig(
+        event_id="evt-t",
+        sportsbook="DraftKings",
+        market_family="TOTAL",
+        side="over",
+        kickoff=kickoff,
+        recommended_line=47.5,
+    )
+    assert p is None
+    assert status in {"MISMATCHED_TOTAL_POINTS", "UNAVAILABLE_TWO_SIDED_MARKET"}
+
+
+def test_moneyline_price_clv_signs_with_two_sided_no_vig(monkeypatch, shadow_db):
+    _seed_run_and_candidate(
+        shadow_db,
+        run_id="run-clv-ml-pos",
+        season=2026,
+        week=11,
+        candidate_id="cand-ml-clv-pos",
+        market_family="MONEYLINE",
+        market_key="moneyline",
+        side="away",
+        period="FULL_GAME",
+        line=None,
+        price=130,
+        commence_time="2026-09-13T17:00:00+00:00",
+    )
+    shadow_markets.publish_shadow_snapshot(run_id="run-clv-ml-pos", is_official=False)
+
+    class _Close:
+        closing_status = "AVAILABLE"
+        closing_point = None
+        closing_price = 120.0
+        closing_timestamp = pd.Timestamp("2026-09-13T16:58:00+00:00").to_pydatetime()
+
+    monkeypatch.setattr(shadow_markets, "get_closing_line", lambda **_: _Close())
+    monkeypatch.setattr(shadow_markets, "_two_sided_closing_no_vig", lambda **_: (0.58, "AVAILABLE_TWO_SIDED_MARKET"))
+
+    out = shadow_markets.append_shadow_outcomes(fetch_scores_fn=lambda _: {"finalAwayScore": 24, "finalHomeScore": 17})
+    assert out["appended"] == 1
+
+    con = sqlite3.connect(str(shadow_db))
+    row = con.execute(
+        "SELECT price_clv_probability FROM shadow_outcomes WHERE candidate_id = ?",
+        ["cand-ml-clv-pos"],
+    ).fetchone()
+    con.close()
+    assert row is not None
+    assert float(row[0]) > 0
+
+    _seed_run_and_candidate(
+        shadow_db,
+        run_id="run-clv-ml-neg",
+        season=2026,
+        week=11,
+        candidate_id="cand-ml-clv-neg",
+        market_family="MONEYLINE",
+        market_key="moneyline",
+        side="away",
+        period="FULL_GAME",
+        line=None,
+        price=130,
+        commence_time="2026-09-13T17:00:00+00:00",
+    )
+    shadow_markets.publish_shadow_snapshot(run_id="run-clv-ml-neg", is_official=False)
+    monkeypatch.setattr(shadow_markets, "_two_sided_closing_no_vig", lambda **_: (0.45, "AVAILABLE_TWO_SIDED_MARKET"))
+
+    out2 = shadow_markets.append_shadow_outcomes(fetch_scores_fn=lambda _: {"finalAwayScore": 24, "finalHomeScore": 17})
+    assert out2["appended"] == 1
+    con = sqlite3.connect(str(shadow_db))
+    row2 = con.execute(
+        "SELECT price_clv_probability FROM shadow_outcomes WHERE candidate_id = ?",
+        ["cand-ml-clv-neg"],
+    ).fetchone()
+    con.close()
+    assert row2 is not None
+    assert float(row2[0]) < 0
+
+
+def test_total_price_and_line_clv_signs(monkeypatch, shadow_db):
+    _seed_run_and_candidate(
+        shadow_db,
+        run_id="run-clv-total",
+        season=2026,
+        week=12,
+        candidate_id="cand-total-clv",
+        market_family="TOTAL",
+        market_key="total",
+        side="over",
+        period="FULL_GAME",
+        line=45.5,
+        price=-110,
+        commence_time="2026-09-20T17:00:00+00:00",
+    )
+    shadow_markets.publish_shadow_snapshot(run_id="run-clv-total", is_official=False)
+
+    class _Close:
+        closing_status = "AVAILABLE"
+        closing_point = 46.5
+        closing_price = -115.0
+        closing_timestamp = pd.Timestamp("2026-09-20T16:58:00+00:00").to_pydatetime()
+
+    monkeypatch.setattr(shadow_markets, "get_closing_line", lambda **_: _Close())
+    monkeypatch.setattr(shadow_markets, "_two_sided_closing_no_vig", lambda **_: (0.57, "AVAILABLE_TWO_SIDED_MARKET"))
+
+    out = shadow_markets.append_shadow_outcomes(fetch_scores_fn=lambda _: {"finalAwayScore": 24, "finalHomeScore": 24})
+    assert out["appended"] == 1
+
+    con = sqlite3.connect(str(shadow_db))
+    row = con.execute(
+        "SELECT line_clv_points, price_clv_probability FROM shadow_outcomes WHERE candidate_id = ?",
+        ["cand-total-clv"],
+    ).fetchone()
+    con.close()
+    assert row is not None
+    assert float(row[0]) > 0
+    assert float(row[1]) > 0
+
+
+def test_shadow_report_includes_spread_and_global_rank_fields(shadow_db):
+    _seed_run_and_candidate(
+        shadow_db,
+        run_id="run-report",
+        season=2026,
+        week=13,
+        candidate_id="cand-report-spread",
+        market_family="SPREAD",
+        market_key="spread",
+        side="away",
+        period="FULL_GAME",
+        line=3.0,
+        price=-110,
+    )
+    shadow_markets.publish_shadow_snapshot(run_id="run-report", is_official=False)
+    shadow_markets.append_shadow_outcomes(fetch_scores_fn=lambda _: {"finalAwayScore": 24, "finalHomeScore": 20})
+
+    report = shadow_markets.shadow_performance_report()
+    assert "SPREAD" in report["markets"]
+    spread = report["markets"]["SPREAD"]
+    assert "byGlobalResearchRank" in spread
+    assert "globalResearchTopRanksTracked" in spread

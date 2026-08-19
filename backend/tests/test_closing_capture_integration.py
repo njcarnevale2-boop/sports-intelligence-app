@@ -293,3 +293,38 @@ def test_closing_capture_failure_does_not_break_refresh(tmp_path):
     assert status["lastError"] is None
     assert status["closingCaptureErrors"] == 1
     assert status["lastClosingCaptureError"] == "capture blew up"
+
+
+def test_shadow_outcome_append_failure_is_non_fatal(tmp_path):
+    """Refresh survives shadow outcome append failures and records shadow error state."""
+    from types import SimpleNamespace
+    from app.services import refresh_orchestrator as orch
+
+    state_file = tmp_path / "state.json"
+    success = SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+    with (
+        patch.object(orch, "_STATE_FILE", state_file),
+        patch.object(orch.subprocess, "run", side_effect=[success, success]),
+        patch("app.services.recommendation_snapshot.capture_closing_lines", return_value={"eligible": 0, "captured": 0, "pending": 0, "missing": 0, "errors": 0}),
+        patch("app.services.decision_ledger.auto_append_outcomes_from_scores", return_value={"checked": 0, "appended": 0, "pending": 0}),
+        patch("app.services.shadow_markets.append_shadow_outcomes", side_effect=RuntimeError("shadow blew up")),
+        patch("app.services.performance.get_performance_service") as perf_factory,
+        patch("app.services.injuries.InjuryAnalyzer") as injury_analyzer,
+        patch("app.services.injury_history.get_injury_summary", return_value={"playersTracked": 0, "teamsUpdated": 0}),
+        patch("app.services.weather_history.get_weather_summary", return_value={"forecastsAvailable": 0}),
+        patch.object(orch, "_read_quota_from_db", return_value=None),
+    ):
+        perf_factory.return_value.get_performance_summary.return_value = {
+            "closingLinesCaptured": 0,
+            "pendingClosingLines": 0,
+            "missingClosingLines": 0,
+            "averageCLV": None,
+        }
+        injury_analyzer.return_value.analyze.return_value = None
+        injury_analyzer.return_value._data_status = "LIVE"
+        assert orch._run_once() is True
+
+    status = json.loads(state_file.read_text())
+    assert status["lastError"] is None
+    assert status["lastShadowOutcomeError"] == "shadow blew up"
