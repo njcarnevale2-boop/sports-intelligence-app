@@ -10,12 +10,16 @@ from app.config import settings
 from app.services.shadow_markets import (
     append_shadow_outcomes,
     build_shadow_boards,
+    capture_prospective_from_line_board,
     correlation_metadata_design,
     discover_expanded_markets,
     discover_player_props,
     expanded_market_collection_status,
     ingest_expanded_market_snapshots,
+    live_sia_future_schema_compatibility,
     player_identity_mapping_plan,
+    prospective_data_integrity_audit,
+    prospective_market_capture_report,
     publish_shadow_snapshot,
     shadow_performance_report,
     shadow_promotion_gates,
@@ -52,6 +56,12 @@ class SettlementRequest(BaseModel):
 
 class SnapshotIngestionRequest(BaseModel):
     runDiscovery: bool = True
+
+
+class ProspectiveCaptureRequest(BaseModel):
+    season: Optional[int] = None
+    week: Optional[int] = None
+    includeExpanded: bool = True
 
 
 @router.post("/boards/build")
@@ -133,6 +143,44 @@ def expanded_market_ingest(request: SnapshotIngestionRequest, x_admin_token: str
 def expanded_market_status(x_admin_token: str | None = Header(default=None)):
     _require_admin_token(x_admin_token)
     return expanded_market_collection_status()
+
+
+@router.post("/capture/prospective")
+def capture_prospective(request: ProspectiveCaptureRequest, x_admin_token: str | None = Header(default=None)):
+    _require_admin_token(x_admin_token)
+    core = capture_prospective_from_line_board(week=request.week, season=request.season)
+    expanded = ingest_expanded_market_snapshots(discovery=discover_expanded_markets()) if request.includeExpanded else None
+    return {
+        "core": core,
+        "expanded": expanded,
+        "capturedAtUTC": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@router.get("/capture/prospective/report")
+def prospective_report(
+    season: Optional[int] = Query(default=None),
+    week: Optional[int] = Query(default=None),
+    x_admin_token: str | None = Header(default=None),
+):
+    _require_admin_token(x_admin_token)
+    return prospective_market_capture_report(season=season, week=week)
+
+
+@router.get("/capture/prospective/integrity")
+def prospective_integrity(
+    season: Optional[int] = Query(default=None),
+    week: Optional[int] = Query(default=None),
+    x_admin_token: str | None = Header(default=None),
+):
+    _require_admin_token(x_admin_token)
+    return prospective_data_integrity_audit(season=season, week=week)
+
+
+@router.get("/capture/prospective/live-compatibility")
+def prospective_live_compatibility(x_admin_token: str | None = Header(default=None)):
+    _require_admin_token(x_admin_token)
+    return live_sia_future_schema_compatibility()
 
 
 @router.get("/discovery/player-props")

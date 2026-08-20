@@ -383,6 +383,17 @@ MARKET_KEY_TO_FAMILY: dict[str, str] = {
 }
 
 
+PROSPECTIVE_MARKET_FAMILIES = [
+    "SPREAD",
+    "MONEYLINE",
+    "TOTAL",
+    "TEAM_TOTAL",
+    "FIRST_HALF_SPREAD",
+    "FIRST_HALF_MONEYLINE",
+    "FIRST_HALF_TOTAL",
+]
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -405,6 +416,102 @@ def _connect() -> sqlite3.Connection:
 def _ensure_schema() -> None:
     con = _connect()
     con.executescript(SHADOW_SCHEMA)
+    con.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS prospective_market_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_id TEXT NOT NULL UNIQUE,
+            captured_at_utc TEXT NOT NULL,
+
+            season INTEGER,
+            week INTEGER,
+            event_id TEXT NOT NULL,
+            provider_event_id TEXT,
+            commence_time TEXT,
+
+            market_family TEXT NOT NULL,
+            market_key TEXT NOT NULL,
+            phase TEXT NOT NULL,
+            period TEXT NOT NULL,
+            state_label TEXT NOT NULL,
+            closing_status TEXT,
+            closing_cutoff_utc TEXT,
+            closing_max_age_seconds INTEGER,
+
+            team_code TEXT,
+            selection TEXT,
+            side TEXT,
+            line REAL,
+            price REAL,
+            sportsbook TEXT,
+            bookmaker_key TEXT,
+
+            market_timestamp TEXT,
+            fetched_at TEXT,
+            source_snapshot_id TEXT,
+
+            book_coverage_count INTEGER,
+            available_books TEXT,
+            market_depth_status TEXT,
+            all_books TEXT,
+            best_price REAL,
+            best_price_book TEXT,
+            consensus_line REAL,
+            median_line REAL,
+
+            projected_game_total REAL,
+            projected_home_margin REAL,
+            derived_projected_home_points REAL,
+            derived_projected_away_points REAL,
+            selected_team_projected_points REAL,
+
+            raw_probability REAL,
+            calibrated_probability REAL,
+            push_probability REAL,
+            loss_probability REAL,
+            market_implied_probability REAL,
+            market_no_vig_probability REAL,
+
+            edge REAL,
+            ev REAL,
+            fair_value REAL,
+            playable_to REAL,
+            si_score REAL,
+
+            market_rank INTEGER,
+            global_research_score REAL,
+            global_research_rank INTEGER,
+
+            production_eligible INTEGER,
+            cross_market_comparable INTEGER,
+            market_validation_status TEXT,
+            model_state TEXT,
+            shadow_recommendations TEXT,
+
+            model_version TEXT,
+            probability_engine_version TEXT,
+            calibration_version TEXT,
+            ranking_version TEXT,
+            qualification_policy_version TEXT,
+            git_commit_hash TEXT,
+
+            game_state_timestamp TEXT,
+            game_quarter INTEGER,
+            game_clock TEXT,
+            possession TEXT,
+
+            payload_hash TEXT NOT NULL,
+            canonical_payload TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL UNIQUE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_prospective_market_state
+            ON prospective_market_snapshots(event_id, market_family, period, state_label);
+
+        CREATE INDEX IF NOT EXISTS idx_prospective_market_week
+            ON prospective_market_snapshots(season, week, market_family);
+        """
+    )
     # Backward-compatible migrations for databases created before research score fields existed.
     for table, column_def in [
         ("shadow_candidates", "global_research_score REAL"),
@@ -434,6 +541,48 @@ def _ensure_schema() -> None:
         ("shadow_market_snapshots", "best_price_book TEXT"),
         ("shadow_market_snapshots", "consensus_available INTEGER"),
         ("shadow_market_snapshots", "market_depth_status TEXT"),
+        ("prospective_market_snapshots", "closing_status TEXT"),
+        ("prospective_market_snapshots", "closing_cutoff_utc TEXT"),
+        ("prospective_market_snapshots", "closing_max_age_seconds INTEGER"),
+        ("prospective_market_snapshots", "all_books TEXT"),
+        ("prospective_market_snapshots", "best_price REAL"),
+        ("prospective_market_snapshots", "best_price_book TEXT"),
+        ("prospective_market_snapshots", "consensus_line REAL"),
+        ("prospective_market_snapshots", "median_line REAL"),
+        ("prospective_market_snapshots", "projected_game_total REAL"),
+        ("prospective_market_snapshots", "projected_home_margin REAL"),
+        ("prospective_market_snapshots", "derived_projected_home_points REAL"),
+        ("prospective_market_snapshots", "derived_projected_away_points REAL"),
+        ("prospective_market_snapshots", "selected_team_projected_points REAL"),
+        ("prospective_market_snapshots", "raw_probability REAL"),
+        ("prospective_market_snapshots", "calibrated_probability REAL"),
+        ("prospective_market_snapshots", "push_probability REAL"),
+        ("prospective_market_snapshots", "loss_probability REAL"),
+        ("prospective_market_snapshots", "market_implied_probability REAL"),
+        ("prospective_market_snapshots", "market_no_vig_probability REAL"),
+        ("prospective_market_snapshots", "edge REAL"),
+        ("prospective_market_snapshots", "ev REAL"),
+        ("prospective_market_snapshots", "fair_value REAL"),
+        ("prospective_market_snapshots", "playable_to REAL"),
+        ("prospective_market_snapshots", "si_score REAL"),
+        ("prospective_market_snapshots", "market_rank INTEGER"),
+        ("prospective_market_snapshots", "global_research_score REAL"),
+        ("prospective_market_snapshots", "global_research_rank INTEGER"),
+        ("prospective_market_snapshots", "production_eligible INTEGER"),
+        ("prospective_market_snapshots", "cross_market_comparable INTEGER"),
+        ("prospective_market_snapshots", "market_validation_status TEXT"),
+        ("prospective_market_snapshots", "model_state TEXT"),
+        ("prospective_market_snapshots", "shadow_recommendations TEXT"),
+        ("prospective_market_snapshots", "model_version TEXT"),
+        ("prospective_market_snapshots", "probability_engine_version TEXT"),
+        ("prospective_market_snapshots", "calibration_version TEXT"),
+        ("prospective_market_snapshots", "ranking_version TEXT"),
+        ("prospective_market_snapshots", "qualification_policy_version TEXT"),
+        ("prospective_market_snapshots", "git_commit_hash TEXT"),
+        ("prospective_market_snapshots", "game_state_timestamp TEXT"),
+        ("prospective_market_snapshots", "game_quarter INTEGER"),
+        ("prospective_market_snapshots", "game_clock TEXT"),
+        ("prospective_market_snapshots", "possession TEXT"),
     ]:
         try:
             con.execute(f"ALTER TABLE {table} ADD COLUMN {column_def}")
@@ -668,6 +817,700 @@ def _parse_commence(value: Any) -> Optional[datetime]:
         return ts.to_pydatetime()
     except Exception:
         return None
+
+
+def _parse_iso_for_compare(value: Any) -> Optional[datetime]:
+    dt = _parse_commence(value)
+    if dt is None:
+        return None
+    return dt.astimezone(timezone.utc)
+
+
+def _safe_int(value: Any) -> Optional[int]:
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _consensus_and_median_line(lines: list[float]) -> tuple[Optional[float], Optional[float]]:
+    if not lines:
+        return None, None
+    clean = sorted(float(v) for v in lines)
+    median = float(clean[len(clean) // 2]) if len(clean) % 2 == 1 else float((clean[len(clean) // 2 - 1] + clean[len(clean) // 2]) / 2.0)
+
+    counts: dict[float, int] = {}
+    for val in clean:
+        counts[val] = counts.get(val, 0) + 1
+    winner, cnt = max(counts.items(), key=lambda item: (item[1], -abs(item[0])))
+    consensus = float(winner) if cnt >= 2 else None
+    return consensus, median
+
+
+def _closing_cutoff_details(
+    *,
+    commence_time: Optional[str],
+    market_timestamp: Optional[str],
+    fetched_at: Optional[str],
+) -> tuple[bool, str, Optional[str], int]:
+    max_age_seconds = int(os.getenv("PROSPECTIVE_CLOSING_MAX_AGE_SECONDS", "900"))
+    commence_dt = _parse_iso_for_compare(commence_time)
+    quote_dt = _parse_iso_for_compare(market_timestamp) or _parse_iso_for_compare(fetched_at)
+    if commence_dt is None or quote_dt is None:
+        return False, "UNAVAILABLE", None, max_age_seconds
+
+    if quote_dt > commence_dt:
+        return False, "POST_KICKOFF_REJECTED", commence_dt.isoformat(), max_age_seconds
+
+    age = (commence_dt - quote_dt).total_seconds()
+    if age > float(max_age_seconds):
+        return False, "STALE_REJECTED", commence_dt.isoformat(), max_age_seconds
+
+    return True, "AVAILABLE", commence_dt.isoformat(), max_age_seconds
+
+
+def _logical_market_identity(row: dict[str, Any]) -> tuple[str, str, str, str, str, str, str]:
+    return (
+        str(row.get("eventId") or ""),
+        str(row.get("marketFamily") or ""),
+        str(row.get("period") or ""),
+        str(row.get("sportsbook") or ""),
+        str(row.get("selection") or ""),
+        str(row.get("side") or ""),
+        str(row.get("teamCode") or ""),
+    )
+
+
+def _market_novig_from_pair(
+    *,
+    market_key: str,
+    side: str,
+    team_code: Optional[str],
+    line: Optional[float],
+    quotes: list[dict[str, Any]],
+) -> tuple[Optional[float], str]:
+    mk = str(market_key or "")
+    sd = str(side or "").lower()
+    team = str(team_code or "").upper()
+
+    if mk in {"moneyline", "first_half_moneyline"}:
+        home = next((q for q in quotes if str(q.get("side") or "").lower() == "home" and q.get("price") is not None), None)
+        away = next((q for q in quotes if str(q.get("side") or "").lower() == "away" and q.get("price") is not None), None)
+        if home and away and sd in {"home", "away"}:
+            home_nv, away_nv = _devig_two_way(float(home["price"]), float(away["price"]))
+            return (home_nv if sd == "home" else away_nv), "TWO_SIDED_AVAILABLE"
+        return None, "UNAVAILABLE_TWO_SIDED_MARKET"
+
+    if mk in {"spread", "first_half_spread"}:
+        if line is None:
+            return None, "UNAVAILABLE_TWO_SIDED_MARKET"
+        home = next((q for q in quotes if str(q.get("side") or "").lower() == "home" and q.get("price") is not None and q.get("line") is not None and abs(float(q["line"]) + float(line)) < 1e-9), None)
+        away = next((q for q in quotes if str(q.get("side") or "").lower() == "away" and q.get("price") is not None and q.get("line") is not None and abs(float(q["line"]) + float(line)) < 1e-9), None)
+        if home and away and sd in {"home", "away"}:
+            home_nv, away_nv = _devig_two_way(float(home["price"]), float(away["price"]))
+            return (home_nv if sd == "home" else away_nv), "TWO_SIDED_AVAILABLE"
+        return None, "UNAVAILABLE_TWO_SIDED_MARKET"
+
+    if mk in {"total", "first_half_total", "team_total"}:
+        over = next(
+            (
+                q
+                for q in quotes
+                if str(q.get("side") or "").lower() == "over"
+                and q.get("price") is not None
+                and q.get("line") is not None
+                and (line is None or abs(float(q["line"]) - float(line)) < 1e-9)
+                and (mk != "team_total" or str(q.get("teamCode") or "").upper() == team)
+            ),
+            None,
+        )
+        under = next(
+            (
+                q
+                for q in quotes
+                if str(q.get("side") or "").lower() == "under"
+                and q.get("price") is not None
+                and q.get("line") is not None
+                and (line is None or abs(float(q["line"]) - float(line)) < 1e-9)
+                and (mk != "team_total" or str(q.get("teamCode") or "").upper() == team)
+            ),
+            None,
+        )
+        if over and under and sd in {"over", "under"}:
+            over_nv, under_nv = _devig_two_way(float(over["price"]), float(under["price"]))
+            return (over_nv if sd == "over" else under_nv), "TWO_SIDED_AVAILABLE"
+        return None, "UNAVAILABLE_TWO_SIDED_MARKET"
+
+    return None, "UNAVAILABLE_TWO_SIDED_MARKET"
+
+
+def _persist_prospective_state_row(
+    con: sqlite3.Connection,
+    *,
+    row: dict[str, Any],
+    state_label: str,
+    closing_status: Optional[str],
+    closing_cutoff_utc: Optional[str],
+    closing_max_age_seconds: Optional[int],
+) -> bool:
+    payload = dict(row)
+    payload["stateLabel"] = state_label
+    payload["closingStatus"] = closing_status
+    payload["closingCutoffUTC"] = closing_cutoff_utc
+    payload["closingMaxAgeSeconds"] = closing_max_age_seconds
+    canonical = _canonical_json(payload)
+    payload_hash = _sha256(canonical)
+    idem = _sha256(f"prospective-market:{payload_hash}")
+    snapshot_id = str(uuid.uuid5(uuid.NAMESPACE_URL, idem))
+
+    values = [
+        snapshot_id,
+        _utc_now_iso(),
+        row.get("season"),
+        row.get("week"),
+        row.get("eventId"),
+        row.get("providerEventId"),
+        row.get("commenceTime"),
+        row.get("marketFamily"),
+        row.get("marketKey"),
+        row.get("phase") or "PREGAME",
+        row.get("period"),
+        state_label,
+        closing_status,
+        closing_cutoff_utc,
+        closing_max_age_seconds,
+        row.get("teamCode"),
+        row.get("selection"),
+        row.get("side"),
+        row.get("line"),
+        row.get("price"),
+        row.get("sportsbook"),
+        row.get("bookmakerKey"),
+        row.get("marketTimestamp"),
+        row.get("fetchedAt"),
+        row.get("sourceSnapshotId"),
+        row.get("bookCoverageCount"),
+        json.dumps(row.get("availableBooks") or [], separators=(",", ":")),
+        row.get("marketDepthStatus"),
+        json.dumps(row.get("allBooks") or [], separators=(",", ":")),
+        row.get("bestPrice"),
+        row.get("bestPriceBook"),
+        row.get("consensusLine"),
+        row.get("medianLine"),
+        row.get("projectedGameTotal"),
+        row.get("projectedHomeMargin"),
+        row.get("derivedProjectedHomePoints"),
+        row.get("derivedProjectedAwayPoints"),
+        row.get("selectedTeamProjectedPoints"),
+        row.get("rawProbability"),
+        row.get("calibratedProbability"),
+        row.get("pushProbability"),
+        row.get("lossProbability"),
+        row.get("marketImpliedProbability"),
+        row.get("marketNoVigProbability"),
+        row.get("edge"),
+        row.get("ev"),
+        row.get("fairValue"),
+        row.get("playableTo"),
+        row.get("siScore"),
+        row.get("marketRank"),
+        row.get("globalResearchScore"),
+        row.get("globalResearchRank"),
+        1 if bool(row.get("productionEligible")) else 0,
+        1 if bool(row.get("crossMarketComparable")) else 0,
+        row.get("marketValidationStatus"),
+        row.get("modelState"),
+        row.get("shadowRecommendations"),
+        row.get("modelVersion"),
+        row.get("probabilityEngineVersion"),
+        row.get("calibrationVersion"),
+        row.get("rankingVersion"),
+        row.get("qualificationPolicyVersion"),
+        row.get("gitCommitHash"),
+        row.get("gameStateTimestamp"),
+        row.get("gameQuarter"),
+        row.get("gameClock"),
+        row.get("possession"),
+        payload_hash,
+        canonical,
+        idem,
+    ]
+
+    before = con.total_changes
+    con.execute(
+        f"""
+        INSERT OR IGNORE INTO prospective_market_snapshots (
+            snapshot_id, captured_at_utc,
+            season, week, event_id, provider_event_id, commence_time,
+            market_family, market_key, phase, period, state_label,
+            closing_status, closing_cutoff_utc, closing_max_age_seconds,
+            team_code, selection, side, line, price, sportsbook, bookmaker_key,
+            market_timestamp, fetched_at, source_snapshot_id,
+            book_coverage_count, available_books, market_depth_status, all_books,
+            best_price, best_price_book, consensus_line, median_line,
+            projected_game_total, projected_home_margin,
+            derived_projected_home_points, derived_projected_away_points, selected_team_projected_points,
+            raw_probability, calibrated_probability, push_probability, loss_probability,
+            market_implied_probability, market_no_vig_probability,
+            edge, ev, fair_value, playable_to, si_score,
+            market_rank, global_research_score, global_research_rank,
+            production_eligible, cross_market_comparable,
+            market_validation_status, model_state, shadow_recommendations,
+            model_version, probability_engine_version, calibration_version,
+            ranking_version, qualification_policy_version, git_commit_hash,
+            game_state_timestamp, game_quarter, game_clock, possession,
+            payload_hash, canonical_payload, idempotency_key
+        ) VALUES ({','.join(['?'] * len(values))})
+        """,
+        values,
+    )
+    return con.total_changes > before
+
+
+def _opening_state_exists(con: sqlite3.Connection, row: dict[str, Any]) -> bool:
+    identity = _logical_market_identity(row)
+    found = con.execute(
+        """
+        SELECT 1
+        FROM prospective_market_snapshots
+        WHERE event_id = ?
+          AND market_family = ?
+          AND period = ?
+          AND sportsbook = ?
+          AND selection = ?
+          AND side = ?
+          AND ifnull(team_code, '') = ?
+          AND phase = 'PREGAME'
+          AND state_label = 'OPENING'
+        LIMIT 1
+        """,
+        list(identity),
+    ).fetchone()
+    return found is not None
+
+
+def _capture_prospective_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    _ensure_schema()
+    con = _connect()
+
+    inserted_current = 0
+    inserted_opening = 0
+    inserted_closing = 0
+    duplicate_rejections = 0
+    stale_rejections = 0
+    post_kickoff_rejections = 0
+    missing_fields = 0
+
+    for row in rows:
+        if not row.get("eventId") or not row.get("marketFamily") or not row.get("period"):
+            missing_fields += 1
+            continue
+
+        if _persist_prospective_state_row(
+            con,
+            row=row,
+            state_label="CURRENT",
+            closing_status=None,
+            closing_cutoff_utc=None,
+            closing_max_age_seconds=None,
+        ):
+            inserted_current += 1
+        else:
+            duplicate_rejections += 1
+
+        if not _opening_state_exists(con, row):
+            if _persist_prospective_state_row(
+                con,
+                row=row,
+                state_label="OPENING",
+                closing_status=None,
+                closing_cutoff_utc=None,
+                closing_max_age_seconds=None,
+            ):
+                inserted_opening += 1
+            else:
+                duplicate_rejections += 1
+
+        closing_ok, close_status, close_cutoff, close_max_age = _closing_cutoff_details(
+            commence_time=row.get("commenceTime"),
+            market_timestamp=row.get("marketTimestamp"),
+            fetched_at=row.get("fetchedAt"),
+        )
+        if closing_ok:
+            if _persist_prospective_state_row(
+                con,
+                row=row,
+                state_label="CLOSING",
+                closing_status="AVAILABLE",
+                closing_cutoff_utc=close_cutoff,
+                closing_max_age_seconds=close_max_age,
+            ):
+                inserted_closing += 1
+            else:
+                duplicate_rejections += 1
+        elif close_status == "STALE_REJECTED":
+            stale_rejections += 1
+        elif close_status == "POST_KICKOFF_REJECTED":
+            post_kickoff_rejections += 1
+
+    con.commit()
+    con.close()
+
+    return {
+        "rowsReceived": len(rows),
+        "currentInserted": inserted_current,
+        "openingInserted": inserted_opening,
+        "closingInserted": inserted_closing,
+        "duplicateRejectionCount": duplicate_rejections,
+        "staleSnapshotCount": stale_rejections,
+        "postKickoffRejectedCount": post_kickoff_rejections,
+        "missingFieldCount": missing_fields,
+    }
+
+
+def _row_market_metadata(
+    *,
+    market_key: str,
+    market_family: str,
+    side: str,
+    team_code: Optional[str],
+) -> tuple[str, str]:
+    if market_family == "TEAM_TOTAL":
+        return "RESEARCH_ONLY", "DISABLED"
+    if market_family in {"FIRST_HALF_SPREAD", "FIRST_HALF_MONEYLINE", "FIRST_HALF_TOTAL"}:
+        return "DATA_COLLECTION_ONLY", "DISABLED"
+    return "MODEL_BACKED", "ENABLED" if market_key == "spread" else "DISABLED"
+
+
+def capture_prospective_from_line_board(week: Optional[int] = None, season: Optional[int] = None) -> dict[str, Any]:
+    board = _load_line_board()
+    if board.empty:
+        return {
+            "rowsReceived": 0,
+            "currentInserted": 0,
+            "openingInserted": 0,
+            "closingInserted": 0,
+            "duplicateRejectionCount": 0,
+            "staleSnapshotCount": 0,
+            "postKickoffRejectedCount": 0,
+            "missingFieldCount": 0,
+        }
+
+    board = board.copy()
+    board["market"] = board["market"].astype(str).str.strip().str.lower().map(_normalize_market)
+    board["side"] = board["side"].astype(str).str.strip().str.lower()
+    board = board[board["market"].isin({"spread", "moneyline", "total", "team_total", "first_half_spread", "first_half_moneyline", "first_half_total"})]
+    if board.empty:
+        return {
+            "rowsReceived": 0,
+            "currentInserted": 0,
+            "openingInserted": 0,
+            "closingInserted": 0,
+            "duplicateRejectionCount": 0,
+            "staleSnapshotCount": 0,
+            "postKickoffRejectedCount": 0,
+            "missingFieldCount": 0,
+        }
+
+    if season is not None and week is not None:
+        keep_rows = []
+        for _, rr in board.iterrows():
+            row_season, row_week = _extract_season_week_from_game_id(
+                str(rr.get("api_event_id") or ""),
+                _parse_commence(rr.get("commence_time")),
+            )
+            if row_season == int(season) and row_week == int(week):
+                keep_rows.append(rr)
+        if keep_rows:
+            board = pd.DataFrame(keep_rows)
+
+    projections = _load_projection_lookup()
+    grouped_quotes: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
+
+    for _, rr in board.iterrows():
+        event_id = str(rr.get("api_event_id") or "")
+        market_key = str(rr.get("market") or "")
+        side = str(rr.get("side") or "").lower()
+        team_code = _team_code_from_row(rr, side)
+        identity = (event_id, market_key, side, str(team_code or ""))
+        grouped_quotes.setdefault(identity, []).append(
+            {
+                "line": _safe_float(rr.get("latest_point")),
+                "price": _safe_float(rr.get("latest_price")),
+                "sportsbook": str(rr.get("sportsbook") or ""),
+                "side": side,
+                "teamCode": team_code,
+            }
+        )
+
+    prospective_rows: list[dict[str, Any]] = []
+
+    for _, rr in board.iterrows():
+        event_id = str(rr.get("api_event_id") or "")
+        market_key = str(rr.get("market") or "")
+        market_family = MARKET_KEY_TO_FAMILY.get(market_key)
+        if market_family not in PROSPECTIVE_MARKET_FAMILIES:
+            continue
+
+        side = str(rr.get("side") or "").lower()
+        team_code = _team_code_from_row(rr, side)
+        line = _safe_float(rr.get("latest_point"))
+        price = _safe_float(rr.get("latest_price"))
+        if price is None:
+            continue
+
+        quotes = grouped_quotes.get((event_id, market_key, side, str(team_code or "")), [])
+        all_books = sorted({str(q.get("sportsbook") or "") for q in quotes if str(q.get("sportsbook") or "")})
+        best_q = max((q for q in quotes if q.get("price") is not None), key=lambda q: float(q["price"]), default=None)
+        lines = [float(q["line"]) for q in quotes if q.get("line") is not None]
+        consensus_line, median_line = _consensus_and_median_line(lines)
+
+        implied = _implied_probability(float(price))
+        novig, novig_status = _market_novig_from_pair(
+            market_key=market_key,
+            side=side,
+            team_code=team_code,
+            line=line,
+            quotes=quotes,
+        )
+
+        projection = projections.get(event_id)
+        projected_game_total = _safe_float(projection.get("model_total_baseline")) if projection is not None else None
+        projected_home_margin = _safe_float(projection.get("model_margin_home")) if projection is not None else None
+        if market_family in {"FIRST_HALF_SPREAD", "FIRST_HALF_MONEYLINE", "FIRST_HALF_TOTAL"}:
+            projected_game_total = None
+            projected_home_margin = None
+        derived_home = None
+        derived_away = None
+        selected_team = None
+        if projected_game_total is not None and projected_home_margin is not None:
+            derived_home = (float(projected_game_total) + float(projected_home_margin)) / 2.0
+            derived_away = float(projected_game_total) - float(derived_home)
+            away_code, home_code = _extract_away_home_from_event_id(event_id)
+            if market_family == "TEAM_TOTAL":
+                team = str(team_code or "").upper()
+                if home_code and team == home_code:
+                    selected_team = derived_home
+                elif away_code and team == away_code:
+                    selected_team = derived_away
+
+        model_state, recommendations = _row_market_metadata(
+            market_key=market_key,
+            market_family=market_family,
+            side=side,
+            team_code=team_code,
+        )
+
+        season_row, week_row = _extract_season_week_from_game_id(
+            event_id,
+            _parse_commence(rr.get("commence_time")),
+        )
+
+        prospective_rows.append(
+            {
+                "season": int(season if season is not None else season_row),
+                "week": int(week if week is not None else week_row),
+                "eventId": event_id,
+                "providerEventId": event_id,
+                "commenceTime": str(rr.get("commence_time") or ""),
+                "marketFamily": market_family,
+                "marketKey": market_key,
+                "phase": "PREGAME",
+                "period": _market_period_for_key(market_key),
+                "teamCode": team_code,
+                "selection": str(rr.get("selection") or rr.get("team") or side),
+                "side": side,
+                "line": line,
+                "price": price,
+                "sportsbook": str(rr.get("sportsbook") or ""),
+                "bookmakerKey": str(rr.get("bookmakerKey") or rr.get("sportsbook") or ""),
+                "marketTimestamp": str(rr.get("last_seen") or ""),
+                "fetchedAt": _utc_now_iso(),
+                "sourceSnapshotId": _sha256(
+                    _canonical_json(
+                        {
+                            "eventId": event_id,
+                            "market": market_key,
+                            "side": side,
+                            "line": line,
+                            "price": price,
+                            "sportsbook": str(rr.get("sportsbook") or ""),
+                            "marketTimestamp": str(rr.get("last_seen") or ""),
+                        }
+                    )
+                ),
+                "bookCoverageCount": len(all_books),
+                "availableBooks": all_books,
+                "marketDepthStatus": _market_depth_status(len(all_books)),
+                "allBooks": quotes,
+                "bestPrice": best_q.get("price") if best_q else price,
+                "bestPriceBook": best_q.get("sportsbook") if best_q else str(rr.get("sportsbook") or ""),
+                "consensusLine": consensus_line,
+                "medianLine": median_line,
+                "projectedGameTotal": projected_game_total,
+                "projectedHomeMargin": projected_home_margin,
+                "derivedProjectedHomePoints": derived_home,
+                "derivedProjectedAwayPoints": derived_away,
+                "selectedTeamProjectedPoints": selected_team,
+                "rawProbability": None,
+                "calibratedProbability": None,
+                "pushProbability": None,
+                "lossProbability": None,
+                "marketImpliedProbability": implied,
+                "marketNoVigProbability": novig,
+                "edge": None,
+                "ev": None,
+                "fairValue": None,
+                "playableTo": None,
+                "siScore": None,
+                "marketRank": None,
+                "globalResearchScore": None,
+                "globalResearchRank": None,
+                "productionEligible": True if market_family == "SPREAD" else False,
+                "crossMarketComparable": False,
+                "marketValidationStatus": novig_status,
+                "modelState": model_state,
+                "shadowRecommendations": recommendations,
+                "modelVersion": settings.DEFAULT_MODEL_VERSION,
+                "probabilityEngineVersion": settings.DEFAULT_PROBABILITY_ENGINE_VERSION,
+                "calibrationVersion": settings.DEFAULT_CALIBRATION_VERSION,
+                "rankingVersion": settings.DEFAULT_RANKING_VERSION,
+                "qualificationPolicyVersion": settings.DEFAULT_QUALIFICATION_POLICY_VERSION,
+                "gitCommitHash": settings.DEFAULT_GIT_COMMIT_HASH,
+                "gameStateTimestamp": None,
+                "gameQuarter": None,
+                "gameClock": None,
+                "possession": None,
+            }
+        )
+
+    return _capture_prospective_rows(prospective_rows)
+
+
+def prospective_market_capture_report(*, season: Optional[int] = None, week: Optional[int] = None) -> dict[str, Any]:
+    _ensure_schema()
+    con = _connect()
+    where = ["phase = 'PREGAME'", "market_family IN ('SPREAD','MONEYLINE','TOTAL','TEAM_TOTAL','FIRST_HALF_SPREAD','FIRST_HALF_MONEYLINE','FIRST_HALF_TOTAL')"]
+    params: list[Any] = []
+    if season is not None:
+        where.append("season = ?")
+        params.append(int(season))
+    if week is not None:
+        where.append("week = ?")
+        params.append(int(week))
+    sql = "SELECT * FROM prospective_market_snapshots WHERE " + " AND ".join(where)
+    rows = con.execute(sql, params).fetchall()
+    con.close()
+
+    by_market: dict[str, Any] = {}
+    for family in PROSPECTIVE_MARKET_FAMILIES:
+        fam_rows = [r for r in rows if str(r["market_family"]) == family]
+        states = {"OPENING": 0, "CURRENT": 0, "CLOSING": 0}
+        for r in fam_rows:
+            label = str(r["state_label"] or "")
+            if label in states:
+                states[label] += 1
+
+        book_depth = sorted({str(r["market_depth_status"] or "") for r in fam_rows if str(r["market_depth_status"] or "")})
+        by_market[family] = {
+            "rowsCaptured": len(fam_rows),
+            "eventsCaptured": len({str(r["event_id"] or "") for r in fam_rows if str(r["event_id"] or "")}),
+            "openingCapture": "READY" if states["OPENING"] > 0 else "NOT_READY",
+            "currentCapture": "READY" if states["CURRENT"] > 0 else "NOT_READY",
+            "closingCapture": "READY" if states["CLOSING"] > 0 else "NOT_READY",
+            "stateCounts": states,
+            "bookDepthStatuses": book_depth,
+            "modelDataAvailability": {
+                "projectionAvailable": any(r["projected_game_total"] is not None for r in fam_rows),
+                "rawProbabilityAvailable": any(r["raw_probability"] is not None for r in fam_rows),
+            },
+            "gradingAvailability": {
+                "outcomesLinked": False,
+            },
+        }
+
+    return {
+        "phase": "PREGAME",
+        "families": by_market,
+        "closingCutoffPolicy": {
+            "definition": "latest valid sportsbook snapshot captured before commenceTime and not stale",
+            "staleMaxAgeSeconds": int(os.getenv("PROSPECTIVE_CLOSING_MAX_AGE_SECONDS", "900")),
+            "postKickoffPolicy": "REJECT_POST_KICKOFF",
+            "unavailableStatus": "UNAVAILABLE",
+        },
+    }
+
+
+def prospective_data_integrity_audit(*, season: Optional[int] = None, week: Optional[int] = None) -> dict[str, Any]:
+    _ensure_schema()
+    con = _connect()
+    where = ["phase = 'PREGAME'", "market_family IN ('SPREAD','MONEYLINE','TOTAL','TEAM_TOTAL','FIRST_HALF_SPREAD','FIRST_HALF_MONEYLINE','FIRST_HALF_TOTAL')"]
+    params: list[Any] = []
+    if season is not None:
+        where.append("season = ?")
+        params.append(int(season))
+    if week is not None:
+        where.append("week = ?")
+        params.append(int(week))
+    sql = "SELECT * FROM prospective_market_snapshots WHERE " + " AND ".join(where)
+    rows = con.execute(sql, params).fetchall()
+    con.close()
+
+    events = {str(r["event_id"]) for r in rows if str(r["event_id"] or "")}
+    markets_expected = len(events) * len(PROSPECTIVE_MARKET_FAMILIES)
+    market_presence = {(str(r["event_id"]), str(r["market_family"])) for r in rows if str(r["event_id"] or "")}
+    two_sided_coverage = [r for r in rows if r["market_no_vig_probability"] is not None]
+
+    def _coverage(state: str) -> float:
+        if not markets_expected:
+            return 0.0
+        available = {
+            (str(r["event_id"]), str(r["market_family"]))
+            for r in rows
+            if str(r["state_label"] or "") == state
+        }
+        return float(len(available) / markets_expected)
+
+    missing_fields = 0
+    for r in rows:
+        if not r["event_id"] or not r["market_family"] or not r["period"]:
+            missing_fields += 1
+
+    return {
+        "eventsExpected": len(events),
+        "eventsCaptured": len(events),
+        "marketsExpected": markets_expected,
+        "marketsCaptured": len(market_presence),
+        "openingCoverage": _coverage("OPENING"),
+        "currentCoverage": _coverage("CURRENT"),
+        "closingCoverage": _coverage("CLOSING"),
+        "outcomeCoverage": 0.0,
+        "twoSidedNoVigCoverage": float(len(two_sided_coverage) / len(rows)) if rows else 0.0,
+        "bookCoverageByMarket": {
+            fam: len({str(r["sportsbook"] or "") for r in rows if str(r["market_family"]) == fam and str(r["sportsbook"] or "")})
+            for fam in PROSPECTIVE_MARKET_FAMILIES
+        },
+        "staleSnapshotCount": sum(1 for r in rows if str(r["closing_status"] or "") == "STALE_REJECTED"),
+        "duplicateRejectionCount": 0,
+        "missingFieldCount": missing_fields,
+    }
+
+
+def live_sia_future_schema_compatibility() -> dict[str, Any]:
+    return {
+        "phaseLiveSupported": True,
+        "requiredLiveFields": ["gameStateTimestamp", "quarter", "clock", "score", "possession"],
+        "currentSchemaFields": [
+            "game_state_timestamp",
+            "game_quarter",
+            "game_clock",
+            "possession",
+        ],
+        "identityUnchanged": True,
+        "notes": "Live fields are schema-ready but live capture remains disabled.",
+    }
 
 
 def _two_sided_closing_no_vig(
@@ -1301,6 +2144,8 @@ def build_shadow_boards(week: Optional[int] = None, season: Optional[int] = None
 
     _save_shadow_run(run_payload, candidates)
 
+    prospective_capture = capture_prospective_from_line_board(week=int(week), season=int(season))
+
     return {
         "runId": run_id,
         "createdAtUTC": created_at,
@@ -1316,6 +2161,7 @@ def build_shadow_boards(week: Optional[int] = None, season: Optional[int] = None
         "firstHalfSpreadCount": len([c for c in candidates if c["marketFamily"] == "FIRST_HALF_SPREAD"]),
         "firstHalfMoneylineCount": len([c for c in candidates if c["marketFamily"] == "FIRST_HALF_MONEYLINE"]),
         "firstHalfTotalCount": len([c for c in candidates if c["marketFamily"] == "FIRST_HALF_TOTAL"]),
+        "prospectiveCapture": prospective_capture,
     }
 
 
@@ -2665,9 +3511,15 @@ def ingest_expanded_market_snapshots(discovery: Optional[dict[str, Any]] = None)
     saved = 0
     request_count = 0
     quota = dict((discovery.get("quota") or {}))
+    quota_safety_threshold = int(os.getenv("ODDS_API_EXPANDED_QUOTA_SAFETY_THRESHOLD", "500"))
     con = _connect()
     id_to_event = {str(e.get("eventId") or ""): e for e in (discovery.get("eventSamples") or []) if str(e.get("eventId") or "")}
     payload_by_event = dict(discovery.get("eventPayloadById") or {})
+    projection_lookup = _load_projection_lookup()
+    prospective_rows: list[dict[str, Any]] = []
+
+    def _quota_remaining(q: dict[str, Any]) -> Optional[int]:
+        return _safe_int((q or {}).get("remaining"))
 
     target_map = {
         "TEAM_TOTAL": "TEAM_TOTAL",
@@ -2680,6 +3532,35 @@ def ingest_expanded_market_snapshots(discovery: Optional[dict[str, Any]] = None)
         for fam, label in target_map.items()
         if bool((discovery.get("targets") or {}).get(label, {}).get("supported"))
     ]
+
+    remaining = _quota_remaining(quota)
+    if remaining is not None and remaining <= quota_safety_threshold:
+        con.close()
+        return {
+            "rowsSaved": 0,
+            "eventsProcessed": 0,
+            "requestCount": 0,
+            "quota": quota,
+            "quotaAccounting": {
+                "creditsUsed": quota.get("used"),
+                "creditsRemaining": quota.get("remaining"),
+                "lastRequestCost": quota.get("last"),
+                "requestsMadeThisRun": 0,
+                "expandedMarketRequestsThisRun": 0,
+            },
+            "degraded": True,
+            "degradationReason": "QUOTA_SAFETY_THRESHOLD",
+            "prospectiveCapture": {
+                "rowsReceived": 0,
+                "currentInserted": 0,
+                "openingInserted": 0,
+                "closingInserted": 0,
+                "duplicateRejectionCount": 0,
+                "staleSnapshotCount": 0,
+                "postKickoffRejectedCount": 0,
+                "missingFieldCount": 0,
+            },
+        }
 
     for event_id, event_meta in id_to_event.items():
         payload = payload_by_event.get(event_id)
@@ -2848,8 +3729,114 @@ def ingest_expanded_market_snapshots(discovery: Optional[dict[str, Any]] = None)
                     if con.total_changes > before:
                         saved += 1
 
+                    implied = _implied_probability(float(price)) if price is not None else None
+                    model_state, recommendations = _row_market_metadata(
+                        market_key=_normalize_market(market_key),
+                        market_family=family,
+                        side=side,
+                        team_code=team_code,
+                    )
+                    projected_total = None
+                    projected_margin = None
+                    derived_home = None
+                    derived_away = None
+                    selected_team = None
+                    if family == "TEAM_TOTAL":
+                        projection = projection_lookup.get(event_id)
+                        if projection is not None:
+                            projected_total = _safe_float(projection.get("model_total_baseline"))
+                            projected_margin = _safe_float(projection.get("model_margin_home"))
+                            if projected_total is not None and projected_margin is not None:
+                                derived_home = (float(projected_total) + float(projected_margin)) / 2.0
+                                derived_away = float(projected_total) - float(derived_home)
+                                home_team = str(event_meta.get("homeTeam") or "").strip().upper()
+                                away_team = str(event_meta.get("awayTeam") or "").strip().upper()
+                                if str(team_code or "").upper() == home_team:
+                                    selected_team = derived_home
+                                elif str(team_code or "").upper() == away_team:
+                                    selected_team = derived_away
+
+                    season_row, week_row = _extract_season_week_from_game_id(
+                        event_id,
+                        _parse_commence(event_meta.get("commenceTime")),
+                    )
+                    prospective_rows.append(
+                        {
+                            "season": int(season_row),
+                            "week": int(week_row),
+                            "eventId": event_id,
+                            "providerEventId": event_id,
+                            "commenceTime": str(event_meta.get("commenceTime") or ""),
+                            "marketFamily": family,
+                            "marketKey": _normalize_market(market_key),
+                            "phase": "PREGAME",
+                            "period": period,
+                            "teamCode": team_code,
+                            "selection": selection,
+                            "side": side,
+                            "line": line,
+                            "price": price,
+                            "sportsbook": bookmaker,
+                            "bookmakerKey": bookmaker,
+                            "marketTimestamp": market_ts,
+                            "fetchedAt": fetched_at,
+                            "sourceSnapshotId": source_snapshot_id,
+                            "bookCoverageCount": book_cov,
+                            "availableBooks": available_books,
+                            "marketDepthStatus": depth,
+                            "allBooks": [
+                                {
+                                    "book": bookmaker,
+                                    "line": line,
+                                    "price": price,
+                                    "side": side,
+                                    "teamCode": team_code,
+                                }
+                            ],
+                            "bestPrice": price,
+                            "bestPriceBook": best_book or bookmaker,
+                            "consensusLine": line if consensus else None,
+                            "medianLine": line,
+                            "projectedGameTotal": projected_total,
+                            "projectedHomeMargin": projected_margin,
+                            "derivedProjectedHomePoints": derived_home,
+                            "derivedProjectedAwayPoints": derived_away,
+                            "selectedTeamProjectedPoints": selected_team,
+                            "rawProbability": None,
+                            "calibratedProbability": None,
+                            "pushProbability": None,
+                            "lossProbability": None,
+                            "marketImpliedProbability": implied,
+                            "marketNoVigProbability": None,
+                            "edge": None,
+                            "ev": None,
+                            "fairValue": None,
+                            "playableTo": None,
+                            "siScore": None,
+                            "marketRank": None,
+                            "globalResearchScore": None,
+                            "globalResearchRank": None,
+                            "productionEligible": False,
+                            "crossMarketComparable": False,
+                            "marketValidationStatus": "UNAVAILABLE_TWO_SIDED_MARKET",
+                            "modelState": model_state,
+                            "shadowRecommendations": recommendations,
+                            "modelVersion": settings.DEFAULT_MODEL_VERSION,
+                            "probabilityEngineVersion": settings.DEFAULT_PROBABILITY_ENGINE_VERSION,
+                            "calibrationVersion": settings.DEFAULT_CALIBRATION_VERSION,
+                            "rankingVersion": settings.DEFAULT_RANKING_VERSION,
+                            "qualificationPolicyVersion": settings.DEFAULT_QUALIFICATION_POLICY_VERSION,
+                            "gitCommitHash": settings.DEFAULT_GIT_COMMIT_HASH,
+                            "gameStateTimestamp": None,
+                            "gameQuarter": None,
+                            "gameClock": None,
+                            "possession": None,
+                        }
+                    )
+
     con.commit()
     con.close()
+    prospective_capture = _capture_prospective_rows(prospective_rows)
     return {
         "rowsSaved": saved,
         "eventsProcessed": len(id_to_event),
@@ -2859,8 +3846,11 @@ def ingest_expanded_market_snapshots(discovery: Optional[dict[str, Any]] = None)
             "creditsUsed": quota.get("used"),
             "creditsRemaining": quota.get("remaining"),
             "lastRequestCost": quota.get("last"),
-            "expandedMarketRequestCount": request_count,
+            "requestsMadeThisRun": request_count,
+            "expandedMarketRequestsThisRun": request_count,
         },
+        "degraded": False,
+        "prospectiveCapture": prospective_capture,
     }
 
 
