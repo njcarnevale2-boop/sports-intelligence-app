@@ -805,3 +805,423 @@ def test_shadow_report_includes_spread_and_global_rank_fields(shadow_db):
     spread = report["markets"]["SPREAD"]
     assert "byGlobalResearchRank" in spread
     assert "globalResearchTopRanksTracked" in spread
+
+
+def test_team_total_candidate_team_identity_and_period(monkeypatch, shadow_db):
+    board = pd.DataFrame(
+        [
+            {
+                "api_event_id": "2026_03_BUF_MIA",
+                "commence_time": "2026-09-24T17:00:00+00:00",
+                "market": "team_totals",
+                "side": "over",
+                "team_code": "BUF",
+                "latest_point": 27.5,
+                "latest_price": -110,
+                "sportsbook": "DraftKings",
+                "last_seen": "2026-09-24T16:00:00+00:00",
+                "home_team": "MIA",
+                "away_team": "BUF",
+            },
+            {
+                "api_event_id": "2026_03_BUF_MIA",
+                "commence_time": "2026-09-24T17:00:00+00:00",
+                "market": "team_totals",
+                "side": "under",
+                "team_code": "BUF",
+                "latest_point": 27.5,
+                "latest_price": -110,
+                "sportsbook": "DraftKings",
+                "last_seen": "2026-09-24T16:00:00+00:00",
+                "home_team": "MIA",
+                "away_team": "BUF",
+            },
+        ]
+    )
+    proj = {
+        "2026_03_BUF_MIA": pd.Series(
+            {
+                "api_event_id": "2026_03_BUF_MIA",
+                "model_margin_home": -2.0,
+                "model_total_baseline": 48.0,
+            }
+        )
+    }
+    monkeypatch.setattr(shadow_markets, "_load_line_board", lambda: board)
+    monkeypatch.setattr(shadow_markets, "_load_projection_lookup", lambda: proj)
+
+    out = shadow_markets.build_shadow_boards(week=3, season=2026)
+    assert out["teamTotalCount"] == 0
+
+    con = sqlite3.connect(str(shadow_db))
+    con.row_factory = sqlite3.Row
+    rows = con.execute(
+        "SELECT market_family, period, team_code, cross_market_comparable, production_eligible FROM shadow_candidates"
+    ).fetchall()
+    con.close()
+    assert len(rows) == 0
+
+
+def test_first_half_markets_not_generated_without_validated_model(monkeypatch, shadow_db):
+    board = pd.DataFrame(
+        [
+            {"api_event_id": "2026_04_A_B", "commence_time": "2026-09-30T17:00:00+00:00", "market": "spreads_h1", "side": "away", "latest_point": 1.5, "latest_price": -110, "sportsbook": "DraftKings", "last_seen": "2026-09-30T16:00:00+00:00", "home_team": "B", "away_team": "A"},
+            {"api_event_id": "2026_04_A_B", "commence_time": "2026-09-30T17:00:00+00:00", "market": "h2h_h1", "side": "away", "latest_point": None, "latest_price": 120, "sportsbook": "DraftKings", "last_seen": "2026-09-30T16:00:00+00:00", "home_team": "B", "away_team": "A"},
+            {"api_event_id": "2026_04_A_B", "commence_time": "2026-09-30T17:00:00+00:00", "market": "totals_h1", "side": "over", "latest_point": 23.5, "latest_price": -110, "sportsbook": "DraftKings", "last_seen": "2026-09-30T16:00:00+00:00", "home_team": "B", "away_team": "A"},
+        ]
+    )
+    proj = {"2026_04_A_B": pd.Series({"api_event_id": "2026_04_A_B", "model_margin_home": -2.0, "model_total_baseline": 47.0})}
+
+    monkeypatch.setattr(shadow_markets, "_load_line_board", lambda: board)
+    monkeypatch.setattr(shadow_markets, "_load_projection_lookup", lambda: proj)
+
+    out = shadow_markets.build_shadow_boards(week=4, season=2026)
+    assert out["firstHalfSpreadCount"] == 0
+    assert out["firstHalfMoneylineCount"] == 0
+    assert out["firstHalfTotalCount"] == 0
+
+
+def test_no_full_game_first_half_closing_collision(monkeypatch, tmp_path):
+    import duckdb  # type: ignore
+
+    model_root = tmp_path / "model-collision"
+    db_dir = model_root / "database"
+    db_dir.mkdir(parents=True)
+    db = db_dir / "nfl_model.duckdb"
+
+    con = duckdb.connect(str(db))
+    con.execute(
+        """
+        CREATE TABLE odds_snapshots (
+            api_event_id VARCHAR,
+            bookmaker_key VARCHAR,
+            market_key VARCHAR,
+            outcome_code VARCHAR,
+            outcome_name VARCHAR,
+            fetched_at TIMESTAMP,
+            point DOUBLE,
+            price DOUBLE
+        )
+        """
+    )
+    con.execute(
+        """
+        INSERT INTO odds_snapshots VALUES
+        ('evt-c','DraftKings','totals','over','OVER','2026-09-10 16:50:00',23.5,-110),
+        ('evt-c','DraftKings','totals','under','UNDER','2026-09-10 16:50:00',23.5,-110)
+        """
+    )
+    con.close()
+
+    monkeypatch.setattr(shadow_markets, "MODEL_ROOT", model_root)
+    kickoff = pd.Timestamp("2026-09-10T17:00:00+00:00").to_pydatetime()
+    p, status = shadow_markets._two_sided_closing_no_vig(
+        event_id="evt-c",
+        sportsbook="DraftKings",
+        market_family="FIRST_HALF_TOTAL",
+        side="over",
+        kickoff=kickoff,
+        recommended_line=23.5,
+    )
+    assert p is None
+    assert status == "UNAVAILABLE_TWO_SIDED_MARKET"
+
+
+def test_team_total_and_first_half_outcome_grading(shadow_db):
+    _seed_run_and_candidate(
+        shadow_db,
+        run_id="run-tt-1",
+        season=2026,
+        week=14,
+        candidate_id="cand-tt-win",
+        market_family="TEAM_TOTAL",
+        market_key="team_total",
+        side="over",
+        period="FULL_GAME",
+        line=20.5,
+        price=-110,
+    )
+    con = sqlite3.connect(str(shadow_db))
+    con.execute("UPDATE shadow_candidates SET team_code = ? WHERE candidate_id = ?", ["AWAY", "cand-tt-win"])
+    con.commit()
+    con.close()
+
+    _seed_run_and_candidate(
+        shadow_db,
+        run_id="run-h1-ml",
+        season=2026,
+        week=14,
+        candidate_id="cand-h1-ml-tie",
+        market_family="FIRST_HALF_MONEYLINE",
+        market_key="first_half_moneyline",
+        side="away",
+        period="FIRST_HALF",
+        line=None,
+        price=120,
+    )
+
+    shadow_markets.publish_shadow_snapshot(run_id="run-tt-1", is_official=False)
+    shadow_markets.publish_shadow_snapshot(run_id="run-h1-ml", is_official=False)
+
+    out = shadow_markets.append_shadow_outcomes(
+        fetch_scores_fn=lambda _: {
+            "finalAwayScore": 24,
+            "finalHomeScore": 21,
+            "firstHalfAwayScore": 10,
+            "firstHalfHomeScore": 10,
+        }
+    )
+    assert out["appended"] == 2
+
+    con = sqlite3.connect(str(shadow_db))
+    rows = con.execute(
+        "SELECT candidate_id, result FROM shadow_outcomes WHERE candidate_id IN ('cand-tt-win','cand-h1-ml-tie') ORDER BY candidate_id"
+    ).fetchall()
+    con.close()
+    assert rows[0][1] == "PUSH"  # 1H moneyline tie
+    assert rows[1][1] == "WIN"   # team total over hit
+
+
+def test_phase2b_foundation_audit_shape(monkeypatch):
+    monkeypatch.setattr(
+        shadow_markets,
+        "discover_expanded_markets",
+        lambda: {
+            "targets": {
+                "TEAM_TOTAL": {"supported": True},
+                "1H_SPREAD": {"supported": False},
+                "1H_MONEYLINE": {"supported": False},
+                "1H_TOTAL": {"supported": False},
+            },
+            "quota": {},
+        },
+    )
+    audit = shadow_markets.phase2b_market_foundation_audit()
+    assert "markets" in audit
+    assert "TEAM_TOTAL" in audit["markets"]
+    assert audit["markets"]["TEAM_TOTAL"]["dataAvailable"] is True
+    assert audit["markets"]["FIRST_HALF_SPREAD"]["modelValidated"] is False
+
+
+def test_discover_expanded_markets_uses_event_odds_and_provider_keys(monkeypatch):
+    events = [
+        {
+            "id": "evt-1",
+            "away_team": "Away",
+            "home_team": "Home",
+            "commence_time": "2026-09-01T17:00:00Z",
+        }
+    ]
+    called = {"markets": []}
+
+    def _events():
+        return 200, {"x-requests-remaining": "19990", "x-requests-used": "10", "x-requests-last": "0"}, events
+
+    def _event_odds(event_id: str, markets: list[str]):
+        called["markets"] = list(markets)
+        return (
+            200,
+            {"x-requests-remaining": "19989", "x-requests-used": "11", "x-requests-last": "4"},
+            {
+                "bookmakers": [
+                    {
+                        "key": "fanduel",
+                        "last_update": "2026-09-01T16:59:00Z",
+                        "markets": [
+                            {"key": "team_totals", "last_update": "2026-09-01T16:59:00Z", "outcomes": [{"name": "over", "description": "Away", "point": 20.5, "price": -110}]},
+                            {"key": "spreads_h1", "last_update": "2026-09-01T16:59:00Z", "outcomes": [{"name": "away", "point": 1.5, "price": -110}]},
+                            {"key": "h2h_h1", "last_update": "2026-09-01T16:59:00Z", "outcomes": [{"name": "away", "price": 120}]},
+                            {"key": "totals_h1", "last_update": "2026-09-01T16:59:00Z", "outcomes": [{"name": "over", "point": 23.5, "price": -110}]},
+                        ],
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr(shadow_markets, "_call_odds_api_events", _events)
+    monkeypatch.setattr(shadow_markets, "_call_odds_api_event_odds", _event_odds)
+    monkeypatch.setenv("EXPANDED_MARKET_EVENT_SAMPLE_SIZE", "1")
+
+    out = shadow_markets.discover_expanded_markets()
+    assert set(called["markets"]) == {"team_totals", "spreads_h1", "h2h_h1", "totals_h1"}
+    assert out["targets"]["TEAM_TOTAL"]["status"] == "AVAILABLE"
+    assert out["targets"]["1H_SPREAD"]["status"] == "AVAILABLE"
+    assert out["targets"]["1H_MONEYLINE"]["status"] == "AVAILABLE"
+    assert out["targets"]["1H_TOTAL"]["status"] == "AVAILABLE"
+    assert out["quotaAccounting"]["expandedMarketRequestCount"] == 1
+
+
+def test_ingest_expanded_market_snapshots_persists_raw_rows_and_depth(monkeypatch, shadow_db):
+    discovery = {
+        "targets": {
+            "TEAM_TOTAL": {"supported": True},
+            "1H_SPREAD": {"supported": True},
+            "1H_MONEYLINE": {"supported": True},
+            "1H_TOTAL": {"supported": True},
+        },
+        "eventSamples": [
+            {
+                "eventId": "evt-raw-1",
+                "awayTeam": "Away Team",
+                "homeTeam": "Home Team",
+                "commenceTime": "2026-09-01T17:00:00Z",
+            }
+        ],
+        "eventPayloadById": {
+            "evt-raw-1": {
+                "bookmakers": [
+                    {
+                        "key": "fanduel",
+                        "last_update": "2026-09-01T16:58:00Z",
+                        "markets": [
+                            {
+                                "key": "team_totals",
+                                "last_update": "2026-09-01T16:58:00Z",
+                                "outcomes": [
+                                    {"name": "over", "description": "Away Team", "point": 20.5, "price": -110},
+                                    {"name": "under", "description": "Away Team", "point": 20.5, "price": -110},
+                                ],
+                            },
+                            {
+                                "key": "spreads_h1",
+                                "last_update": "2026-09-01T16:58:00Z",
+                                "outcomes": [
+                                    {"name": "away", "point": 1.5, "price": -105},
+                                    {"name": "home", "point": -1.5, "price": -115},
+                                ],
+                            },
+                            {
+                                "key": "h2h_h1",
+                                "last_update": "2026-09-01T16:58:00Z",
+                                "outcomes": [
+                                    {"name": "away", "price": 120},
+                                    {"name": "home", "price": -140},
+                                ],
+                            },
+                            {
+                                "key": "totals_h1",
+                                "last_update": "2026-09-01T16:58:00Z",
+                                "outcomes": [
+                                    {"name": "over", "point": 23.5, "price": -110},
+                                    {"name": "under", "point": 23.5, "price": -110},
+                                ],
+                            },
+                        ],
+                    }
+                ]
+            }
+        },
+    }
+
+    out = shadow_markets.ingest_expanded_market_snapshots(discovery=discovery)
+    assert out["rowsSaved"] == 8
+
+    con = sqlite3.connect(str(shadow_db))
+    con.row_factory = sqlite3.Row
+    rows = con.execute(
+        """
+        SELECT market_family, market_key, phase, period, side, team_code, line, price,
+               book_coverage_count, market_depth_status, source_snapshot_id
+        FROM shadow_market_snapshots
+        ORDER BY market_family, side
+        """
+    ).fetchall()
+    con.close()
+
+    assert rows
+    families = {str(r["market_family"]) for r in rows}
+    assert families == {"TEAM_TOTAL", "FIRST_HALF_SPREAD", "FIRST_HALF_MONEYLINE", "FIRST_HALF_TOTAL"}
+    assert all(str(r["phase"]) == "PREGAME" for r in rows)
+    assert all(int(r["book_coverage_count"]) == 1 for r in rows)
+    assert all(str(r["market_depth_status"]) == "SINGLE_BOOK" for r in rows)
+    assert all(str(r["source_snapshot_id"]) for r in rows)
+    tt = [r for r in rows if str(r["market_family"]) == "TEAM_TOTAL"]
+    assert tt
+    assert all(str(r["period"]) == "FULL_GAME" for r in tt)
+    assert all(str(r["team_code"]) == "AWAY TEAM" for r in tt)
+    h1_ml = [r for r in rows if str(r["market_family"]) == "FIRST_HALF_MONEYLINE"]
+    assert h1_ml
+    assert all(r["line"] is None for r in h1_ml)
+
+
+def test_ingest_expanded_market_snapshots_idempotent(monkeypatch, shadow_db):
+    discovery = {
+        "targets": {
+            "TEAM_TOTAL": {"supported": True},
+            "1H_SPREAD": {"supported": False},
+            "1H_MONEYLINE": {"supported": False},
+            "1H_TOTAL": {"supported": False},
+        },
+        "eventSamples": [{"eventId": "evt-idem-1", "awayTeam": "Away", "homeTeam": "Home"}],
+        "eventPayloadById": {
+            "evt-idem-1": {
+                "bookmakers": [
+                    {
+                        "key": "fanduel",
+                        "markets": [
+                            {
+                                "key": "team_totals",
+                                "outcomes": [
+                                    {"name": "over", "description": "Away", "point": 21.5, "price": -110},
+                                    {"name": "under", "description": "Away", "point": 21.5, "price": -110},
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            }
+        },
+    }
+
+    first = shadow_markets.ingest_expanded_market_snapshots(discovery=discovery)
+    second = shadow_markets.ingest_expanded_market_snapshots(discovery=discovery)
+    assert first["rowsSaved"] == 2
+    assert second["rowsSaved"] == 0
+
+
+def test_expanded_market_collection_status_and_quota_accounting(monkeypatch, shadow_db):
+    monkeypatch.setattr(
+        shadow_markets,
+        "discover_expanded_markets",
+        lambda: {
+            "targets": {
+                "TEAM_TOTAL": {"supported": True, "status": "AVAILABLE"},
+                "1H_SPREAD": {"supported": True, "status": "AVAILABLE"},
+                "1H_MONEYLINE": {"supported": True, "status": "AVAILABLE"},
+                "1H_TOTAL": {"supported": True, "status": "AVAILABLE"},
+            },
+            "quota": {"remaining": "19990", "used": "10", "last": "4"},
+            "quotaAccounting": {
+                "creditsUsed": "10",
+                "creditsRemaining": "19990",
+                "lastRequestCost": "4",
+                "expandedMarketRequestCount": 3,
+            },
+            "eventSamples": [],
+            "eventPayloadById": {},
+        },
+    )
+    audit = shadow_markets.phase2b_market_foundation_audit()
+    assert audit["providerAudit"]["quotaAccounting"]["expandedMarketRequestCount"] == 3
+    assert "collectionStatus" in audit
+    assert "TEAM_TOTAL" in audit["collectionStatus"]["markets"]
+
+
+def test_team_total_research_math_and_probability_symmetry():
+    df = pd.DataFrame(
+        {
+            "home_score": [21, 24, 17, 28] * 60,
+            "away_score": [20, 17, 21, 24] * 60,
+            "model_margin": [1, 7, -4, 4] * 60,
+            "model_total": [41, 41, 38, 52] * 60,
+            "home_team_total_line": [20.5, 23.5, 18.5, 26.5] * 60,
+            "away_team_total_line": [20.5, 17.5, 19.5, 24.5] * 60,
+        }
+    )
+    out = shadow_markets._team_total_research_from_df(df)
+    assert out["ready"] is True
+    assert out["identityChecks"]["totalConsistencyMaxAbs"] < 1e-9
+    assert out["identityChecks"]["marginConsistencyMaxAbs"] < 1e-9
+    assert out["probabilityValidation"]["maxSymmetryError"] is not None
+    assert out["probabilityValidation"]["maxSymmetryError"] < 1e-9
+    assert out["probabilityValidation"]["pushRate"] is not None

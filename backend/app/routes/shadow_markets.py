@@ -13,6 +13,7 @@ from app.services.shadow_markets import (
     correlation_metadata_design,
     discover_expanded_markets,
     discover_player_props,
+    expanded_market_collection_status,
     ingest_expanded_market_snapshots,
     player_identity_mapping_plan,
     publish_shadow_snapshot,
@@ -123,8 +124,15 @@ def expanded_market_ingest(request: SnapshotIngestionRequest, x_admin_token: str
     return {
         "ingested": result,
         "discovery": discovery,
+        "collectionStatus": expanded_market_collection_status(),
         "capturedAtUTC": datetime.now(timezone.utc).isoformat(),
     }
+
+
+@router.get("/discovery/expanded-markets/status")
+def expanded_market_status(x_admin_token: str | None = Header(default=None)):
+    _require_admin_token(x_admin_token)
+    return expanded_market_collection_status()
 
 
 @router.get("/discovery/player-props")

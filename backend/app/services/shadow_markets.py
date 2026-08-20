@@ -4,7 +4,9 @@ import hashlib
 import json
 import math
 import os
+import ssl
 import sqlite3
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
@@ -234,14 +236,25 @@ CREATE TABLE IF NOT EXISTS shadow_market_snapshots (
     provider_event_id TEXT,
     market_family TEXT NOT NULL,
     market_key TEXT NOT NULL,
+    phase TEXT NOT NULL DEFAULT 'PREGAME',
     period TEXT NOT NULL,
+    game_state_timestamp TEXT,
     team_code TEXT,
     selection TEXT NOT NULL,
+    side TEXT,
 
     line REAL,
     price REAL,
     bookmaker TEXT,
+    market_timestamp TEXT,
     fetched_at TEXT,
+    source_snapshot_id TEXT,
+
+    book_coverage_count INTEGER,
+    available_books TEXT,
+    best_price_book TEXT,
+    consensus_available INTEGER,
+    market_depth_status TEXT,
 
     payload_hash TEXT NOT NULL,
     canonical_payload TEXT NOT NULL,
@@ -271,6 +284,103 @@ EV_BANDS = [
     (0.20, 0.30, "20-30%"),
     (0.30, 9.0, "30%+"),
 ]
+
+
+PHASE2B_MARKET_FAMILIES: dict[str, dict[str, Any]] = {
+    "TEAM_TOTAL": {
+        "marketKey": "team_total",
+        "providerKeys": ["team_totals"],
+        "period": "FULL_GAME",
+        "modelAvailable": True,
+        "modelValidated": False,
+        "shadowEligible": False,
+        "productionEligible": False,
+        "requiredModelData": ["model_total_baseline", "model_margin_home"],
+    },
+    "FIRST_HALF_SPREAD": {
+        "marketKey": "first_half_spread",
+        "providerKeys": ["spreads_h1"],
+        "period": "FIRST_HALF",
+        "modelAvailable": False,
+        "modelValidated": False,
+        "shadowEligible": False,
+        "productionEligible": False,
+        "requiredModelData": ["first_half_margin_model"],
+    },
+    "FIRST_HALF_MONEYLINE": {
+        "marketKey": "first_half_moneyline",
+        "providerKeys": ["h2h_h1"],
+        "period": "FIRST_HALF",
+        "modelAvailable": False,
+        "modelValidated": False,
+        "shadowEligible": False,
+        "productionEligible": False,
+        "requiredModelData": ["first_half_win_probability_model"],
+    },
+    "FIRST_HALF_TOTAL": {
+        "marketKey": "first_half_total",
+        "providerKeys": ["totals_h1"],
+        "period": "FIRST_HALF",
+        "modelAvailable": False,
+        "modelValidated": False,
+        "shadowEligible": False,
+        "productionEligible": False,
+        "requiredModelData": ["first_half_total_model"],
+    },
+}
+
+
+EXPANDED_MARKET_REGISTRY: dict[str, dict[str, str]] = {
+    "TEAM_TOTAL": {
+        "providerKey": "team_totals",
+        "marketFamily": "TEAM_TOTAL",
+        "period": "FULL_GAME",
+    },
+    "FIRST_HALF_SPREAD": {
+        "providerKey": "spreads_h1",
+        "marketFamily": "FIRST_HALF_SPREAD",
+        "period": "FIRST_HALF",
+    },
+    "FIRST_HALF_MONEYLINE": {
+        "providerKey": "h2h_h1",
+        "marketFamily": "FIRST_HALF_MONEYLINE",
+        "period": "FIRST_HALF",
+    },
+    "FIRST_HALF_TOTAL": {
+        "providerKey": "totals_h1",
+        "marketFamily": "FIRST_HALF_TOTAL",
+        "period": "FIRST_HALF",
+    },
+}
+
+
+_EVENT_DISCOVERY_CACHE: dict[str, Any] = {
+    "fetchedAt": None,
+    "events": [],
+}
+
+
+def _market_depth_status(book_count: int) -> str:
+    if book_count >= 6:
+        return "DEEP"
+    if book_count >= 3:
+        return "MODERATE"
+    if book_count == 2:
+        return "THIN"
+    if book_count == 1:
+        return "SINGLE_BOOK"
+    return "NO_BOOKS"
+
+
+MARKET_KEY_TO_FAMILY: dict[str, str] = {
+    "spread": "SPREAD",
+    "moneyline": "MONEYLINE",
+    "total": "TOTAL",
+    "team_total": "TEAM_TOTAL",
+    "first_half_spread": "FIRST_HALF_SPREAD",
+    "first_half_moneyline": "FIRST_HALF_MONEYLINE",
+    "first_half_total": "FIRST_HALF_TOTAL",
+}
 
 
 def _utc_now_iso() -> str:
@@ -314,6 +424,16 @@ def _ensure_schema() -> None:
         ("shadow_outcomes", "closing_no_vig_status TEXT"),
         ("shadow_outcomes", "line_clv_points REAL"),
         ("shadow_outcomes", "price_clv_probability REAL"),
+        ("shadow_market_snapshots", "phase TEXT DEFAULT 'PREGAME'"),
+        ("shadow_market_snapshots", "game_state_timestamp TEXT"),
+        ("shadow_market_snapshots", "side TEXT"),
+        ("shadow_market_snapshots", "market_timestamp TEXT"),
+        ("shadow_market_snapshots", "source_snapshot_id TEXT"),
+        ("shadow_market_snapshots", "book_coverage_count INTEGER"),
+        ("shadow_market_snapshots", "available_books TEXT"),
+        ("shadow_market_snapshots", "best_price_book TEXT"),
+        ("shadow_market_snapshots", "consensus_available INTEGER"),
+        ("shadow_market_snapshots", "market_depth_status TEXT"),
     ]:
         try:
             con.execute(f"ALTER TABLE {table} ADD COLUMN {column_def}")
@@ -370,7 +490,54 @@ def _normalize_market(value: str) -> str:
         return "moneyline"
     if key == "totals":
         return "total"
+    if key == "team_totals":
+        return "team_total"
+    if key == "spreads_h1":
+        return "first_half_spread"
+    if key == "h2h_h1":
+        return "first_half_moneyline"
+    if key == "totals_h1":
+        return "first_half_total"
     return key
+
+
+def _market_period_for_key(market_key: str) -> str:
+    fam = MARKET_KEY_TO_FAMILY.get(str(market_key), "")
+    if fam in {"FIRST_HALF_SPREAD", "FIRST_HALF_MONEYLINE", "FIRST_HALF_TOTAL"}:
+        return "FIRST_HALF"
+    return "FULL_GAME"
+
+
+def _team_code_from_row(row: pd.Series, side: str) -> Optional[str]:
+    explicit = str(row.get("team_code") or row.get("team") or "").strip().upper()
+    if explicit:
+        return explicit
+    sd = str(side or "").lower()
+    if sd == "home":
+        return str(row.get("home_team") or "").strip().upper() or None
+    if sd == "away":
+        return str(row.get("away_team") or "").strip().upper() or None
+    return None
+
+
+def _model_available_for_market(market_key: str) -> bool:
+    fam = MARKET_KEY_TO_FAMILY.get(str(market_key), "")
+    if fam in PHASE2B_MARKET_FAMILIES:
+        return bool(PHASE2B_MARKET_FAMILIES[fam]["modelAvailable"])
+    return True
+
+
+def _shadow_recommendation_eligible_for_market(market_key: str) -> bool:
+    fam = MARKET_KEY_TO_FAMILY.get(str(market_key), "")
+    if fam in PHASE2B_MARKET_FAMILIES:
+        return bool(PHASE2B_MARKET_FAMILIES[fam]["shadowEligible"])
+    return True
+
+
+def _first_half_scores(score: dict[str, Any]) -> tuple[Optional[float], Optional[float]]:
+    away = _safe_float(score.get("firstHalfAwayScore"))
+    home = _safe_float(score.get("firstHalfHomeScore"))
+    return away, home
 
 
 def _line_desirability(market_key: str, side: str, line: Optional[float], price: Optional[float]) -> tuple[float, float]:
@@ -391,7 +558,45 @@ def _line_desirability(market_key: str, side: str, line: Optional[float], price:
         return (-p, float(price or -9999.0))
     if market_key == "total" and side == "under":
         return (p, float(price or -9999.0))
+    if market_key == "first_half_total" and side == "over":
+        return (-p, float(price or -9999.0))
+    if market_key == "first_half_total" and side == "under":
+        return (p, float(price or -9999.0))
+    if market_key == "team_total" and side == "over":
+        return (-p, float(price or -9999.0))
+    if market_key == "team_total" and side == "under":
+        return (p, float(price or -9999.0))
+    if market_key == "first_half_spread":
+        if side == "away":
+            return (p, float(price or -9999.0))
+        return (-p, float(price or -9999.0))
     return (float(price or -9999.0), 0.0)
+
+
+def _team_total_probability(
+    *,
+    team_code: str,
+    side: str,
+    total_point: float,
+    model_total_baseline: float,
+    model_margin_home: float,
+    home_team: str,
+    away_team: str,
+) -> tuple[Optional[float], float, Optional[float]]:
+    home = str(home_team or "").strip().upper()
+    away = str(away_team or "").strip().upper()
+    team = str(team_code or "").strip().upper()
+    if not team or team not in {home, away}:
+        return None, 0.0, None
+
+    home_pts = (float(model_total_baseline) + float(model_margin_home)) / 2.0
+    away_pts = float(model_total_baseline) - home_pts
+    model_team_total = home_pts if team == home else away_pts
+
+    probs = total_outcome_probabilities(model_total=model_team_total, side=str(side), total_point=float(total_point))
+    if probs.status != "AVAILABLE":
+        return None, 0.0, None
+    return float(probs.win), float(probs.push), float(probs.loss)
 
 
 def _candidate_id(run_id: str, event_id: str, market_key: str, side: str, book: str, line: Optional[float], price: Optional[float]) -> str:
@@ -444,6 +649,15 @@ def _extract_season_week_from_game_id(game_id: str, fallback_dt: Optional[dateti
     return now.year, int(now.isocalendar().week)
 
 
+def _extract_away_home_from_event_id(event_id: str) -> tuple[Optional[str], Optional[str]]:
+    parts = str(event_id or "").split("_")
+    if len(parts) >= 4:
+        away = str(parts[2] or "").strip().upper() or None
+        home = str(parts[3] or "").strip().upper() or None
+        return away, home
+    return None, None
+
+
 def _parse_commence(value: Any) -> Optional[datetime]:
     if value is None:
         return None
@@ -464,6 +678,7 @@ def _two_sided_closing_no_vig(
     side: str,
     kickoff: datetime,
     recommended_line: Optional[float],
+    team_code: Optional[str] = None,
 ) -> tuple[Optional[float], str]:
     """Return no-vig probability for the candidate side from a two-sided closing market.
 
@@ -490,6 +705,18 @@ def _two_sided_closing_no_vig(
     elif market_family == "SPREAD":
         market_key = "spreads"
         sides = ("home", "away")
+    elif market_family == "TEAM_TOTAL":
+        market_key = "team_totals"
+        sides = ("over", "under")
+    elif market_family == "FIRST_HALF_SPREAD":
+        market_key = "spreads_h1"
+        sides = ("home", "away")
+    elif market_family == "FIRST_HALF_MONEYLINE":
+        market_key = "h2h_h1"
+        sides = ("home", "away")
+    elif market_family == "FIRST_HALF_TOTAL":
+        market_key = "totals_h1"
+        sides = ("over", "under")
     else:
         return None, "UNAVAILABLE_TWO_SIDED_MARKET"
 
@@ -497,9 +724,15 @@ def _two_sided_closing_no_vig(
     cutoff_naive = cutoff.replace(tzinfo=None)
 
     con = duckdb.connect(str(db_path), read_only=True)
+    schema_cols = {
+        str(r[1]).lower()
+        for r in con.execute("PRAGMA table_info('odds_snapshots')").fetchall()
+        if len(r) >= 2
+    }
+    outcome_name_expr = "outcome_name" if "outcome_name" in schema_cols else "NULL AS outcome_name"
     rows = con.execute(
-        """
-        SELECT fetched_at, outcome_code, point, price
+        f"""
+        SELECT fetched_at, outcome_code, {outcome_name_expr}, point, price
         FROM odds_snapshots
         WHERE api_event_id = ?
           AND bookmaker_key = ?
@@ -516,30 +749,45 @@ def _two_sided_closing_no_vig(
         return None, "UNAVAILABLE_TWO_SIDED_MARKET"
 
     by_ts: dict[Any, dict[str, tuple[Optional[float], Optional[float]]]] = {}
-    for fetched_at, outcome_code, point, price in rows:
+    for fetched_at, outcome_code, outcome_name, point, price in rows:
         ts_map = by_ts.setdefault(fetched_at, {})
-        ts_map[str(outcome_code)] = (_safe_float(point), _safe_float(price))
+        ts_map[str(outcome_code)] = (str(outcome_name or ""), _safe_float(point), _safe_float(price))
 
     for ts in sorted(by_ts.keys(), reverse=True):
         snap = by_ts[ts]
-        if any(s not in snap or snap[s][1] is None for s in sides):
+        if any(s not in snap or snap[s][2] is None for s in sides):
             continue
 
-        if market_family == "TOTAL":
-            over_point = snap["over"][0]
-            under_point = snap["under"][0]
+        if market_family in {"TOTAL", "FIRST_HALF_TOTAL", "TEAM_TOTAL"}:
+            over_point = snap["over"][1]
+            under_point = snap["under"][1]
             if over_point is None or under_point is None or abs(over_point - under_point) > 1e-9:
                 continue
             if recommended_line is not None and abs(float(recommended_line) - float(over_point)) > 1e-9:
                 return None, "MISMATCHED_TOTAL_POINTS"
 
+        if market_family == "TEAM_TOTAL":
+            # Team totals require explicit team-scoped market; if team identity is absent, fail closed.
+            over_name = str(snap["over"][0] or "").upper()
+            under_name = str(snap["under"][0] or "").upper()
+            if not over_name or not under_name or over_name != under_name:
+                return None, "UNAVAILABLE_TWO_SIDED_MARKET"
+            wanted = str(team_code or "").strip().upper()
+            if wanted and wanted not in over_name:
+                return None, "UNAVAILABLE_TWO_SIDED_MARKET"
+
         if market_family == "SPREAD" and recommended_line is not None:
-            side_point = snap.get(side, (None, None))[0]
+            side_point = snap.get(side, (None, None, None))[1]
             if side_point is not None and abs(float(side_point) - float(recommended_line)) > 1e-9:
                 continue
 
-        p_a = float(snap[sides[0]][1])
-        p_b = float(snap[sides[1]][1])
+        if market_family == "FIRST_HALF_SPREAD" and recommended_line is not None:
+            side_point = snap.get(side, (None, None, None))[1]
+            if side_point is not None and abs(float(side_point) - float(recommended_line)) > 1e-9:
+                continue
+
+        p_a = float(snap[sides[0]][2])
+        p_b = float(snap[sides[1]][2])
         novig_a, novig_b = _devig_two_way(p_a, p_b)
         if side == sides[0]:
             return novig_a, "AVAILABLE_TWO_SIDED_MARKET"
@@ -556,9 +804,9 @@ def _line_clv_points(market_family: str, side: str, recommended_line: Optional[f
     market = market_family.upper()
     sd = str(side).lower()
 
-    if market == "SPREAD":
+    if market in {"SPREAD", "FIRST_HALF_SPREAD"}:
         return float(round(float(recommended_line) - float(closing_line), 3))
-    if market == "TOTAL":
+    if market in {"TOTAL", "FIRST_HALF_TOTAL", "TEAM_TOTAL"}:
         if sd == "over":
             return float(round(float(closing_line) - float(recommended_line), 3))
         if sd == "under":
@@ -677,16 +925,39 @@ def _save_shadow_run(run_payload: dict[str, Any], candidates: list[dict[str, Any
 
 
 def build_shadow_boards(week: Optional[int] = None, season: Optional[int] = None) -> dict[str, Any]:
-    """Build spread/moneyline/total shadow candidates for one week and persist as immutable run rows."""
+    """Build shadow candidates for supported market families and persist immutable run rows."""
     board = _load_line_board()
     proj = _load_projection_lookup()
 
     if board.empty or not proj:
         raise ValueError("Required data unavailable: line_movement_board or current_game_projections")
 
-    working = board[board["market"].isin(["spread", "moneyline", "total"])].copy()
+    board = board.copy()
+    board["market"] = board["market"].map(_normalize_market)
+    board["side"] = board["side"].astype(str).str.strip().str.lower()
+    board["_group_side"] = board["side"]
+    for idx, row in board.iterrows():
+        if str(row.get("market") or "") != "team_total":
+            continue
+        team_code = _team_code_from_row(row, str(row.get("side") or ""))
+        if team_code:
+            board.at[idx, "_group_side"] = f"{str(row.get('side') or '').lower()}:{team_code}"
+
+    working = board[
+        board["market"].isin(
+            [
+                "spread",
+                "moneyline",
+                "total",
+                "team_total",
+                "first_half_spread",
+                "first_half_moneyline",
+                "first_half_total",
+            ]
+        )
+    ].copy()
     if working.empty:
-        raise ValueError("No spread/moneyline/total rows available in line_movement_board")
+        raise ValueError("No supported rows available in line_movement_board")
 
     # Determine season/week from available events.
     if season is None or week is None:
@@ -719,21 +990,21 @@ def build_shadow_boards(week: Optional[int] = None, season: Optional[int] = None
     candidates: list[dict[str, Any]] = []
 
     # First choose one best book quote per event+market+side.
-    grouped = working.groupby(["api_event_id", "market", "side"], dropna=False, sort=False)
+    grouped = working.groupby(["api_event_id", "market", "_group_side"], dropna=False, sort=False)
     selected: dict[tuple[str, str, str], pd.Series] = {}
 
-    for (event_id, market_key, side), group in grouped:
+    for (event_id, market_key, side_key), group in grouped:
         best_row = None
         best_score = None
         for _, row in group.iterrows():
             line = _safe_float(row.get("latest_point"))
             price = _safe_float(row.get("latest_price"))
-            score = _line_desirability(str(market_key), str(side), line, price)
+            score = _line_desirability(str(market_key), str(row.get("side") or ""), line, price)
             if best_score is None or score > best_score:
                 best_score = score
                 best_row = row
         if best_row is not None:
-            selected[(str(event_id), str(market_key), str(side))] = best_row
+            selected[(str(event_id), str(market_key), str(side_key))] = best_row
 
     # Build no-vig map by event+market from selected sides.
     no_vig_map: dict[tuple[str, str], dict[str, float]] = {}
@@ -758,6 +1029,53 @@ def build_shadow_boards(week: Optional[int] = None, season: Optional[int] = None
                 h_novig, a_novig = _devig_two_way(shp, sap)
                 no_vig_map[(event_id, "spread")] = {"home": h_novig, "away": a_novig}
 
+        # first-half moneyline pair
+        h1h = selected.get((event_id, "first_half_moneyline", "home"))
+        h1a = selected.get((event_id, "first_half_moneyline", "away"))
+        if h1h is not None and h1a is not None:
+            hp = _safe_float(h1h.get("latest_price"))
+            ap = _safe_float(h1a.get("latest_price"))
+            if hp is not None and ap is not None:
+                h_novig, a_novig = _devig_two_way(hp, ap)
+                no_vig_map[(event_id, "first_half_moneyline")] = {"home": h_novig, "away": a_novig}
+
+        # first-half spread pair
+        h1sh = selected.get((event_id, "first_half_spread", "home"))
+        h1sa = selected.get((event_id, "first_half_spread", "away"))
+        if h1sh is not None and h1sa is not None:
+            hp = _safe_float(h1sh.get("latest_price"))
+            ap = _safe_float(h1sa.get("latest_price"))
+            if hp is not None and ap is not None:
+                h_novig, a_novig = _devig_two_way(hp, ap)
+                no_vig_map[(event_id, "first_half_spread")] = {"home": h_novig, "away": a_novig}
+
+        # first-half total pair
+        h1o = selected.get((event_id, "first_half_total", "over"))
+        h1u = selected.get((event_id, "first_half_total", "under"))
+        if h1o is not None and h1u is not None:
+            op = _safe_float(h1o.get("latest_price"))
+            up = _safe_float(h1u.get("latest_price"))
+            if op is not None and up is not None:
+                o_novig, u_novig = _devig_two_way(op, up)
+                no_vig_map[(event_id, "first_half_total")] = {"over": o_novig, "under": u_novig}
+
+        # team total pairs by team
+        for team in {str(row.get("home_team") or "").strip().upper(), str(row.get("away_team") or "").strip().upper()}:
+            if not team:
+                continue
+            over = selected.get((event_id, "team_total", f"over:{team}"))
+            if over is None:
+                over = selected.get((event_id, "team_total", "over"))
+            under = selected.get((event_id, "team_total", f"under:{team}"))
+            if under is None:
+                under = selected.get((event_id, "team_total", "under"))
+            if over is not None and under is not None:
+                op = _safe_float(over.get("latest_price"))
+                up = _safe_float(under.get("latest_price"))
+                if op is not None and up is not None:
+                    o_novig, u_novig = _devig_two_way(op, up)
+                    no_vig_map[(event_id, f"team_total:{team}")] = {"over": o_novig, "under": u_novig}
+
         # total pair
         over = selected.get((event_id, "total", "over"))
         under = selected.get((event_id, "total", "under"))
@@ -769,7 +1087,8 @@ def build_shadow_boards(week: Optional[int] = None, season: Optional[int] = None
                 no_vig_map[(event_id, "total")] = {"over": o_novig, "under": u_novig}
 
     # Candidate creation.
-    for (event_id, market_key, side), row in selected.items():
+    for (event_id, market_key, side_key), row in selected.items():
+        side = str(row.get("side") or str(side_key).split(":", 1)[0]).lower()
         projection = proj.get(str(event_id))
         if projection is None:
             continue
@@ -785,6 +1104,13 @@ def build_shadow_boards(week: Optional[int] = None, season: Optional[int] = None
         push_prob = 0.0
         loss_prob = None
 
+        if not _model_available_for_market(market_key):
+            # Modeling firewall: no defensible model, no synthetic probabilities.
+            continue
+        if not _shadow_recommendation_eligible_for_market(market_key):
+            # Research-only firewall: collect raw market data, but do not publish recommendations.
+            continue
+
         if market_key == "spread":
             raw_prob = _safe_float(row.get("model_prob"))
             if raw_prob is None:
@@ -796,6 +1122,23 @@ def build_shadow_boards(week: Optional[int] = None, season: Optional[int] = None
             if model_margin is None:
                 continue
             raw_prob, push_prob, loss_prob = _moneyline_probability_from_margin(model_margin, side)
+        elif market_key == "team_total":
+            if model_total is None or model_margin is None or line is None:
+                continue
+            team_code = _team_code_from_row(row, str(side))
+            if team_code is None:
+                continue
+            raw_prob, push_prob, loss_prob = _team_total_probability(
+                team_code=team_code,
+                side=str(side),
+                total_point=float(line),
+                model_total_baseline=float(model_total),
+                model_margin_home=float(model_margin),
+                home_team=str(row.get("home_team") or ""),
+                away_team=str(row.get("away_team") or ""),
+            )
+            if raw_prob is None:
+                continue
         elif market_key == "total":
             if model_total is None or line is None:
                 continue
@@ -814,6 +1157,9 @@ def build_shadow_boards(week: Optional[int] = None, season: Optional[int] = None
 
         implied = _implied_probability(price)
         novig = no_vig_map.get((event_id, market_key), {}).get(side)
+        if market_key == "team_total":
+            team_code = _team_code_from_row(row, str(side)) or ""
+            novig = no_vig_map.get((event_id, f"team_total:{team_code}"), {}).get(side)
         if novig is None:
             novig = implied
 
@@ -828,17 +1174,37 @@ def build_shadow_boards(week: Optional[int] = None, season: Optional[int] = None
                 selection = f"{team} {line:+g}"
             else:
                 selection = team
-            period = "FULL_GAME"
+            period = _market_period_for_key(market_key)
+        elif market_key == "team_total":
+            family = "TEAM_TOTAL"
+            team = _team_code_from_row(row, str(side))
+            selection = f"{str(team or '').upper()} {str(side).upper()} {line:g}" if line is not None else f"{str(team or '').upper()} {str(side).upper()}"
+            period = _market_period_for_key(market_key)
         elif market_key == "moneyline":
             family = "MONEYLINE"
             team = str(row.get("home_team") if side == "home" else row.get("away_team"))
             selection = team
-            period = "FULL_GAME"
+            period = _market_period_for_key(market_key)
+        elif market_key == "first_half_moneyline":
+            family = "FIRST_HALF_MONEYLINE"
+            team = str(row.get("home_team") if side == "home" else row.get("away_team"))
+            selection = team
+            period = _market_period_for_key(market_key)
+        elif market_key == "first_half_spread":
+            family = "FIRST_HALF_SPREAD"
+            team = str(row.get("home_team") if side == "home" else row.get("away_team"))
+            selection = f"{team} {line:+g}" if line is not None else team
+            period = _market_period_for_key(market_key)
+        elif market_key == "first_half_total":
+            family = "FIRST_HALF_TOTAL"
+            team = None
+            selection = f"{side.upper()} {line:g}" if line is not None else side.upper()
+            period = _market_period_for_key(market_key)
         else:
             family = "TOTAL"
             team = None
             selection = f"{side.upper()} {line:g}" if line is not None else side.upper()
-            period = "FULL_GAME"
+            period = _market_period_for_key(market_key)
 
         snapshot_payload = {
             "eventId": event_id,
@@ -897,14 +1263,14 @@ def build_shadow_boards(week: Optional[int] = None, season: Optional[int] = None
 
     # Independent ranking by market family.
     qualified = [c for c in candidates if c["qualificationStatus"] == "QUALIFIED"]
-    for family in ["SPREAD", "MONEYLINE", "TOTAL"]:
+    for family in ["SPREAD", "MONEYLINE", "TOTAL", "TEAM_TOTAL", "FIRST_HALF_SPREAD", "FIRST_HALF_MONEYLINE", "FIRST_HALF_TOTAL"]:
         fam = [c for c in qualified if c["marketFamily"] == family]
         fam.sort(key=lambda x: (-x["calibratedEdge"], -x["ev"], -x["rawModelProbability"], x["eventId"], x["side"]))
         for idx, c in enumerate(fam, start=1):
             c["marketRank"] = idx
 
     # week rank per family includes non-qualified after qualified.
-    for family in ["SPREAD", "MONEYLINE", "TOTAL"]:
+    for family in ["SPREAD", "MONEYLINE", "TOTAL", "TEAM_TOTAL", "FIRST_HALF_SPREAD", "FIRST_HALF_MONEYLINE", "FIRST_HALF_TOTAL"]:
         fam = [c for c in candidates if c["marketFamily"] == family]
         fam.sort(
             key=lambda x: (
@@ -946,6 +1312,10 @@ def build_shadow_boards(week: Optional[int] = None, season: Optional[int] = None
         "spreadCount": len([c for c in candidates if c["marketFamily"] == "SPREAD"]),
         "moneylineCount": len([c for c in candidates if c["marketFamily"] == "MONEYLINE"]),
         "totalCount": len([c for c in candidates if c["marketFamily"] == "TOTAL"]),
+        "teamTotalCount": len([c for c in candidates if c["marketFamily"] == "TEAM_TOTAL"]),
+        "firstHalfSpreadCount": len([c for c in candidates if c["marketFamily"] == "FIRST_HALF_SPREAD"]),
+        "firstHalfMoneylineCount": len([c for c in candidates if c["marketFamily"] == "FIRST_HALF_MONEYLINE"]),
+        "firstHalfTotalCount": len([c for c in candidates if c["marketFamily"] == "FIRST_HALF_TOTAL"]),
     }
 
 
@@ -1210,6 +1580,15 @@ def append_shadow_outcomes(
                 result = "WIN" if int(home) > int(away) else "LOSS"
             elif side == "away":
                 result = "WIN" if int(away) > int(home) else "LOSS"
+        elif market_family == "FIRST_HALF_MONEYLINE":
+            away_h1, home_h1 = _first_half_scores(score)
+            if away_h1 is None or home_h1 is None:
+                still_pending += 1
+                continue
+            if side == "home":
+                result = "WIN" if home_h1 > away_h1 else "LOSS" if home_h1 < away_h1 else "PUSH"
+            elif side == "away":
+                result = "WIN" if away_h1 > home_h1 else "LOSS" if away_h1 < home_h1 else "PUSH"
         elif market_family == "TOTAL":
             if line is None:
                 still_pending += 1
@@ -1219,6 +1598,19 @@ def append_shadow_outcomes(
                 result = "WIN" if total > line else "LOSS" if total < line else "PUSH"
             elif side == "under":
                 result = "WIN" if total < line else "LOSS" if total > line else "PUSH"
+        elif market_family == "FIRST_HALF_TOTAL":
+            if line is None:
+                still_pending += 1
+                continue
+            away_h1, home_h1 = _first_half_scores(score)
+            if away_h1 is None or home_h1 is None:
+                still_pending += 1
+                continue
+            total_h1 = float(away_h1) + float(home_h1)
+            if side == "over":
+                result = "WIN" if total_h1 > line else "LOSS" if total_h1 < line else "PUSH"
+            elif side == "under":
+                result = "WIN" if total_h1 < line else "LOSS" if total_h1 > line else "PUSH"
         elif market_family == "SPREAD":
             if line is None:
                 still_pending += 1
@@ -1240,6 +1632,47 @@ def append_shadow_outcomes(
                 result = "LOSS"
             else:
                 result = "PUSH"
+        elif market_family == "FIRST_HALF_SPREAD":
+            if line is None:
+                still_pending += 1
+                continue
+            away_h1, home_h1 = _first_half_scores(score)
+            if away_h1 is None or home_h1 is None:
+                still_pending += 1
+                continue
+            if side == "away":
+                ats_margin = (float(away_h1) + float(line)) - float(home_h1)
+            elif side == "home":
+                ats_margin = (float(home_h1) + float(line)) - float(away_h1)
+            else:
+                ats_margin = None
+            if ats_margin is None:
+                still_pending += 1
+                continue
+            if ats_margin > 0:
+                result = "WIN"
+            elif ats_margin < 0:
+                result = "LOSS"
+            else:
+                result = "PUSH"
+        elif market_family == "TEAM_TOTAL":
+            if line is None:
+                still_pending += 1
+                continue
+            team_code = str(r["team_code"] or "").upper()
+            away_code, home_code = _extract_away_home_from_event_id(str(r["event_id"] or ""))
+            team_score = None
+            if team_code and home_code and team_code == home_code:
+                team_score = float(home)
+            elif team_code and away_code and team_code == away_code:
+                team_score = float(away)
+            if team_score is None:
+                still_pending += 1
+                continue
+            if side == "over":
+                result = "WIN" if team_score > line else "LOSS" if team_score < line else "PUSH"
+            elif side == "under":
+                result = "WIN" if team_score < line else "LOSS" if team_score > line else "PUSH"
 
         if result is None:
             still_pending += 1
@@ -1260,7 +1693,16 @@ def append_shadow_outcomes(
         commence = str(r["commence_time"] or "")
         kickoff = _parse_commence(commence)
         if kickoff is not None:
-            market_key = "h2h" if market_family == "MONEYLINE" else "totals" if market_family == "TOTAL" else "spreads"
+            market_key = (
+                "h2h" if market_family == "MONEYLINE"
+                else "totals" if market_family == "TOTAL"
+                else "spreads" if market_family == "SPREAD"
+                else "team_totals" if market_family == "TEAM_TOTAL"
+                else "spreads_h1" if market_family == "FIRST_HALF_SPREAD"
+                else "h2h_h1" if market_family == "FIRST_HALF_MONEYLINE"
+                else "totals_h1" if market_family == "FIRST_HALF_TOTAL"
+                else ""
+            )
             try:
                 close = get_closing_line(
                     event_id=str(r["event_id"]),
@@ -1282,6 +1724,7 @@ def append_shadow_outcomes(
                         side=side,
                         kickoff=kickoff,
                         recommended_line=_safe_float(r["line"]),
+                        team_code=str(r["team_code"] or "").upper() if market_family == "TEAM_TOTAL" else None,
                     )
 
                     closing_timestamp = close.closing_timestamp.isoformat() if close.closing_timestamp else None
@@ -1464,7 +1907,15 @@ def shadow_performance_report() -> dict[str, Any]:
     con.close()
 
     by_market: dict[str, dict[str, Any]] = {}
-    for fam in ["SPREAD", "MONEYLINE", "TOTAL"]:
+    for fam in [
+        "SPREAD",
+        "MONEYLINE",
+        "TOTAL",
+        "TEAM_TOTAL",
+        "FIRST_HALF_SPREAD",
+        "FIRST_HALF_MONEYLINE",
+        "FIRST_HALF_TOTAL",
+    ]:
         fam_rows = [r for r in rows if str(r["market_family"]).upper() == fam]
         graded = [r for r in fam_rows if r["result"] in {"WIN", "LOSS", "PUSH"}]
 
@@ -1615,6 +2066,37 @@ def _odds_api_key() -> str:
     return str(os.getenv("ODDS_API_KEY") or "").strip()
 
 
+def _odds_ssl_context() -> ssl.SSLContext:
+    try:
+        import certifi  # type: ignore
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
+
+
+def _odds_request_json(url: str) -> tuple[int, dict[str, str], Any]:
+    req = urllib.request.Request(url, headers={"User-Agent": "SIA-Shadow/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=20, context=_odds_ssl_context()) as resp:
+            status = int(resp.status)
+            headers = {k.lower(): v for k, v in resp.headers.items()}
+            body = resp.read().decode("utf-8")
+            try:
+                parsed = json.loads(body)
+            except json.JSONDecodeError:
+                parsed = {"raw": body}
+            return status, headers, parsed
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+        try:
+            parsed = json.loads(body) if body else {"raw": ""}
+        except json.JSONDecodeError:
+            parsed = {"raw": body}
+        headers = {k.lower(): v for k, v in (exc.headers.items() if exc.headers else [])}
+        return int(exc.code), headers, parsed
+
+
 def _call_odds_api(markets: list[str], event_ids: bool = False) -> tuple[int, dict[str, str], Any]:
     api_key = _odds_api_key()
     if not api_key:
@@ -1628,16 +2110,87 @@ def _call_odds_api(markets: list[str], event_ids: bool = False) -> tuple[int, di
         "oddsFormat": "american",
     }
     url = f"{base}?{urllib.parse.urlencode(query)}"
-    req = urllib.request.Request(url, headers={"User-Agent": "SIA-Shadow/1.0"})
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        status = int(resp.status)
-        headers = {k.lower(): v for k, v in resp.headers.items()}
-        body = resp.read().decode("utf-8")
-        try:
-            parsed = json.loads(body)
-        except json.JSONDecodeError:
-            parsed = {"raw": body}
-        return status, headers, parsed
+    return _odds_request_json(url)
+
+
+def _call_odds_api_events() -> tuple[int, dict[str, str], Any]:
+    api_key = _odds_api_key()
+    if not api_key:
+        return 0, {}, {"error": "ODDS_API_KEY missing"}
+
+    ttl = int(os.getenv("EXPANDED_MARKET_EVENT_CACHE_SECONDS", "300"))
+    cached_at = _EVENT_DISCOVERY_CACHE.get("fetchedAt")
+    cached_events = _EVENT_DISCOVERY_CACHE.get("events")
+    if cached_at and isinstance(cached_events, list):
+        age = (datetime.now(timezone.utc) - cached_at).total_seconds()
+        if age <= ttl:
+            return 200, {}, cached_events
+
+    base = "https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events"
+    query = {"apiKey": api_key, "dateFormat": "iso"}
+    status, headers, payload = _odds_request_json(f"{base}?{urllib.parse.urlencode(query)}")
+    if status == 200 and isinstance(payload, list):
+        _EVENT_DISCOVERY_CACHE["fetchedAt"] = datetime.now(timezone.utc)
+        _EVENT_DISCOVERY_CACHE["events"] = payload
+    return status, headers, payload
+
+
+def _call_odds_api_event_odds(event_id: str, markets: list[str]) -> tuple[int, dict[str, str], Any]:
+    api_key = _odds_api_key()
+    if not api_key:
+        return 0, {}, {"error": "ODDS_API_KEY missing"}
+
+    base = f"https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events/{event_id}/odds"
+    query = {
+        "apiKey": api_key,
+        "regions": "us",
+        "markets": ",".join(markets),
+        "oddsFormat": "american",
+    }
+    return _odds_request_json(f"{base}?{urllib.parse.urlencode(query)}")
+
+
+def _summarize_event_market_payload(event_payload: dict[str, Any], market_key: str) -> dict[str, Any]:
+    books = set()
+    has_line = False
+    has_price = False
+    has_ts = False
+    usable_outcomes = 0
+
+    for book in event_payload.get("bookmakers", []) or []:
+        book_key = str(book.get("key") or "")
+        if book.get("last_update"):
+            has_ts = True
+        for market in book.get("markets", []) or []:
+            if str(market.get("key") or "") != market_key:
+                continue
+            if book_key:
+                books.add(book_key)
+            if market.get("last_update"):
+                has_ts = True
+            for outcome in market.get("outcomes", []) or []:
+                point = _safe_float(outcome.get("point"))
+                price = _safe_float(outcome.get("price"))
+                if point is not None:
+                    has_line = True
+                if price is not None:
+                    has_price = True
+                if market_key == "h2h_h1":
+                    if price is not None:
+                        usable_outcomes += 1
+                else:
+                    if point is not None and price is not None:
+                        usable_outcomes += 1
+
+    return {
+        "marketKey": market_key,
+        "bookCoverage": len(books),
+        "availableBooks": sorted(books),
+        "lineAvailability": has_line,
+        "priceAvailability": has_price,
+        "timestampAvailability": has_ts,
+        "usableOutcomes": usable_outcomes,
+    }
 
 
 def _summarize_provider_market_response(market_key: str, payload: Any) -> dict[str, Any]:
@@ -1692,70 +2245,416 @@ def _summarize_provider_market_response(market_key: str, payload: Any) -> dict[s
 
 
 def discover_expanded_markets() -> dict[str, Any]:
-    targets = {
-        "TEAM_TOTAL": ["team_totals"],
-        "1H_SPREAD": ["spreads_h1"],
-        "1H_MONEYLINE": ["h2h_h1"],
-        "1H_TOTAL": ["totals_h1"],
-        "1H_TEAM_TOTAL": ["team_totals_h1"],
+    target_labels = {
+        "TEAM_TOTAL": "TEAM_TOTAL",
+        "FIRST_HALF_SPREAD": "1H_SPREAD",
+        "FIRST_HALF_MONEYLINE": "1H_MONEYLINE",
+        "FIRST_HALF_TOTAL": "1H_TOTAL",
     }
-
     request_count = 0
-    per_target = {}
     quota = {}
 
-    for label, keys in targets.items():
-        supported = None
-        selected_summary = None
-        selected_key = None
-        selected_payload = None
-        errors = []
-
-        for key in keys:
-            request_count += 1
-            try:
-                status, headers, payload = _call_odds_api([key])
-                quota = {
-                    "remaining": headers.get("x-requests-remaining"),
-                    "used": headers.get("x-requests-used"),
-                    "last": headers.get("x-requests-last"),
-                }
-                summary = _summarize_provider_market_response(key, payload)
-                if status == 200 and summary["providerAvailability"]:
-                    supported = True
-                    selected_summary = summary
-                    selected_key = key
-                    selected_payload = payload
-                    break
-                errors.append({"marketKey": key, "status": status, "detail": payload if isinstance(payload, dict) else None})
-            except Exception as exc:
-                errors.append({"marketKey": key, "status": "EXCEPTION", "detail": str(exc)})
-
-        if supported is None:
-            supported = False
-            selected_summary = {
-                "marketKey": keys[0],
+    per_target: dict[str, dict[str, Any]] = {}
+    accum: dict[str, dict[str, Any]] = {}
+    for family, label in target_labels.items():
+        key = EXPANDED_MARKET_REGISTRY[family]["providerKey"]
+        per_target[label] = {
+            "supported": False,
+            "selectedMarketKey": key,
+            "summary": {
+                "marketKey": key,
                 "providerAvailability": False,
                 "bookCoverage": 0,
                 "eventCoverage": 0,
                 "lineAvailability": False,
                 "priceAvailability": False,
                 "timestampAvailability": False,
-            }
-
-        per_target[label] = {
-            "supported": supported,
-            "selectedMarketKey": selected_key,
-            "summary": selected_summary,
-            "errors": errors,
-            "samplePayload": selected_payload if supported else None,
+                "usableOutcomes": 0,
+                "availableBooks": [],
+                "marketDepthStatus": "NO_BOOKS",
+            },
+            "status": "UNKNOWN",
+            "errors": [],
         }
+        accum[label] = {
+            "books": set(),
+            "events": set(),
+            "line": False,
+            "price": False,
+            "ts": False,
+            "usable": 0,
+            "saw200": False,
+            "invalid": False,
+            "request_failed": False,
+        }
+
+    event_status, event_headers, events_payload = _call_odds_api_events()
+    if event_headers:
+        quota = {
+            "remaining": event_headers.get("x-requests-remaining"),
+            "used": event_headers.get("x-requests-used"),
+            "last": event_headers.get("x-requests-last"),
+        }
+
+    if event_status != 200 or not isinstance(events_payload, list) or not events_payload:
+        for label in per_target:
+            per_target[label]["status"] = "REQUEST_FAILED"
+            per_target[label]["errors"].append(
+                {
+                    "status": event_status,
+                    "detail": events_payload if isinstance(events_payload, dict) else {"message": "Event discovery failed"},
+                }
+            )
+        return {
+            "targets": per_target,
+            "estimatedRequestCost": request_count,
+            "quota": quota,
+            "eventSamples": [],
+            "eventPayloadById": {},
+            "quotaAccounting": {
+                "creditsUsed": quota.get("used"),
+                "creditsRemaining": quota.get("remaining"),
+                "lastRequestCost": quota.get("last"),
+                "expandedMarketRequestCount": request_count,
+            },
+        }
+
+    sample_n = max(1, int(os.getenv("EXPANDED_MARKET_EVENT_SAMPLE_SIZE", "4")))
+    sampled_events = events_payload[:sample_n]
+    sample_keys = [EXPANDED_MARKET_REGISTRY[f]["providerKey"] for f in target_labels]
+    event_payload_map: dict[str, Any] = {}
+
+    for event in sampled_events:
+        event_id = str(event.get("id") or "")
+        if not event_id:
+            continue
+        request_count += 1
+        status, headers, payload = _call_odds_api_event_odds(event_id, sample_keys)
+        quota = {
+            "remaining": headers.get("x-requests-remaining"),
+            "used": headers.get("x-requests-used"),
+            "last": headers.get("x-requests-last"),
+        }
+
+        if status == 200 and isinstance(payload, dict):
+            event_payload_map[event_id] = payload
+            for family, label in target_labels.items():
+                provider_key = EXPANDED_MARKET_REGISTRY[family]["providerKey"]
+                summary = _summarize_event_market_payload(payload, provider_key)
+                a = accum[label]
+                a["saw200"] = True
+                a["books"].update(summary["availableBooks"])
+                if summary["bookCoverage"] > 0:
+                    a["events"].add(event_id)
+                a["line"] = bool(a["line"] or summary["lineAvailability"])
+                a["price"] = bool(a["price"] or summary["priceAvailability"])
+                a["ts"] = bool(a["ts"] or summary["timestampAvailability"])
+                a["usable"] = int(a["usable"] + int(summary["usableOutcomes"]))
+        elif status == 422 and isinstance(payload, dict) and payload.get("error_code") == "INVALID_MARKET":
+            for family, label in target_labels.items():
+                a = accum[label]
+                a["invalid"] = True
+                per_target[label]["errors"].append(
+                    {
+                        "status": status,
+                        "detail": payload,
+                        "eventId": event_id,
+                    }
+                )
+        else:
+            for family, label in target_labels.items():
+                a = accum[label]
+                a["request_failed"] = True
+                per_target[label]["errors"].append(
+                    {
+                        "status": status,
+                        "detail": payload if isinstance(payload, dict) else {"message": "request failed"},
+                        "eventId": event_id,
+                    }
+                )
+
+    for family, label in target_labels.items():
+        provider_key = EXPANDED_MARKET_REGISTRY[family]["providerKey"]
+        a = accum[label]
+        books = sorted(a["books"])
+        summary = {
+            "marketKey": provider_key,
+            "providerAvailability": len(a["events"]) > 0,
+            "bookCoverage": len(books),
+            "eventCoverage": len(a["events"]),
+            "lineAvailability": bool(a["line"]),
+            "priceAvailability": bool(a["price"]),
+            "timestampAvailability": bool(a["ts"]),
+            "usableOutcomes": int(a["usable"]),
+            "availableBooks": books,
+            "marketDepthStatus": _market_depth_status(len(books)),
+        }
+        if a["invalid"]:
+            status_label = "PROVIDER_UNSUPPORTED"
+        elif a["saw200"] and len(a["events"]) > 0 and int(a["usable"]) > 0:
+            status_label = "AVAILABLE"
+        elif a["saw200"]:
+            status_label = "CURRENTLY_NO_MARKET_DATA"
+        elif a["request_failed"]:
+            status_label = "REQUEST_FAILED"
+        else:
+            status_label = "UNKNOWN"
+
+        per_target[label]["summary"] = summary
+        per_target[label]["status"] = status_label
+        per_target[label]["supported"] = status_label in {"AVAILABLE", "CURRENTLY_NO_MARKET_DATA"}
 
     return {
         "targets": per_target,
         "estimatedRequestCost": request_count,
         "quota": quota,
+        "eventSamples": [
+            {
+                "eventId": str(e.get("id") or ""),
+                "awayTeam": str(e.get("away_team") or ""),
+                "homeTeam": str(e.get("home_team") or ""),
+                "commenceTime": str(e.get("commence_time") or ""),
+            }
+            for e in sampled_events
+            if str(e.get("id") or "")
+        ],
+        "eventPayloadById": event_payload_map,
+        "quotaAccounting": {
+            "creditsUsed": quota.get("used"),
+            "creditsRemaining": quota.get("remaining"),
+            "lastRequestCost": quota.get("last"),
+            "expandedMarketRequestCount": request_count,
+        },
     }
+
+
+def phase2b_market_foundation_audit() -> dict[str, Any]:
+    discovery = discover_expanded_markets()
+    targets = discovery.get("targets") or {}
+
+    def _is_supported(label: str) -> bool:
+        return bool((targets.get(label) or {}).get("supported"))
+
+    market_summary: dict[str, dict[str, Any]] = {}
+    for fam, meta in PHASE2B_MARKET_FAMILIES.items():
+        provider_labels = {
+            "TEAM_TOTAL": "TEAM_TOTAL",
+            "FIRST_HALF_SPREAD": "1H_SPREAD",
+            "FIRST_HALF_MONEYLINE": "1H_MONEYLINE",
+            "FIRST_HALF_TOTAL": "1H_TOTAL",
+        }
+        data_available = _is_supported(provider_labels[fam])
+        market_summary[fam] = {
+            "dataAvailable": data_available,
+            "modelAvailable": bool(meta["modelAvailable"]),
+            "modelValidated": bool(meta["modelValidated"]),
+            "shadowEligible": bool(meta["shadowEligible"] and data_available and meta["modelAvailable"]),
+            "productionEligible": False,
+            "crossMarketComparable": False,
+            "requiredModelData": list(meta.get("requiredModelData") or []),
+        }
+
+    return {
+        "providerAudit": discovery,
+        "markets": market_summary,
+        "collectionStatus": expanded_market_collection_status(),
+        "teamTotalResearch": team_total_model_research_validation(),
+    }
+
+
+def expanded_market_collection_status() -> dict[str, Any]:
+    _ensure_schema()
+    con = _connect()
+    rows = con.execute(
+        """
+        SELECT market_family, event_id, bookmaker, market_timestamp, fetched_at, market_depth_status
+        FROM shadow_market_snapshots
+        WHERE market_family IN ('TEAM_TOTAL', 'FIRST_HALF_SPREAD', 'FIRST_HALF_MONEYLINE', 'FIRST_HALF_TOTAL')
+        """
+    ).fetchall()
+    con.close()
+
+    by_family: dict[str, dict[str, Any]] = {}
+    for fam in ["TEAM_TOTAL", "FIRST_HALF_SPREAD", "FIRST_HALF_MONEYLINE", "FIRST_HALF_TOTAL"]:
+        fam_rows = [r for r in rows if str(r["market_family"]) == fam]
+        books = sorted({str(r["bookmaker"] or "") for r in fam_rows if str(r["bookmaker"] or "")})
+        timestamps = [
+            str(r["market_timestamp"] or r["fetched_at"] or "")
+            for r in fam_rows
+            if str(r["market_timestamp"] or r["fetched_at"] or "")
+        ]
+        meta = PHASE2B_MARKET_FAMILIES.get(fam, {})
+        by_family[fam] = {
+            "eventsCollected": len({str(r["event_id"]) for r in fam_rows if str(r["event_id"]) }),
+            "rowsCollected": len(fam_rows),
+            "availableBooks": books,
+            "bookCoverageCount": len(books),
+            "marketDepthStatus": _market_depth_status(len(books)),
+            "earliestTimestamp": min(timestamps) if timestamps else None,
+            "latestTimestamp": max(timestamps) if timestamps else None,
+            "modelStatus": {
+                "modelAvailable": bool(meta.get("modelAvailable")),
+                "modelValidated": bool(meta.get("modelValidated")),
+                "shadowRecommendationEligible": bool(meta.get("shadowEligible")),
+                "productionEligible": False,
+            },
+            "mode": "DATA_COLLECTION" if not bool(meta.get("shadowEligible")) else "MODEL_BACKED_SHADOW_RECOMMENDATION",
+        }
+
+    return {"markets": by_family}
+
+
+def _select_first_column(df: pd.DataFrame, candidates: list[str]) -> Optional[str]:
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+
+def _team_total_research_from_df(df: pd.DataFrame) -> dict[str, Any]:
+    required = {"home_score", "away_score", "model_margin", "model_total"}
+    if not required.issubset(set(df.columns)):
+        return {
+            "ready": False,
+            "validated": False,
+            "reason": "missing required columns",
+        }
+
+    home_actual = pd.to_numeric(df["home_score"], errors="coerce")
+    away_actual = pd.to_numeric(df["away_score"], errors="coerce")
+    model_margin = pd.to_numeric(df["model_margin"], errors="coerce")
+    model_total = pd.to_numeric(df["model_total"], errors="coerce")
+
+    valid = pd.DataFrame(
+        {
+            "home_actual": home_actual,
+            "away_actual": away_actual,
+            "model_margin": model_margin,
+            "model_total": model_total,
+        }
+    ).dropna()
+    if valid.empty:
+        return {
+            "ready": False,
+            "validated": False,
+            "reason": "no valid rows",
+        }
+
+    home_expected = (valid["model_total"] + valid["model_margin"]) / 2.0
+    away_expected = (valid["model_total"] - valid["model_margin"]) / 2.0
+
+    home_resid = valid["home_actual"] - home_expected
+    away_resid = valid["away_actual"] - away_expected
+
+    def _rmse(vals: pd.Series) -> float:
+        return float((vals.pow(2).mean()) ** 0.5)
+
+    residual_pool = pd.concat([home_resid, away_resid], ignore_index=True).dropna()
+    residual_values = residual_pool.to_numpy(dtype=float)
+
+    home_line_col = _select_first_column(df, ["home_team_total_line", "home_team_total", "home_team_total_point"])
+    away_line_col = _select_first_column(df, ["away_team_total_line", "away_team_total", "away_team_total_point"])
+    home_price_col = _select_first_column(df, ["home_team_total_price", "home_team_total_over_price"])
+    away_price_col = _select_first_column(df, ["away_team_total_price", "away_team_total_over_price"])
+
+    line_rows = []
+    if home_line_col is not None or away_line_col is not None:
+        for idx, row in valid.iterrows():
+            if home_line_col and pd.notna(df.loc[idx, home_line_col]):
+                line_rows.append(("home", float(row["home_actual"]), float(home_expected.loc[idx]), float(df.loc[idx, home_line_col])))
+            if away_line_col and pd.notna(df.loc[idx, away_line_col]):
+                line_rows.append(("away", float(row["away_actual"]), float(away_expected.loc[idx]), float(df.loc[idx, away_line_col])))
+
+    prob_eval: dict[str, Any] = {
+        "lineSampleSize": len(line_rows),
+        "brierOver": None,
+        "logLossOver": None,
+        "calibrationECEOver": None,
+        "maxSymmetryError": None,
+        "pushRate": None,
+        "roiEdgeHistoricallyAvailable": bool(home_price_col is not None or away_price_col is not None),
+    }
+
+    if len(line_rows) >= 25 and len(residual_values) >= 50:
+        y_over: list[float] = []
+        p_over: list[float] = []
+        symmetry_errors: list[float] = []
+        push_count = 0
+
+        for _, actual_points, expected_points, line in line_rows:
+            sims = pd.Series((expected_points + residual_values).round())
+            p_o = float((sims > line).mean())
+            p_p = float((sims == line).mean())
+            p_u = float((sims < line).mean())
+            symmetry_errors.append(abs(1.0 - (p_o + p_p + p_u)))
+
+            if actual_points == line:
+                push_count += 1
+                continue
+            y_over.append(1.0 if actual_points > line else 0.0)
+            p_over.append(p_o)
+
+        prob_eval["maxSymmetryError"] = max(symmetry_errors) if symmetry_errors else None
+        prob_eval["pushRate"] = float(push_count / len(line_rows)) if line_rows else None
+        if y_over and len(y_over) == len(p_over):
+            prob_eval["brierOver"] = _brier(y_over, p_over)
+            prob_eval["logLossOver"] = _logloss(y_over, p_over)
+            prob_eval["calibrationECEOver"] = _ece(y_over, p_over)
+
+    sample_size = int(len(valid))
+    ready = sample_size >= 200
+    validated = bool(
+        ready
+        and prob_eval["lineSampleSize"] >= 100
+        and prob_eval["brierOver"] is not None
+        and prob_eval["logLossOver"] is not None
+        and (prob_eval["maxSymmetryError"] is not None and float(prob_eval["maxSymmetryError"]) < 1e-6)
+    )
+
+    return {
+        "ready": ready,
+        "validated": validated,
+        "sampleSize": sample_size,
+        "identityChecks": {
+            "totalConsistencyMaxAbs": float(((home_expected + away_expected) - valid["model_total"]).abs().max()),
+            "marginConsistencyMaxAbs": float(((home_expected - away_expected) - valid["model_margin"]).abs().max()),
+        },
+        "homeMetrics": {
+            "mae": float(home_resid.abs().mean()),
+            "rmse": _rmse(home_resid),
+            "residualMean": float(home_resid.mean()),
+            "residualStd": float(home_resid.std(ddof=0)),
+        },
+        "awayMetrics": {
+            "mae": float(away_resid.abs().mean()),
+            "rmse": _rmse(away_resid),
+            "residualMean": float(away_resid.mean()),
+            "residualStd": float(away_resid.std(ddof=0)),
+        },
+        "probabilityValidation": prob_eval,
+        "historicalRoiEdgeValidation": "UNAVAILABLE" if not prob_eval["roiEdgeHistoricallyAvailable"] else "AVAILABLE",
+    }
+
+
+def team_total_model_research_validation() -> dict[str, Any]:
+    walkforward = OUTPUTS_ROOT / "walkforward_multiseason_predictions.csv"
+    if not walkforward.exists():
+        return {
+            "ready": False,
+            "validated": False,
+            "reason": "walkforward_multiseason_predictions.csv missing",
+        }
+
+    try:
+        df = pd.read_csv(walkforward)
+    except (OSError, pd.errors.EmptyDataError) as exc:
+        return {
+            "ready": False,
+            "validated": False,
+            "reason": f"failed to read walkforward data: {exc}",
+        }
+
+    return _team_total_research_from_df(df)
 
 
 def ingest_expanded_market_snapshots(discovery: Optional[dict[str, Any]] = None) -> dict[str, Any]:
@@ -1764,84 +2663,205 @@ def ingest_expanded_market_snapshots(discovery: Optional[dict[str, Any]] = None)
         discovery = discover_expanded_markets()
 
     saved = 0
+    request_count = 0
+    quota = dict((discovery.get("quota") or {}))
     con = _connect()
+    id_to_event = {str(e.get("eventId") or ""): e for e in (discovery.get("eventSamples") or []) if str(e.get("eventId") or "")}
+    payload_by_event = dict(discovery.get("eventPayloadById") or {})
 
-    for _, info in (discovery.get("targets") or {}).items():
-        if not info.get("supported"):
-            continue
-        market_key = str(info.get("selectedMarketKey") or "")
-        payload = info.get("samplePayload")
-        if not isinstance(payload, list):
-            continue
+    target_map = {
+        "TEAM_TOTAL": "TEAM_TOTAL",
+        "FIRST_HALF_SPREAD": "1H_SPREAD",
+        "FIRST_HALF_MONEYLINE": "1H_MONEYLINE",
+        "FIRST_HALF_TOTAL": "1H_TOTAL",
+    }
+    active_keys = [
+        EXPANDED_MARKET_REGISTRY[fam]["providerKey"]
+        for fam, label in target_map.items()
+        if bool((discovery.get("targets") or {}).get(label, {}).get("supported"))
+    ]
 
-        for event in payload:
-            event_id = str(event.get("id") or "")
-            for book in event.get("bookmakers", []) or []:
-                bookmaker = str(book.get("key") or "")
-                fetched_at = str(book.get("last_update") or event.get("commence_time") or "")
-                for market in book.get("markets", []) or []:
-                    if str(market.get("key") or "") != market_key:
-                        continue
-                    for outcome in market.get("outcomes", []) or []:
-                        selection = str(outcome.get("name") or "")
-                        line = _safe_float(outcome.get("point"))
-                        price = _safe_float(outcome.get("price"))
+    for event_id, event_meta in id_to_event.items():
+        payload = payload_by_event.get(event_id)
+        if not isinstance(payload, dict):
+            request_count += 1
+            status, headers, fetched_payload = _call_odds_api_event_odds(event_id, active_keys)
+            quota = {
+                "remaining": headers.get("x-requests-remaining"),
+                "used": headers.get("x-requests-used"),
+                "last": headers.get("x-requests-last"),
+            }
+            if status != 200 or not isinstance(fetched_payload, dict):
+                continue
+            payload = fetched_payload
 
-                        period = "FIRST_HALF" if "_h1" in market_key else "FULL_GAME"
-                        family = "TEAM_TOTAL" if "team_totals" in market_key else "FIRST_HALF" if "_h1" in market_key else "OTHER"
+        books_for_market: dict[str, set[str]] = {k: set() for k in active_keys}
+        best_price_for_market: dict[tuple[str, str, str, str], tuple[float, str]] = {}
 
-                        payload_row = {
-                            "eventId": event_id,
-                            "providerEventId": event_id,
-                            "marketFamily": family,
-                            "marketKey": market_key,
-                            "period": period,
-                            "teamCode": None,
-                            "selection": selection,
-                            "line": line,
-                            "price": price,
-                            "bookmaker": bookmaker,
-                            "fetchedAt": fetched_at,
-                        }
-                        canonical = _canonical_json(payload_row)
-                        p_hash = _sha256(canonical)
-                        idem = _sha256(f"shadow-market:{p_hash}")
-                        snapshot_id = str(uuid.uuid5(uuid.NAMESPACE_URL, idem))
+        for book in payload.get("bookmakers", []) or []:
+            book_key = str(book.get("key") or "")
+            for market in book.get("markets", []) or []:
+                mk = str(market.get("key") or "")
+                if mk not in books_for_market:
+                    continue
+                if book_key:
+                    books_for_market[mk].add(book_key)
+                for outcome in market.get("outcomes", []) or []:
+                    side = str(outcome.get("name") or "").strip().lower()
+                    team_code = str(outcome.get("description") or "").strip().upper()
+                    point = _safe_float(outcome.get("point"))
+                    price = _safe_float(outcome.get("price"))
+                    if mk in {"h2h_h1", "spreads_h1"} and side not in {"home", "away"}:
+                        home = str(event_meta.get("homeTeam") or "").strip().lower()
+                        away = str(event_meta.get("awayTeam") or "").strip().lower()
+                        if side == home:
+                            side = "home"
+                        elif side == away:
+                            side = "away"
+                    key = (mk, side, str(point), team_code)
+                    if price is not None and (key not in best_price_for_market or price > best_price_for_market[key][0]):
+                        best_price_for_market[key] = (price, book_key)
 
-                        con.execute(
-                            """
-                            INSERT OR IGNORE INTO shadow_market_snapshots (
-                                snapshot_id, captured_at_utc,
-                                event_id, provider_event_id,
-                                market_family, market_key, period, team_code, selection,
-                                line, price, bookmaker, fetched_at,
-                                payload_hash, canonical_payload, idempotency_key
-                            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                            """,
-                            [
-                                snapshot_id,
-                                _utc_now_iso(),
-                                event_id,
-                                event_id,
-                                family,
-                                market_key,
-                                period,
-                                None,
-                                selection,
-                                line,
-                                price,
-                                bookmaker,
-                                fetched_at,
-                                p_hash,
-                                canonical,
-                                idem,
-                            ],
+        for book in payload.get("bookmakers", []) or []:
+            bookmaker = str(book.get("key") or "")
+            for market in book.get("markets", []) or []:
+                market_key = str(market.get("key") or "")
+                if market_key not in active_keys:
+                    continue
+
+                family = next(
+                    fam for fam, meta in EXPANDED_MARKET_REGISTRY.items() if meta["providerKey"] == market_key
+                )
+                period = EXPANDED_MARKET_REGISTRY[family]["period"]
+                market_ts = str(market.get("last_update") or book.get("last_update") or payload.get("commence_time") or "")
+                fetched_at = _utc_now_iso()
+                available_books = sorted(books_for_market.get(market_key) or set())
+                book_cov = len(available_books)
+                depth = _market_depth_status(book_cov)
+                consensus = 1 if book_cov >= 2 else 0
+
+                for outcome in market.get("outcomes", []) or []:
+                    raw_name = str(outcome.get("name") or "").strip()
+                    side = raw_name.lower()
+                    team_code = str(outcome.get("description") or "").strip().upper() or None
+                    if market_key in {"h2h_h1", "spreads_h1"} and side not in {"home", "away"}:
+                        home = str(event_meta.get("homeTeam") or "").strip().lower()
+                        away = str(event_meta.get("awayTeam") or "").strip().lower()
+                        if side == home:
+                            side = "home"
+                        elif side == away:
+                            side = "away"
+                    line = _safe_float(outcome.get("point"))
+                    price = _safe_float(outcome.get("price"))
+                    if market_key in {"team_totals", "totals_h1", "team_totals_h1", "totals"} and side not in {"over", "under"}:
+                        side = side if side in {"over", "under"} else ""
+
+                    selection = raw_name
+                    if team_code:
+                        selection = f"{team_code} {raw_name}".strip()
+
+                    best_key = (market_key, side, str(line), str(team_code or ""))
+                    best_book = best_price_for_market.get(best_key, (None, None))[1]
+                    source_snapshot_id = _sha256(
+                        _canonical_json(
+                            {
+                                "eventId": event_id,
+                                "marketKey": market_key,
+                                "selection": selection,
+                                "line": line,
+                                "price": price,
+                                "sportsbook": bookmaker,
+                                "marketTimestamp": market_ts,
+                            }
                         )
+                    )
+
+                    payload_row = {
+                        "eventId": event_id,
+                        "providerEventId": event_id,
+                        "marketFamily": family,
+                        "providerMarketKey": market_key,
+                        "phase": "PREGAME",
+                        "period": period,
+                        "gameStateTimestamp": None,
+                        "teamCode": team_code,
+                        "selection": selection,
+                        "side": side,
+                        "line": line,
+                        "price": price,
+                        "sportsbook": bookmaker,
+                        "marketTimestamp": market_ts,
+                        "fetchedAt": fetched_at,
+                        "sourceSnapshotId": source_snapshot_id,
+                        "bookCoverageCount": book_cov,
+                        "availableBooks": available_books,
+                        "bestPriceBook": best_book,
+                        "consensusAvailable": bool(consensus),
+                        "marketDepthStatus": depth,
+                    }
+                    canonical = _canonical_json(payload_row)
+                    p_hash = _sha256(canonical)
+                    idem = _sha256(f"shadow-market:{p_hash}")
+                    snapshot_id = str(uuid.uuid5(uuid.NAMESPACE_URL, idem))
+
+                    before = con.total_changes
+                    con.execute(
+                        """
+                        INSERT OR IGNORE INTO shadow_market_snapshots (
+                            snapshot_id, captured_at_utc,
+                            event_id, provider_event_id,
+                            market_family, market_key, phase, period, game_state_timestamp, team_code, selection, side,
+                            line, price, bookmaker, market_timestamp, fetched_at, source_snapshot_id,
+                            book_coverage_count, available_books, best_price_book, consensus_available, market_depth_status,
+                            payload_hash, canonical_payload, idempotency_key
+                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        """,
+                        [
+                            snapshot_id,
+                            _utc_now_iso(),
+                            event_id,
+                            event_id,
+                            family,
+                            market_key,
+                            "PREGAME",
+                            period,
+                            None,
+                            team_code,
+                            selection,
+                            side,
+                            line,
+                            price,
+                            bookmaker,
+                            market_ts,
+                            fetched_at,
+                            source_snapshot_id,
+                            book_cov,
+                            json.dumps(available_books, separators=(",", ":")),
+                            best_book,
+                            consensus,
+                            depth,
+                            p_hash,
+                            canonical,
+                            idem,
+                        ],
+                    )
+                    if con.total_changes > before:
                         saved += 1
 
     con.commit()
     con.close()
-    return {"rowsSaved": saved}
+    return {
+        "rowsSaved": saved,
+        "eventsProcessed": len(id_to_event),
+        "requestCount": request_count,
+        "quota": quota,
+        "quotaAccounting": {
+            "creditsUsed": quota.get("used"),
+            "creditsRemaining": quota.get("remaining"),
+            "lastRequestCost": quota.get("last"),
+            "expandedMarketRequestCount": request_count,
+        },
+    }
 
 
 def discover_player_props() -> dict[str, Any]:
