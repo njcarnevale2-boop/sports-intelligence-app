@@ -383,6 +383,29 @@ MARKET_KEY_TO_FAMILY: dict[str, str] = {
 }
 
 
+BOOKMAKER_DISPLAY_NAMES: dict[str, str] = {
+    "draftkings": "DraftKings",
+    "fanduel": "FanDuel",
+    "betmgm": "BetMGM",
+    "caesars": "Caesars",
+    "espnbet": "ESPN BET",
+    "betrivers": "BetRivers",
+    "fanatics": "Fanatics",
+    "williamhill_us": "Caesars",
+}
+
+
+LINE_SHOPPING_MARKET_KEYS = {
+    "spread",
+    "moneyline",
+    "total",
+    "team_total",
+    "first_half_spread",
+    "first_half_moneyline",
+    "first_half_total",
+}
+
+
 PROSPECTIVE_MARKET_FAMILIES = [
     "SPREAD",
     "MONEYLINE",
@@ -648,6 +671,123 @@ def _normalize_market(value: str) -> str:
     if key == "totals_h1":
         return "first_half_total"
     return key
+
+
+def _normalize_bookmaker_key(value: Any) -> str:
+    key = str(value or "").strip().lower()
+    aliases = {
+        "dk": "draftkings",
+        "fd": "fanduel",
+        "mgm": "betmgm",
+        "czr": "caesars",
+    }
+    return aliases.get(key, key)
+
+
+def _normalize_bookmaker_display(value: Any, bookmaker_key: str) -> str:
+    raw = str(value or "").strip()
+    if raw:
+        compact = " ".join(raw.split())
+        if compact:
+            return compact
+    return BOOKMAKER_DISPLAY_NAMES.get(bookmaker_key, bookmaker_key or "UNKNOWN")
+
+
+def _american_to_decimal(american_odds: Optional[float]) -> Optional[float]:
+    if american_odds is None:
+        return None
+    odds = float(american_odds)
+    if odds > 0:
+        return float(round(1.0 + (odds / 100.0), 6))
+    return float(round(1.0 + (100.0 / abs(odds)), 6))
+
+
+def _line_shopping_sort_key(market_key: str, side: str, line: Optional[float], price: Optional[float]) -> tuple[float, float]:
+    mk = _normalize_market(market_key)
+    sd = str(side or "").lower()
+    line_value = float(line) if line is not None else 0.0
+    price_value = float(price) if price is not None else -9999.0
+
+    if mk in {"moneyline", "first_half_moneyline"}:
+        return (price_value, 0.0)
+
+    if mk in {"spread", "first_half_spread"}:
+        if sd == "home":
+            return (-line_value, price_value)
+        return (line_value, price_value)
+
+    if mk in {"total", "first_half_total", "team_total"}:
+        if sd == "under":
+            return (line_value, price_value)
+        return (-line_value, price_value)
+
+    return (price_value, 0.0)
+
+
+def _quote_freshness(
+    *,
+    phase: str,
+    market_timestamp: Optional[str],
+    fetched_at: Optional[str],
+    now_utc: Optional[datetime] = None,
+) -> str:
+    phase_key = str(phase or "PREGAME").upper()
+    ts = _parse_iso_for_compare(market_timestamp) or _parse_iso_for_compare(fetched_at)
+    if ts is None:
+        return "STALE"
+
+    now = now_utc.astimezone(timezone.utc) if now_utc is not None else datetime.now(timezone.utc)
+    age_seconds = max(0.0, (now - ts).total_seconds())
+
+    if phase_key == "PREGAME":
+        fresh_seconds = int(os.getenv("PREGAME_QUOTE_FRESH_SECONDS", "300"))
+        stale_seconds = int(os.getenv("PREGAME_QUOTE_STALE_SECONDS", "1800"))
+    else:
+        fresh_seconds = int(os.getenv("LIVE_QUOTE_FRESH_SECONDS", "20"))
+        stale_seconds = int(os.getenv("LIVE_QUOTE_STALE_SECONDS", "90"))
+
+    if age_seconds <= fresh_seconds:
+        return "FRESH"
+    if age_seconds <= stale_seconds:
+        return "AGING"
+    return "STALE"
+
+
+def _quote_playable_status(
+    *,
+    market_key: str,
+    side: str,
+    line: Optional[float],
+    price: Optional[float],
+    playable_to_line: Optional[float],
+    playable_to_price: Optional[float],
+    model_state: Optional[str],
+) -> str:
+    mk = _normalize_market(market_key)
+    sd = str(side or "").lower()
+
+    if mk in {"team_total", "first_half_spread", "first_half_moneyline", "first_half_total"}:
+        if str(model_state or "").upper() in {"RESEARCH_ONLY", "DATA_COLLECTION_ONLY"}:
+            return "UNKNOWN"
+
+    if mk in {"moneyline", "first_half_moneyline"}:
+        if playable_to_price is None or price is None:
+            return "UNKNOWN"
+        return "PLAYABLE" if float(price) >= float(playable_to_price) else "NOT_PLAYABLE"
+
+    if mk in {"spread", "first_half_spread"}:
+        if playable_to_line is None or line is None:
+            return "UNKNOWN"
+        return "PLAYABLE" if float(line) >= float(playable_to_line) else "NOT_PLAYABLE"
+
+    if mk in {"total", "first_half_total", "team_total"}:
+        if playable_to_line is None or line is None:
+            return "UNKNOWN"
+        if sd == "under":
+            return "PLAYABLE" if float(line) >= float(playable_to_line) else "NOT_PLAYABLE"
+        return "PLAYABLE" if float(line) <= float(playable_to_line) else "NOT_PLAYABLE"
+
+    return "UNKNOWN"
 
 
 def _market_period_for_key(market_key: str) -> str:
@@ -1510,6 +1650,371 @@ def live_sia_future_schema_compatibility() -> dict[str, Any]:
         ],
         "identityUnchanged": True,
         "notes": "Live fields are schema-ready but live capture remains disabled.",
+    }
+
+
+def canonical_quote_contract() -> dict[str, Any]:
+    return {
+        "fields": [
+            "eventId",
+            "marketFamily",
+            "period",
+            "phase",
+            "team",
+            "selection",
+            "side",
+            "point",
+            "sportsbook",
+            "bookmakerKey",
+            "americanPrice",
+            "decimalPrice",
+            "marketTimestamp",
+            "fetchedAt",
+            "sourceSnapshotId",
+        ],
+        "moneylinePointPolicy": "DO_NOT_FABRICATE_POINT",
+    }
+
+
+def _canonical_quote_from_snapshot_row(row: sqlite3.Row, *, now_utc: Optional[datetime] = None) -> dict[str, Any]:
+    market_key = _normalize_market(str(row["market_key"] or ""))
+    bookmaker_key = _normalize_bookmaker_key(row["bookmaker_key"] or row["sportsbook"])
+    point = _safe_float(row["line"])
+    if market_key in {"moneyline", "first_half_moneyline"}:
+        point = None
+    price = _safe_float(row["price"])
+
+    return {
+        "eventId": str(row["event_id"] or ""),
+        "marketFamily": str(row["market_family"] or ""),
+        "period": str(row["period"] or ""),
+        "phase": str(row["phase"] or "PREGAME"),
+        "team": str(row["team_code"] or "") or None,
+        "selection": str(row["selection"] or ""),
+        "side": str(row["side"] or "").lower(),
+        "point": point,
+        "sportsbook": _normalize_bookmaker_display(row["sportsbook"], bookmaker_key),
+        "bookmakerKey": bookmaker_key,
+        "americanPrice": price,
+        "decimalPrice": _american_to_decimal(price),
+        "marketTimestamp": str(row["market_timestamp"] or "") or None,
+        "fetchedAt": str(row["fetched_at"] or "") or None,
+        "sourceSnapshotId": str(row["source_snapshot_id"] or "") or None,
+        "modelState": str(row["model_state"] or "") or None,
+        "quoteFreshness": _quote_freshness(
+            phase=str(row["phase"] or "PREGAME"),
+            market_timestamp=str(row["market_timestamp"] or "") or None,
+            fetched_at=str(row["fetched_at"] or "") or None,
+            now_utc=now_utc,
+        ),
+    }
+
+
+def _dedupe_quotes_by_book_latest(quotes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_book: dict[str, dict[str, Any]] = {}
+    for quote in quotes:
+        key = str(quote.get("bookmakerKey") or quote.get("sportsbook") or "")
+        existing = by_book.get(key)
+        if existing is None:
+            by_book[key] = quote
+            continue
+        ex_ts = _parse_iso_for_compare(existing.get("marketTimestamp") or existing.get("fetchedAt"))
+        q_ts = _parse_iso_for_compare(quote.get("marketTimestamp") or quote.get("fetchedAt"))
+        if ex_ts is None and q_ts is not None:
+            by_book[key] = quote
+        elif ex_ts is not None and q_ts is not None and q_ts > ex_ts:
+            by_book[key] = quote
+    return list(by_book.values())
+
+
+def _median_price(prices: list[float]) -> Optional[float]:
+    if not prices:
+        return None
+    vals = sorted(float(p) for p in prices)
+    n = len(vals)
+    mid = n // 2
+    if n % 2 == 1:
+        return float(vals[mid])
+    return float((vals[mid - 1] + vals[mid]) / 2.0)
+
+
+def _quote_depth_metrics(quotes: list[dict[str, Any]], market_key: str, side: str) -> dict[str, Any]:
+    lines = [float(q["point"]) for q in quotes if q.get("point") is not None]
+    prices = [float(q["americanPrice"]) for q in quotes if q.get("americanPrice") is not None]
+    consensus_line, median_line = _consensus_and_median_line(lines)
+    market_consensus_prob = None
+
+    if _normalize_market(market_key) in {"moneyline", "first_half_moneyline"}:
+        probs = [_implied_probability(float(p)) for p in prices]
+        if probs:
+            market_consensus_prob = float(round(sum(probs) / len(probs), 6))
+
+    return {
+        "bookCount": len({str(q.get("bookmakerKey") or "") for q in quotes if str(q.get("bookmakerKey") or "")}),
+        "consensusLine": consensus_line,
+        "medianLine": median_line,
+        "priceRange": None if not prices else [float(min(prices)), float(max(prices))],
+        "medianPrice": _median_price(prices),
+        "marketConsensusProbability": market_consensus_prob,
+        "marketDepthStatus": _market_depth_status(len({str(q.get("bookmakerKey") or "") for q in quotes if str(q.get("bookmakerKey") or "")})),
+    }
+
+
+def _line_shopping_improvement(
+    *,
+    market_key: str,
+    side: str,
+    best_quote: Optional[dict[str, Any]],
+    depth_metrics: dict[str, Any],
+) -> dict[str, Any]:
+    if best_quote is None:
+        return {
+            "lineImprovement": None,
+            "priceImprovement": None,
+            "impliedProbabilityImprovement": None,
+        }
+
+    median_line = depth_metrics.get("medianLine")
+    median_price = depth_metrics.get("medianPrice")
+    best_line = _safe_float(best_quote.get("point"))
+    best_price = _safe_float(best_quote.get("americanPrice"))
+    mk = _normalize_market(market_key)
+    sd = str(side or "").lower()
+
+    line_improvement = None
+    if best_line is not None and median_line is not None:
+        if mk in {"spread", "first_half_spread"}:
+            line_improvement = float(best_line - float(median_line)) if sd != "home" else float(float(median_line) - best_line)
+        elif mk in {"total", "first_half_total", "team_total"}:
+            line_improvement = float(float(median_line) - best_line) if sd != "under" else float(best_line - float(median_line))
+
+    implied_improvement = None
+    if best_price is not None and median_price is not None:
+        implied_improvement = float(round(_implied_probability(float(median_price)) - _implied_probability(float(best_price)), 6))
+
+    return {
+        "lineImprovement": line_improvement,
+        "priceImprovement": None if best_price is None or median_price is None else float(best_price - float(median_price)),
+        "impliedProbabilityImprovement": implied_improvement,
+    }
+
+
+def line_shopping_market_view(
+    *,
+    event_id: str,
+    market_family: str,
+    side: str,
+    period: Optional[str] = None,
+    phase: str = "PREGAME",
+    team_code: Optional[str] = None,
+    selection: Optional[str] = None,
+    playable_to_line: Optional[float] = None,
+    playable_to_price: Optional[float] = None,
+) -> dict[str, Any]:
+    _ensure_schema()
+    con = _connect()
+    query = [
+        "event_id = ?",
+        "market_family = ?",
+        "state_label = 'CURRENT'",
+        "phase = ?",
+        "side = ?",
+    ]
+    params: list[Any] = [str(event_id), str(market_family), str(phase), str(side).lower()]
+    if period is not None:
+        query.append("period = ?")
+        params.append(str(period))
+    if team_code is not None:
+        query.append("ifnull(team_code, '') = ?")
+        params.append(str(team_code).upper())
+    if selection is not None:
+        query.append("selection = ?")
+        params.append(str(selection))
+
+    rows = con.execute(
+        "SELECT * FROM prospective_market_snapshots WHERE " + " AND ".join(query),
+        params,
+    ).fetchall()
+    con.close()
+
+    quotes = _dedupe_quotes_by_book_latest([_canonical_quote_from_snapshot_row(r) for r in rows])
+    if not quotes:
+        return {
+            "status": "NO_QUOTES",
+            "bestMarketQuote": None,
+            "bestPlayableQuote": None,
+            "playableBookCount": 0,
+            "totalBookCount": 0,
+            "marketDepth": {
+                "bookCount": 0,
+                "consensusLine": None,
+                "medianLine": None,
+                "priceRange": None,
+                "marketConsensusProbability": None,
+                "marketDepthStatus": "NO_BOOKS",
+            },
+            "lineShoppingValue": {
+                "lineImprovement": None,
+                "priceImprovement": None,
+                "impliedProbabilityImprovement": None,
+            },
+            "quotes": [],
+        }
+
+    mk = _normalize_market(str(rows[0]["market_key"] if rows else ""))
+    sorted_quotes = sorted(
+        quotes,
+        key=lambda q: _line_shopping_sort_key(mk, str(q.get("side") or ""), _safe_float(q.get("point")), _safe_float(q.get("americanPrice"))),
+        reverse=True,
+    )
+    best_market = sorted_quotes[0]
+
+    playable_quotes: list[dict[str, Any]] = []
+    for quote in sorted_quotes:
+        playable_status = _quote_playable_status(
+            market_key=mk,
+            side=str(quote.get("side") or ""),
+            line=_safe_float(quote.get("point")),
+            price=_safe_float(quote.get("americanPrice")),
+            playable_to_line=playable_to_line,
+            playable_to_price=playable_to_price,
+            model_state=quote.get("modelState"),
+        )
+        quote["playableStatus"] = playable_status
+        if playable_status == "PLAYABLE" and str(quote.get("quoteFreshness") or "") != "STALE":
+            playable_quotes.append(quote)
+
+    best_playable = playable_quotes[0] if playable_quotes else None
+    depth = _quote_depth_metrics(sorted_quotes, mk, side)
+
+    return {
+        "status": "OK" if best_playable is not None else "NO_EXECUTABLE_PRICE",
+        "bestMarketQuote": best_market,
+        "bestPlayableQuote": best_playable,
+        "bestPlayableBook": None if best_playable is None else best_playable.get("sportsbook"),
+        "bestPlayablePoint": None if best_playable is None else best_playable.get("point"),
+        "bestPlayablePrice": None if best_playable is None else best_playable.get("americanPrice"),
+        "playableBookCount": len(playable_quotes),
+        "totalBookCount": len(sorted_quotes),
+        "marketDepth": depth,
+        "lineShoppingValue": _line_shopping_improvement(
+            market_key=mk,
+            side=str(side or ""),
+            best_quote=best_market,
+            depth_metrics=depth,
+        ),
+        "quotes": sorted_quotes,
+    }
+
+
+def sportsbook_coverage_audit(*, max_events: int = 6) -> dict[str, Any]:
+    _ensure_schema()
+    con = _connect()
+    rows = con.execute(
+        """
+        SELECT market_family, event_id, sportsbook
+        FROM prospective_market_snapshots
+        WHERE state_label = 'CURRENT'
+          AND phase = 'PREGAME'
+          AND market_family IN ('SPREAD','MONEYLINE','TOTAL','TEAM_TOTAL','FIRST_HALF_SPREAD','FIRST_HALF_MONEYLINE','FIRST_HALF_TOTAL')
+        """
+    ).fetchall()
+    con.close()
+
+    families = [
+        "SPREAD",
+        "MONEYLINE",
+        "TOTAL",
+        "TEAM_TOTAL",
+        "FIRST_HALF_SPREAD",
+        "FIRST_HALF_MONEYLINE",
+        "FIRST_HALF_TOTAL",
+    ]
+    coverage: dict[str, dict[str, Any]] = {
+        fam: {
+            "events": {},
+            "books": set(),
+        }
+        for fam in families
+    }
+
+    for r in rows:
+        fam = str(r["market_family"] or "")
+        if fam not in coverage:
+            continue
+        event_id = str(r["event_id"] or "")
+        book = _normalize_bookmaker_display(r["sportsbook"], _normalize_bookmaker_key(r["sportsbook"]))
+        coverage[fam]["events"].setdefault(event_id, set()).add(book)
+        coverage[fam]["books"].add(book)
+
+    unique_books = set()
+
+    # Controlled fallback only when local snapshots are insufficient.
+    if (not rows or any(len(coverage[f]["events"]) == 0 for f in families)) and _odds_api_key():
+        status, _, payload = _call_odds_api(["spreads", "h2h", "totals"])
+        if status == 200 and isinstance(payload, list):
+            for event in payload[:max_events]:
+                event_id = str(event.get("id") or "")
+                for book in event.get("bookmakers", []) or []:
+                    bk = _normalize_bookmaker_key(book.get("key"))
+                    display = _normalize_bookmaker_display(book.get("title") or book.get("key"), bk)
+                    for m in book.get("markets", []) or []:
+                        mk = str(m.get("key") or "")
+                        fam = "SPREAD" if mk == "spreads" else "MONEYLINE" if mk == "h2h" else "TOTAL" if mk == "totals" else None
+                        if fam is None:
+                            continue
+                        coverage[fam]["events"].setdefault(event_id, set()).add(display)
+                        coverage[fam]["books"].add(display)
+
+        event_status, _, events_payload = _call_odds_api_events()
+        if event_status == 200 and isinstance(events_payload, list):
+            for event in events_payload[:max_events]:
+                event_id = str(event.get("id") or "")
+                estatus, _, epayload = _call_odds_api_event_odds(event_id, ["team_totals", "spreads_h1", "h2h_h1", "totals_h1"])
+                if estatus != 200 or not isinstance(epayload, dict):
+                    continue
+                for book in epayload.get("bookmakers", []) or []:
+                    bk = _normalize_bookmaker_key(book.get("key"))
+                    display = _normalize_bookmaker_display(book.get("title") or book.get("key"), bk)
+                    for m in book.get("markets", []) or []:
+                        mk = str(m.get("key") or "")
+                        fam = (
+                            "TEAM_TOTAL" if mk == "team_totals"
+                            else "FIRST_HALF_SPREAD" if mk == "spreads_h1"
+                            else "FIRST_HALF_MONEYLINE" if mk == "h2h_h1"
+                            else "FIRST_HALF_TOTAL" if mk == "totals_h1"
+                            else None
+                        )
+                        if fam is None:
+                            continue
+                        coverage[fam]["events"].setdefault(event_id, set()).add(display)
+                        coverage[fam]["books"].add(display)
+
+    metrics: dict[str, Any] = {}
+    for fam in families:
+        events = coverage[fam]["events"]
+        counts = sorted(len(v) for v in events.values())
+        books = sorted(str(b) for b in coverage[fam]["books"])
+        unique_books.update(books)
+
+        avg = float(sum(counts) / len(counts)) if counts else 0.0
+        median = float(counts[len(counts) // 2]) if counts else 0.0
+        if counts and len(counts) % 2 == 0:
+            median = float((counts[len(counts) // 2 - 1] + counts[len(counts) // 2]) / 2.0)
+
+        metrics[fam] = {
+            "eventsSampled": len(events),
+            "averageBooksPerEvent": round(avg, 4),
+            "medianBooksPerEvent": round(median, 4),
+            "minBooks": min(counts) if counts else 0,
+            "maxBooks": max(counts) if counts else 0,
+            "uniqueSportsbooks": books,
+        }
+
+    return {
+        "status": "PASS" if any(metrics[f]["eventsSampled"] > 0 for f in families) else "FAIL",
+        "markets": metrics,
+        "uniqueBooks": sorted(unique_books),
     }
 
 

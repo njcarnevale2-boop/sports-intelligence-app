@@ -10,6 +10,7 @@ from app.config import settings
 from app.services.shadow_markets import (
     append_shadow_outcomes,
     build_shadow_boards,
+    canonical_quote_contract,
     capture_prospective_from_line_board,
     correlation_metadata_design,
     discover_expanded_markets,
@@ -21,8 +22,10 @@ from app.services.shadow_markets import (
     prospective_data_integrity_audit,
     prospective_market_capture_report,
     publish_shadow_snapshot,
+    line_shopping_market_view,
     shadow_performance_report,
     shadow_promotion_gates,
+    sportsbook_coverage_audit,
     universal_candidate_contract_design,
 )
 
@@ -62,6 +65,18 @@ class ProspectiveCaptureRequest(BaseModel):
     season: Optional[int] = None
     week: Optional[int] = None
     includeExpanded: bool = True
+
+
+class LineShoppingMarketViewRequest(BaseModel):
+    eventId: str
+    marketFamily: str
+    side: str
+    period: Optional[str] = None
+    phase: str = "PREGAME"
+    teamCode: Optional[str] = None
+    selection: Optional[str] = None
+    playableToLine: Optional[float] = None
+    playableToPrice: Optional[float] = None
 
 
 @router.post("/boards/build")
@@ -181,6 +196,37 @@ def prospective_integrity(
 def prospective_live_compatibility(x_admin_token: str | None = Header(default=None)):
     _require_admin_token(x_admin_token)
     return live_sia_future_schema_compatibility()
+
+
+@router.get("/line-shopping/coverage-audit")
+def line_shopping_coverage_audit(
+    max_events: int = Query(default=6, ge=1, le=16),
+    x_admin_token: str | None = Header(default=None),
+):
+    _require_admin_token(x_admin_token)
+    return sportsbook_coverage_audit(max_events=max_events)
+
+
+@router.get("/line-shopping/contract")
+def line_shopping_contract(x_admin_token: str | None = Header(default=None)):
+    _require_admin_token(x_admin_token)
+    return canonical_quote_contract()
+
+
+@router.post("/line-shopping/market-view")
+def line_shopping_market(request: LineShoppingMarketViewRequest, x_admin_token: str | None = Header(default=None)):
+    _require_admin_token(x_admin_token)
+    return line_shopping_market_view(
+        event_id=request.eventId,
+        market_family=request.marketFamily,
+        side=request.side,
+        period=request.period,
+        phase=request.phase,
+        team_code=request.teamCode,
+        selection=request.selection,
+        playable_to_line=request.playableToLine,
+        playable_to_price=request.playableToPrice,
+    )
 
 
 @router.get("/discovery/player-props")
