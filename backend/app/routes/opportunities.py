@@ -1,6 +1,7 @@
 from pathlib import Path
 import hashlib
 import json
+from typing import Any
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
@@ -20,6 +21,7 @@ from app.services.weather import WeatherAnalyzer
 from app.services.market_data import market_data_service, select_best_line_row
 from app.services.fair_price import build_fair_price_result
 from app.services.calibration import apply_guarded_isotonic, calibration_info
+from app.services.decision_board import build_decision_board_payload
 from app.services.probability_engine import (
     ev_per_dollar_with_push,
     fair_price_from_win_push,
@@ -33,6 +35,37 @@ router = APIRouter(
     prefix="/api",
     tags=["sports-intelligence"],
 )
+
+
+def _decision_board_line_shopping(opp: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        from app.services.shadow_markets import line_shopping_market_view
+    except Exception:
+        return None
+
+    market_family = str(opp.get("marketType") or "").upper()
+    side = str(opp.get("side") or "").lower()
+    team_code = None
+    if market_family in {"SPREAD", "MONEYLINE"}:
+        if side == "home":
+            team_code = str(opp.get("homeAbbreviation") or "").upper() or None
+        elif side == "away":
+            team_code = str(opp.get("awayAbbreviation") or "").upper() or None
+
+    try:
+        return line_shopping_market_view(
+            event_id=str(opp.get("eventId") or ""),
+            market_family=market_family,
+            side=side,
+            period="FULL_GAME",
+            phase="PREGAME",
+            team_code=team_code,
+            selection=str(opp.get("pick") or "") or None,
+            playable_to_line=safe_float(opp.get("truePlayableTo")) if market_family in {"SPREAD", "TOTAL"} else None,
+            playable_to_price=safe_float(opp.get("worstObservedPlayablePrice")),
+        )
+    except Exception:
+        return None
 
 
 MODEL_ROOT = (
@@ -1232,6 +1265,28 @@ def get_opportunities(
         "rankingVersion": settings.DEFAULT_RANKING_VERSION,
         "qualificationPolicyVersion": settings.DEFAULT_QUALIFICATION_POLICY_VERSION,
         "opportunities": best_rows,
+    }
+
+
+@router.get("/decision-board")
+def get_decision_board(
+    limit: int = Query(default=3, ge=1, le=3),
+    week: int | None = Query(default=None),
+):
+    payload = get_opportunities(limit=500, best_lines_only=True, week=week)
+    opportunities = list(payload.get("opportunities") or [])
+    board = build_decision_board_payload(
+        opportunities,
+        limit=limit,
+        line_shopping_fn=_decision_board_line_shopping,
+    )
+
+    return {
+        "week": payload.get("week"),
+        "dataStatus": payload.get("dataStatus"),
+        "lastUpdated": payload.get("lastUpdated"),
+        "snapshotId": payload.get("snapshotId"),
+        **board,
     }
 
 

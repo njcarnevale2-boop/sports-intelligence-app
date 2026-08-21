@@ -75,15 +75,24 @@ function formatTeamSpread(game: GameCard) {
 }
 
 function compactBetStatus(game: GameCard) {
-  if (game.bestOpportunity) {
-    const prefix = (game.betStatus || "BET").replace("QUALIFIED", "BET");
-    const score = game.sportsIntelligenceScore != null ? ` · ${game.sportsIntelligenceScore.toFixed(1)}` : "";
+  const marketStatus = String(game.marketDataStatus || "").toUpperCase();
+  const recommendation = String(game.recommendation || "").toUpperCase();
+  const qualification = String(game.qualificationStatus || "").toUpperCase();
+  const hasOpportunity = Boolean(game.bestOpportunity);
+
+  if (marketStatus === "UNAVAILABLE" || marketStatus === "STALE") {
+    return "MARKET DATA LIMITED";
+  }
+
+  if (hasOpportunity && qualification === "QUALIFIED") {
     const price = game.bestOpportunityDetail?.price;
     const pricedPick = price != null ? `${game.bestOpportunity} (${price > 0 ? `+${price}` : `${price}`})` : game.bestOpportunity;
-    return `${prefix} · ${pricedPick}${score}`;
+    return `SIA PLAY · ${pricedPick}`;
   }
-  if ((game.betStatus || "").toUpperCase().includes("INSUFFICIENT")) return "PASS · Insufficient data";
-  return "PASS · No meaningful edge";
+
+  if (recommendation.includes("LEAN")) return "LEAN";
+  if (recommendation.includes("WATCH")) return "WATCH";
+  return "NO EDGE";
 }
 
 // ---------------------------------------------------------------------------
