@@ -406,6 +406,79 @@ LINE_SHOPPING_MARKET_KEYS = {
 }
 
 
+PLAYER_PROP_TARGET_MARKETS: dict[str, str] = {
+    "player_pass_yds": "PASSING_YARDS",
+    "player_pass_tds": "PASSING_TD",
+    "player_pass_attempts": "PASSING_ATTEMPTS",
+    "player_pass_completions": "PASSING_COMPLETIONS",
+    "player_pass_interceptions": "PASSING_INTERCEPTIONS",
+    "player_rush_yds": "RUSHING_YARDS",
+    "player_rush_attempts": "RUSHING_ATTEMPTS",
+    "player_reception_yds": "RECEIVING_YARDS",
+    "player_receptions": "RECEPTIONS",
+    "player_anytime_td": "ANYTIME_TD",
+    "player_first_td": "FIRST_TD",
+}
+
+_PLAYER_PROP_TEAM_NAME_TO_CODE: dict[str, str] = {
+    "ARIZONA CARDINALS": "ARI",
+    "ATLANTA FALCONS": "ATL",
+    "BALTIMORE RAVENS": "BAL",
+    "BUFFALO BILLS": "BUF",
+    "CAROLINA PANTHERS": "CAR",
+    "CHICAGO BEARS": "CHI",
+    "CINCINNATI BENGALS": "CIN",
+    "CLEVELAND BROWNS": "CLE",
+    "DALLAS COWBOYS": "DAL",
+    "DENVER BRONCOS": "DEN",
+    "DETROIT LIONS": "DET",
+    "GREEN BAY PACKERS": "GB",
+    "HOUSTON TEXANS": "HOU",
+    "INDIANAPOLIS COLTS": "IND",
+    "JACKSONVILLE JAGUARS": "JAX",
+    "KANSAS CITY CHIEFS": "KC",
+    "LAS VEGAS RAIDERS": "LV",
+    "LOS ANGELES CHARGERS": "LAC",
+    "LOS ANGELES RAMS": "LAR",
+    "MIAMI DOLPHINS": "MIA",
+    "MINNESOTA VIKINGS": "MIN",
+    "NEW ENGLAND PATRIOTS": "NE",
+    "NEW ORLEANS SAINTS": "NO",
+    "NEW YORK GIANTS": "NYG",
+    "NEW YORK JETS": "NYJ",
+    "PHILADELPHIA EAGLES": "PHI",
+    "PITTSBURGH STEELERS": "PIT",
+    "SAN FRANCISCO 49ERS": "SF",
+    "SEATTLE SEAHAWKS": "SEA",
+    "TAMPA BAY BUCCANEERS": "TB",
+    "TENNESSEE TITANS": "TEN",
+    "WASHINGTON COMMANDERS": "WAS",
+}
+
+_PLAYER_PROP_TEAM_ALIASES: dict[str, str] = {
+    "LA": "LAR",
+    "JAC": "JAX",
+}
+
+
+PLAYER_PROP_SUFFIX_TOKENS = {"JR", "SR", "II", "III", "IV", "V"}
+
+
+PLAYER_PROP_GRADING_COLUMN_CANDIDATES: dict[str, list[str]] = {
+    "PASSING_YARDS": ["pass_yds", "passing_yards", "pass_yards"],
+    "PASSING_TD": ["pass_tds", "passing_tds", "pass_td"],
+    "PASSING_ATTEMPTS": ["pass_attempts", "passing_attempts"],
+    "PASSING_COMPLETIONS": ["pass_completions", "passing_completions"],
+    "PASSING_INTERCEPTIONS": ["interceptions", "pass_int", "pass_interceptions"],
+    "RUSHING_YARDS": ["rush_yds", "rushing_yards", "rush_yards"],
+    "RUSHING_ATTEMPTS": ["rush_attempts", "rushing_attempts"],
+    "RECEIVING_YARDS": ["rec_yds", "receiving_yards", "rec_yards"],
+    "RECEPTIONS": ["receptions", "rec"],
+    "ANYTIME_TD": ["touchdowns", "total_tds", "rush_tds", "rec_tds", "pass_tds"],
+    "FIRST_TD": ["first_td_scorer"],
+}
+
+
 PROSPECTIVE_MARKET_FAMILIES = [
     "SPREAD",
     "MONEYLINE",
@@ -533,6 +606,88 @@ def _ensure_schema() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_prospective_market_week
             ON prospective_market_snapshots(season, week, market_family);
+
+        CREATE TABLE IF NOT EXISTS player_prop_market_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_id TEXT NOT NULL UNIQUE,
+            captured_at_utc TEXT NOT NULL,
+
+            season INTEGER,
+            week INTEGER,
+            event_id TEXT NOT NULL,
+            provider_event_id TEXT,
+            commence_time TEXT,
+
+            market_family TEXT NOT NULL,
+            prop_type TEXT NOT NULL,
+            provider_market_key TEXT NOT NULL,
+            period TEXT NOT NULL,
+            phase TEXT NOT NULL,
+            state_label TEXT NOT NULL,
+            closing_status TEXT,
+            closing_cutoff_utc TEXT,
+            closing_max_age_seconds INTEGER,
+
+            provider_player_name TEXT,
+            normalized_player_name TEXT,
+            player_match_status TEXT,
+            provider_player_id TEXT,
+            canonical_player_id TEXT,
+            player_name TEXT,
+            team TEXT,
+            opponent TEXT,
+            position TEXT,
+
+            selection TEXT,
+            side TEXT,
+            point REAL,
+            price REAL,
+
+            sportsbook TEXT,
+            bookmaker_key TEXT,
+
+            market_timestamp TEXT,
+            fetched_at TEXT,
+            source_snapshot_id TEXT,
+
+            book_coverage_count INTEGER,
+            available_books TEXT,
+            market_depth_status TEXT,
+            all_books TEXT,
+            best_market_book TEXT,
+            best_market_point REAL,
+            best_market_price REAL,
+            market_no_vig_probability REAL,
+            no_vig_status TEXT,
+
+            production_eligible INTEGER,
+            cross_market_comparable INTEGER,
+            market_validation_status TEXT,
+            model_available INTEGER,
+            model_validated INTEGER,
+            shadow_recommendation_eligible INTEGER,
+
+            model_version TEXT,
+            probability_engine_version TEXT,
+            calibration_version TEXT,
+            ranking_version TEXT,
+            qualification_policy_version TEXT,
+            git_commit_hash TEXT,
+
+            game_state_timestamp TEXT,
+            game_quarter INTEGER,
+            game_clock TEXT,
+
+            payload_hash TEXT NOT NULL,
+            canonical_payload TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL UNIQUE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_player_prop_snapshots_state
+            ON player_prop_market_snapshots(event_id, prop_type, state_label, phase);
+
+        CREATE INDEX IF NOT EXISTS idx_player_prop_snapshots_week
+            ON player_prop_market_snapshots(season, week, prop_type);
         """
     )
     # Backward-compatible migrations for databases created before research score fields existed.
@@ -691,6 +846,302 @@ def _normalize_bookmaker_display(value: Any, bookmaker_key: str) -> str:
         if compact:
             return compact
     return BOOKMAKER_DISPLAY_NAMES.get(bookmaker_key, bookmaker_key or "UNKNOWN")
+
+
+def _normalize_player_name(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if not text:
+        return ""
+    for token in [".", ",", "'", "-", "_"]:
+        text = text.replace(token, " ")
+    parts = [p for p in text.split() if p]
+    if parts and parts[-1] in PLAYER_PROP_SUFFIX_TOKENS:
+        parts = parts[:-1]
+    return " ".join(parts)
+
+
+def _normalize_player_prop_team_code(value: Any) -> Optional[str]:
+    raw = str(value or "").strip().upper()
+    if not raw:
+        return None
+    if raw in _PLAYER_PROP_TEAM_NAME_TO_CODE:
+        return _PLAYER_PROP_TEAM_NAME_TO_CODE[raw]
+    return _PLAYER_PROP_TEAM_ALIASES.get(raw, raw)
+
+
+def _dedupe_identity_candidates(candidates: list[dict[str, Optional[str]]]) -> list[dict[str, Optional[str]]]:
+    by_player_id: dict[str, dict[str, Optional[str]]] = {}
+    without_id: list[dict[str, Optional[str]]] = []
+    for c in candidates:
+        pid = str(c.get("playerId") or "")
+        if pid:
+            by_player_id.setdefault(pid, c)
+        else:
+            without_id.append(c)
+    return list(by_player_id.values()) + without_id
+
+
+def _load_canonical_player_index() -> list[dict[str, Optional[str]]]:
+    try:
+        import duckdb  # type: ignore
+    except Exception:
+        return []
+
+    db = MODEL_ROOT / "database" / "nfl_model.duckdb"
+    if not db.exists():
+        return []
+
+    con = duckdb.connect(str(db), read_only=True)
+    try:
+        cols = {
+            str(r[1]).lower()
+            for r in con.execute("PRAGMA table_info('player_pregame_features')").fetchall()
+            if len(r) >= 2
+        }
+        if "player_name" not in cols or "player_id" not in cols:
+            return []
+
+        team_expr = "cast(team as varchar) as team" if "team" in cols else "NULL as team"
+        pos_expr = "cast(position as varchar) as position" if "position" in cols else "NULL as position"
+        rows = con.execute(
+            f"""
+            SELECT DISTINCT
+                cast(player_id as varchar) as player_id,
+                cast(player_name as varchar) as player_name,
+                {team_expr},
+                {pos_expr}
+            FROM player_pregame_features
+            WHERE player_id is not null and player_name is not null
+            """
+        ).fetchall()
+    finally:
+        con.close()
+
+    out: list[dict[str, Optional[str]]] = []
+    for pid, pname, team, pos in rows:
+        out.append(
+            {
+                "playerId": str(pid),
+                "playerName": str(pname),
+                "normalizedPlayerName": _normalize_player_name(pname),
+                "team": str(team or "").upper() or None,
+                "position": str(pos or "").upper() or None,
+            }
+        )
+    return out
+
+
+def _resolve_player_identity(
+    provider_player_name: str,
+    team: Optional[str],
+    provider_player_id: Optional[str] = None,
+    event_team_codes: Optional[set[str]] = None,
+) -> dict[str, Any]:
+    candidates = _load_canonical_player_index()
+    provider = str(provider_player_name or "").strip()
+    normalized = _normalize_player_name(provider)
+    team_key = _normalize_player_prop_team_code(team)
+    provider_pid = str(provider_player_id or "").strip() or None
+    evt_teams = {
+        _normalize_player_prop_team_code(code)
+        for code in (event_team_codes or set())
+        if _normalize_player_prop_team_code(code)
+    }
+
+    if not provider:
+        return {
+            "providerPlayerName": provider,
+            "normalizedPlayerName": normalized,
+            "matchStatus": "UNMATCHED",
+            "canonicalPlayerId": None,
+            "canonicalPlayerName": None,
+            "position": None,
+            "team": team_key,
+            "opponent": None,
+            "reason": "EMPTY_PROVIDER_NAME",
+        }
+
+    if provider_pid:
+        id_hits = _dedupe_identity_candidates([
+            c for c in candidates
+            if str(c.get("playerId") or "") == provider_pid
+        ])
+        if len(id_hits) == 1:
+            hit = id_hits[0]
+            return {
+                "providerPlayerName": provider,
+                "normalizedPlayerName": normalized,
+                "matchStatus": "EXACT",
+                "canonicalPlayerId": hit.get("playerId"),
+                "canonicalPlayerName": hit.get("playerName"),
+                "position": hit.get("position"),
+                "team": team_key or hit.get("team"),
+                "opponent": None,
+                "reason": "PROVIDER_PLAYER_ID",
+            }
+
+    exact_hits = _dedupe_identity_candidates([
+        c for c in candidates
+        if str(c.get("playerName") or "").upper() == provider.upper()
+        and (team_key is None or c.get("team") == team_key)
+    ])
+    if len(exact_hits) == 1:
+        hit = exact_hits[0]
+        return {
+            "providerPlayerName": provider,
+            "normalizedPlayerName": normalized,
+            "matchStatus": "EXACT",
+            "canonicalPlayerId": hit.get("playerId"),
+            "canonicalPlayerName": hit.get("playerName"),
+            "position": hit.get("position"),
+            "team": team_key or hit.get("team"),
+            "opponent": None,
+            "reason": "EXACT_NAME",
+        }
+    if len(exact_hits) > 1 and evt_teams:
+        event_hits = _dedupe_identity_candidates([
+            c for c in exact_hits
+            if str(c.get("team") or "") in evt_teams
+        ])
+        if len(event_hits) == 1:
+            hit = event_hits[0]
+            return {
+                "providerPlayerName": provider,
+                "normalizedPlayerName": normalized,
+                "matchStatus": "EXACT",
+                "canonicalPlayerId": hit.get("playerId"),
+                "canonicalPlayerName": hit.get("playerName"),
+                "position": hit.get("position"),
+                "team": team_key or hit.get("team"),
+                "opponent": None,
+                "reason": "EXACT_NAME_EVENT_TEAM_CONTEXT",
+            }
+    if len(exact_hits) > 1:
+        return {
+            "providerPlayerName": provider,
+            "normalizedPlayerName": normalized,
+            "matchStatus": "AMBIGUOUS",
+            "canonicalPlayerId": None,
+            "canonicalPlayerName": None,
+            "position": None,
+            "team": team_key,
+            "opponent": None,
+            "reason": "DUPLICATE_EXACT_NAME",
+        }
+
+    normalized_hits = _dedupe_identity_candidates([
+        c for c in candidates
+        if str(c.get("normalizedPlayerName") or "") == normalized
+        and (team_key is None or c.get("team") == team_key)
+    ])
+    if len(normalized_hits) == 1:
+        hit = normalized_hits[0]
+        return {
+            "providerPlayerName": provider,
+            "normalizedPlayerName": normalized,
+            "matchStatus": "NORMALIZED",
+            "canonicalPlayerId": hit.get("playerId"),
+            "canonicalPlayerName": hit.get("playerName"),
+            "position": hit.get("position"),
+            "team": team_key or hit.get("team"),
+            "opponent": None,
+            "reason": "NORMALIZED_NAME",
+        }
+    if len(normalized_hits) > 1 and evt_teams:
+        event_hits = _dedupe_identity_candidates([
+            c for c in normalized_hits
+            if str(c.get("team") or "") in evt_teams
+        ])
+        if len(event_hits) == 1:
+            hit = event_hits[0]
+            return {
+                "providerPlayerName": provider,
+                "normalizedPlayerName": normalized,
+                "matchStatus": "NORMALIZED",
+                "canonicalPlayerId": hit.get("playerId"),
+                "canonicalPlayerName": hit.get("playerName"),
+                "position": hit.get("position"),
+                "team": team_key or hit.get("team"),
+                "opponent": None,
+                "reason": "NORMALIZED_NAME_EVENT_TEAM_CONTEXT",
+            }
+    if len(normalized_hits) > 1:
+        return {
+            "providerPlayerName": provider,
+            "normalizedPlayerName": normalized,
+            "matchStatus": "AMBIGUOUS",
+            "canonicalPlayerId": None,
+            "canonicalPlayerName": None,
+            "position": None,
+            "team": team_key,
+            "opponent": None,
+            "reason": "DUPLICATE_NORMALIZED_NAME",
+        }
+
+    return {
+        "providerPlayerName": provider,
+        "normalizedPlayerName": normalized,
+        "matchStatus": "UNMATCHED",
+        "canonicalPlayerId": None,
+        "canonicalPlayerName": None,
+        "position": None,
+        "team": team_key,
+        "opponent": None,
+        "reason": "NO_CANONICAL_MATCH",
+    }
+
+
+def _player_prop_sort_key(side: Optional[str], point: Optional[float], price: Optional[float]) -> tuple[float, float]:
+    sd = str(side or "").upper()
+    p = float(point) if point is not None else 0.0
+    pr = float(price) if price is not None else -9999.0
+    if sd == "OVER":
+        return (-p, pr)
+    if sd == "UNDER":
+        return (p, pr)
+    return (pr, 0.0)
+
+
+def _player_prop_two_sided_no_vig(quotes: list[dict[str, Any]], target: dict[str, Any]) -> tuple[Optional[float], str]:
+    side = str(target.get("side") or "").upper()
+    if side not in {"OVER", "UNDER"}:
+        return None, "NOT_APPLICABLE"
+
+    point = _safe_float(target.get("point"))
+    book = str(target.get("bookmakerKey") or "")
+    ts = str(target.get("marketTimestamp") or "")
+    if point is None or not book or not ts:
+        return None, "UNAVAILABLE_TWO_SIDED_MARKET"
+
+    over = next(
+        (
+            q for q in quotes
+            if str(q.get("side") or "").upper() == "OVER"
+            and _safe_float(q.get("point")) is not None
+            and abs(float(_safe_float(q.get("point"))) - float(point)) < 1e-9
+            and str(q.get("bookmakerKey") or "") == book
+            and str(q.get("marketTimestamp") or "") == ts
+            and q.get("price") is not None
+        ),
+        None,
+    )
+    under = next(
+        (
+            q for q in quotes
+            if str(q.get("side") or "").upper() == "UNDER"
+            and _safe_float(q.get("point")) is not None
+            and abs(float(_safe_float(q.get("point"))) - float(point)) < 1e-9
+            and str(q.get("bookmakerKey") or "") == book
+            and str(q.get("marketTimestamp") or "") == ts
+            and q.get("price") is not None
+        ),
+        None,
+    )
+    if not over or not under:
+        return None, "UNAVAILABLE_TWO_SIDED_MARKET"
+
+    over_nv, under_nv = _devig_two_way(float(over["price"]), float(under["price"]))
+    return (over_nv if side == "OVER" else under_nv), "AVAILABLE_TWO_SIDED_MARKET"
 
 
 def _american_to_decimal(american_odds: Optional[float]) -> Optional[float]:
@@ -4360,177 +4811,906 @@ def ingest_expanded_market_snapshots(discovery: Optional[dict[str, Any]] = None)
 
 
 def discover_player_props() -> dict[str, Any]:
-    keys = [
-        "player_pass_yds",
-        "player_pass_tds",
-        "player_pass_attempts",
-        "player_pass_completions",
-        "player_pass_interceptions",
-        "player_rush_yds",
-        "player_rush_attempts",
-        "player_reception_yds",
-        "player_receptions",
-        "player_anytime_td",
-    ]
-
-    results = []
-    quota = {}
+    sample_size = max(1, int(os.getenv("PLAYER_PROP_EVENT_SAMPLE_SIZE", "2")))
+    requested_keys = list(PLAYER_PROP_TARGET_MARKETS.keys())
     request_count = 0
+    fallback_key_requests = 0
+    quota = {}
+    events_queried = 0
     sampled_players: list[dict[str, Any]] = []
 
-    for key in keys:
-        request_count += 1
-        try:
-            status, headers, payload = _call_odds_api([key])
-            quota = {
-                "remaining": headers.get("x-requests-remaining"),
-                "used": headers.get("x-requests-used"),
-                "last": headers.get("x-requests-last"),
-            }
-            summary = _summarize_provider_market_response(key, payload)
+    per_market: dict[str, dict[str, Any]] = {}
+    for key in requested_keys:
+        per_market[key] = {
+            "providerKey": key,
+            "propType": PLAYER_PROP_TARGET_MARKETS[key],
+            "books": set(),
+            "events": set(),
+            "outcomes": 0,
+            "lineSupplied": False,
+            "priceSupplied": False,
+            "playerNameSupplied": False,
+            "timestampSupplied": False,
+            "sawSuccess": False,
+            "sawMarket": False,
+            "invalid": False,
+            "quotaBlocked": False,
+            "requestFailed": False,
+            "unknown": False,
+        }
 
-            has_ou_price = False
-            player_formats = set()
-            books = set()
-            has_player_team_meta = False
-            event_map = set()
-            if isinstance(payload, list):
-                for event in payload:
-                    if event.get("id"):
-                        event_map.add(str(event.get("id")))
-                    for book in event.get("bookmakers", []) or []:
-                        books.add(str(book.get("key") or ""))
+    extra_markets: set[str] = set()
+    event_status, event_headers, events_payload = _call_odds_api_events()
+    if event_headers:
+        quota = {
+            "remaining": event_headers.get("x-requests-remaining"),
+            "used": event_headers.get("x-requests-used"),
+            "last": event_headers.get("x-requests-last"),
+        }
+
+    event_samples: list[dict[str, Any]] = []
+    event_payload_map: dict[str, Any] = {}
+    if event_status == 200 and isinstance(events_payload, list):
+        event_samples = events_payload[:sample_size]
+
+    for event in event_samples:
+        event_id = str(event.get("id") or "")
+        if not event_id:
+            continue
+        events_queried += 1
+        request_count += 1
+        status, headers, payload = _call_odds_api_event_odds(event_id, requested_keys)
+        quota = {
+            "remaining": headers.get("x-requests-remaining"),
+            "used": headers.get("x-requests-used"),
+            "last": headers.get("x-requests-last"),
+        }
+
+        if status == 429:
+            for key in requested_keys:
+                per_market[key]["quotaBlocked"] = True
+            continue
+
+        if status == 422 and isinstance(payload, dict) and payload.get("error_code") == "INVALID_MARKET":
+            # Controlled fallback: probe each key on this event to classify unsupported keys.
+            for key in requested_keys:
+                fallback_key_requests += 1
+                request_count += 1
+                s2, h2, p2 = _call_odds_api_event_odds(event_id, [key])
+                quota = {
+                    "remaining": h2.get("x-requests-remaining"),
+                    "used": h2.get("x-requests-used"),
+                    "last": h2.get("x-requests-last"),
+                }
+                if s2 == 200 and isinstance(p2, dict):
+                    event_payload_map[f"{event_id}:{key}"] = p2
+                    per_market[key]["sawSuccess"] = True
+                    for book in p2.get("bookmakers", []) or []:
+                        book_key = _normalize_bookmaker_key(book.get("key"))
+                        has_ts = bool(book.get("last_update"))
                         for market in book.get("markets", []) or []:
                             if str(market.get("key") or "") != key:
                                 continue
+                            per_market[key]["sawMarket"] = True
+                            if market.get("last_update"):
+                                has_ts = True
+                            if has_ts:
+                                per_market[key]["timestampSupplied"] = True
+                            per_market[key]["books"].add(book_key)
+                            per_market[key]["events"].add(event_id)
                             for outcome in market.get("outcomes", []) or []:
-                                name = str(outcome.get("name") or "").strip()
-                                if name:
-                                    player_formats.add(name)
-                                if outcome.get("description"):
-                                    has_player_team_meta = True
-                                if outcome.get("price") is not None:
-                                    has_ou_price = True
-                                if len(sampled_players) < 100:
+                                per_market[key]["outcomes"] += 1
+                                if _safe_float(outcome.get("point")) is not None:
+                                    per_market[key]["lineSupplied"] = True
+                                if _safe_float(outcome.get("price")) is not None:
+                                    per_market[key]["priceSupplied"] = True
+                                player_name = str(outcome.get("description") or outcome.get("name") or "").strip()
+                                if player_name:
+                                    per_market[key]["playerNameSupplied"] = True
+                                if len(sampled_players) < 200:
                                     sampled_players.append(
                                         {
                                             "providerMarketKey": key,
-                                            "eventId": str(event.get("id") or ""),
-                                            "book": str(book.get("key") or ""),
-                                            "name": name,
-                                            "description": str(outcome.get("description") or ""),
+                                            "eventId": event_id,
+                                            "eventAwayTeam": str(event.get("away_team") or ""),
+                                            "eventHomeTeam": str(event.get("home_team") or ""),
+                                            "book": book_key,
+                                            "name": str(outcome.get("name") or "").strip(),
+                                            "description": str(outcome.get("description") or "").strip(),
+                                            "team": str(outcome.get("team") or ""),
+                                            "providerPlayerId": str(outcome.get("player_id") or "") or None,
                                             "line": _safe_float(outcome.get("point")),
                                             "price": _safe_float(outcome.get("price")),
+                                            "marketTimestamp": str(market.get("last_update") or book.get("last_update") or ""),
                                         }
                                     )
+                elif s2 == 422 and isinstance(p2, dict) and p2.get("error_code") == "INVALID_MARKET":
+                    per_market[key]["invalid"] = True
+                elif s2 == 429:
+                    per_market[key]["quotaBlocked"] = True
+                elif s2 >= 500 or s2 == 0:
+                    per_market[key]["requestFailed"] = True
+                else:
+                    per_market[key]["unknown"] = True
+            continue
 
-            results.append(
-                {
-                    "marketKey": key,
-                    "providerAvailability": status == 200 and summary["providerAvailability"],
-                    "availableBooks": len(books) if books else summary["bookCoverage"],
-                    "lineExists": summary["lineAvailability"],
-                    "overUnderPriceExists": has_ou_price,
-                    "playerNameFormatExamples": sorted(list(player_formats))[:10],
-                    "playerTeamMetadataPresent": has_player_team_meta,
-                    "eventMappingCount": len(event_map) if event_map else summary["eventCoverage"],
-                    "status": status,
-                }
-            )
-        except Exception as exc:
-            results.append(
-                {
-                    "marketKey": key,
-                    "providerAvailability": False,
-                    "availableBooks": 0,
-                    "lineExists": False,
-                    "overUnderPriceExists": False,
-                    "playerNameFormatExamples": [],
-                    "playerTeamMetadataPresent": False,
-                    "eventMappingCount": 0,
-                    "status": "EXCEPTION",
-                    "error": str(exc),
-                }
-            )
+        if status != 200 or not isinstance(payload, dict):
+            for key in requested_keys:
+                if status == 429:
+                    per_market[key]["quotaBlocked"] = True
+                elif status >= 500 or status == 0:
+                    per_market[key]["requestFailed"] = True
+                else:
+                    per_market[key]["unknown"] = True
+            continue
+
+        event_payload_map[event_id] = payload
+        for book in payload.get("bookmakers", []) or []:
+            book_key = _normalize_bookmaker_key(book.get("key"))
+            base_ts = bool(book.get("last_update"))
+            for market in book.get("markets", []) or []:
+                mk = str(market.get("key") or "")
+                if mk.startswith("player_") and mk not in PLAYER_PROP_TARGET_MARKETS:
+                    extra_markets.add(mk)
+                if mk not in per_market:
+                    continue
+                m = per_market[mk]
+                m["sawSuccess"] = True
+                m["sawMarket"] = True
+                m["books"].add(book_key)
+                m["events"].add(event_id)
+                if base_ts or market.get("last_update"):
+                    m["timestampSupplied"] = True
+                for outcome in market.get("outcomes", []) or []:
+                    m["outcomes"] += 1
+                    if _safe_float(outcome.get("point")) is not None:
+                        m["lineSupplied"] = True
+                    if _safe_float(outcome.get("price")) is not None:
+                        m["priceSupplied"] = True
+                    player_name = str(outcome.get("description") or outcome.get("name") or "").strip()
+                    if player_name:
+                        m["playerNameSupplied"] = True
+                    if len(sampled_players) < 200:
+                        sampled_players.append(
+                            {
+                                "providerMarketKey": mk,
+                                "eventId": event_id,
+                                "eventAwayTeam": str(event.get("away_team") or ""),
+                                "eventHomeTeam": str(event.get("home_team") or ""),
+                                "book": book_key,
+                                "name": str(outcome.get("name") or "").strip(),
+                                "description": str(outcome.get("description") or "").strip(),
+                                "team": str(outcome.get("team") or ""),
+                                "providerPlayerId": str(outcome.get("player_id") or "") or None,
+                                "line": _safe_float(outcome.get("point")),
+                                "price": _safe_float(outcome.get("price")),
+                                "marketTimestamp": str(market.get("last_update") or book.get("last_update") or ""),
+                            }
+                        )
+
+    markets_out: list[dict[str, Any]] = []
+    for key in requested_keys:
+        m = per_market[key]
+        classification = "UNKNOWN"
+        if m["invalid"]:
+            classification = "PROVIDER_UNSUPPORTED"
+        elif m["quotaBlocked"]:
+            classification = "QUOTA_BLOCKED"
+        elif m["requestFailed"]:
+            classification = "REQUEST_FAILED"
+        elif m["sawMarket"] and m["outcomes"] > 0:
+            classification = "AVAILABLE"
+        elif m["sawSuccess"]:
+            classification = "CURRENTLY_NO_MARKET_DATA"
+        elif m["unknown"]:
+            classification = "UNKNOWN"
+
+        markets_out.append(
+            {
+                "providerKey": key,
+                "propType": m["propType"],
+                "classification": classification,
+                "availability": classification == "AVAILABLE",
+                "bookCount": len(m["books"]),
+                "outcomeCount": int(m["outcomes"]),
+                "lineSupplied": bool(m["lineSupplied"]),
+                "priceSupplied": bool(m["priceSupplied"]),
+                "playerNameSupplied": bool(m["playerNameSupplied"]),
+                "timestampSupplied": bool(m["timestampSupplied"]),
+                "eventsSampled": len(m["events"]),
+            }
+        )
+
+    events_count = max(1, events_queried)
+    estimated_credits_per_event = float(round(request_count / events_count, 4))
+    estimated_full_slate_cost = float(round(estimated_credits_per_event * 16.0, 2))
 
     return {
-        "markets": results,
+        "status": "PASS" if any(m["classification"] == "AVAILABLE" for m in markets_out) else "FAIL",
+        "markets": markets_out,
+        "otherPropMarkets": sorted(extra_markets),
         "sampledPlayers": sampled_players,
-        "estimatedRequestCost": request_count,
+        "eventSamples": [
+            {
+                "eventId": str(e.get("id") or ""),
+                "awayTeam": str(e.get("away_team") or ""),
+                "homeTeam": str(e.get("home_team") or ""),
+                "commenceTime": str(e.get("commence_time") or ""),
+            }
+            for e in event_samples
+            if str(e.get("id") or "")
+        ],
+        "eventPayloadById": event_payload_map,
         "quota": quota,
+        "quotaTelemetry": {
+            "requestsRemaining": quota.get("remaining"),
+            "requestsUsed": quota.get("used"),
+            "lastRequestCost": quota.get("last"),
+            "eventsQueried": events_queried,
+            "marketsRequested": len(requested_keys),
+            "requestsMade": request_count,
+            "fallbackKeyRequests": fallback_key_requests,
+            "estimatedCreditsPerEvent": estimated_credits_per_event,
+            "estimatedFullSlateCost": estimated_full_slate_cost,
+        },
+        "recommendedCollectionCadence": "Every 30 minutes pregame, tighten to every 10 minutes inside 90 minutes to kickoff.",
     }
 
 
 def player_identity_mapping_plan(sampled_players: list[dict[str, Any]]) -> dict[str, Any]:
-    import duckdb  # type: ignore
+    identity_keys: set[tuple[str, Optional[str], Optional[str], tuple[str, ...]]] = set()
+    resolution_details: list[dict[str, Any]] = []
+    for p in sampled_players:
+        raw = str(p.get("description") or p.get("name") or "").strip()
+        if not raw:
+            continue
+        team = _normalize_player_prop_team_code(p.get("team"))
+        event_team_codes = {
+            _normalize_player_prop_team_code(p.get("eventAwayTeam")),
+            _normalize_player_prop_team_code(p.get("eventHomeTeam")),
+        }
+        event_team_codes = {t for t in event_team_codes if t}
+        provider_player_id = str(p.get("providerPlayerId") or "").strip() or None
+        identity_keys.add((raw, team, provider_player_id, tuple(sorted(event_team_codes))))
+
+    exact = 0
+    normalized = 0
+    ambiguous = 0
+    unmatched = 0
+    ambiguous_examples: list[dict[str, Any]] = []
+    unmatched_players: list[str] = []
+
+    for raw, team, provider_player_id, event_teams_tuple in sorted(identity_keys):
+        event_team_codes = set(event_teams_tuple)
+        resolved = _resolve_player_identity(
+            raw,
+            team,
+            provider_player_id=provider_player_id,
+            event_team_codes=event_team_codes,
+        )
+        status = str(resolved.get("matchStatus") or "UNMATCHED")
+        if status == "EXACT":
+            exact += 1
+        elif status == "NORMALIZED":
+            normalized += 1
+        elif status == "AMBIGUOUS":
+            ambiguous += 1
+            if len(ambiguous_examples) < 20:
+                ambiguous_examples.append(
+                    {
+                        "providerPlayerName": raw,
+                        "normalizedPlayerName": resolved.get("normalizedPlayerName"),
+                        "team": team,
+                        "reason": resolved.get("reason"),
+                    }
+                )
+        else:
+            unmatched += 1
+            if len(unmatched_players) < 50:
+                unmatched_players.append(raw)
+
+        resolution_details.append(
+            {
+                "providerPlayerName": raw,
+                "normalizedPlayerName": resolved.get("normalizedPlayerName"),
+                "matchStatus": resolved.get("matchStatus"),
+                "reason": resolved.get("reason"),
+            }
+        )
+
+    total = max(1, len(identity_keys))
+    return {
+        "totalDistinctProviderPlayers": len(identity_keys),
+        "exactMatchRate": exact / total,
+        "normalizedMatchRate": normalized / total,
+        "ambiguousRate": ambiguous / total,
+        "unmatchedRate": unmatched / total,
+        "ambiguousCount": ambiguous,
+        "unmatchedCount": unmatched,
+        "ambiguousExamples": ambiguous_examples,
+        "unmatchedPlayers": unmatched_players,
+        "resolutionDetails": resolution_details,
+        "feasible": ambiguous == 0,
+    }
+
+
+def player_prop_market_contract() -> dict[str, Any]:
+    return {
+        "marketFamily": "PLAYER_PROP",
+        "period": "FULL_GAME",
+        "phase": "PREGAME",
+        "fields": [
+            "eventId",
+            "providerEventId",
+            "marketFamily",
+            "propType",
+            "period",
+            "phase",
+            "playerId",
+            "playerName",
+            "team",
+            "side",
+            "point",
+            "price",
+            "sportsbook",
+            "bookmakerKey",
+            "marketTimestamp",
+            "fetchedAt",
+            "sourceSnapshotId",
+            "productionEligible",
+            "crossMarketComparable",
+            "marketValidationStatus",
+        ],
+        "modelFields": {
+            "modelAvailable": False,
+            "modelValidated": False,
+            "shadowRecommendationEligible": False,
+            "productionEligible": False,
+            "crossMarketComparable": False,
+            "marketValidationStatus": "DATA_COLLECTION_ONLY",
+        },
+    }
+
+
+def _player_prop_opening_exists(con: sqlite3.Connection, row: dict[str, Any]) -> bool:
+    found = con.execute(
+        """
+        SELECT 1
+        FROM player_prop_market_snapshots
+        WHERE event_id = ?
+          AND prop_type = ?
+          AND normalized_player_name = ?
+          AND ifnull(side, '') = ?
+          AND ifnull(point, 0.0) = ifnull(?, 0.0)
+          AND sportsbook = ?
+          AND phase = 'PREGAME'
+          AND state_label = 'OPENING'
+        LIMIT 1
+        """,
+        [
+            row.get("eventId"),
+            row.get("propType"),
+            row.get("normalizedPlayerName"),
+            row.get("side") or "",
+            row.get("point"),
+            row.get("sportsbook"),
+        ],
+    ).fetchone()
+    return found is not None
+
+
+def _persist_player_prop_state_row(
+    con: sqlite3.Connection,
+    *,
+    row: dict[str, Any],
+    state_label: str,
+    closing_status: Optional[str],
+    closing_cutoff_utc: Optional[str],
+    closing_max_age_seconds: Optional[int],
+) -> bool:
+    payload = dict(row)
+    payload["stateLabel"] = state_label
+    payload["closingStatus"] = closing_status
+    payload["closingCutoffUTC"] = closing_cutoff_utc
+    payload["closingMaxAgeSeconds"] = closing_max_age_seconds
+    canonical = _canonical_json(payload)
+    payload_hash = _sha256(canonical)
+    idem = _sha256(f"player-prop:{payload_hash}")
+    snapshot_id = str(uuid.uuid5(uuid.NAMESPACE_URL, idem))
+
+    values = [
+        snapshot_id,
+        _utc_now_iso(),
+        row.get("season"),
+        row.get("week"),
+        row.get("eventId"),
+        row.get("providerEventId"),
+        row.get("commenceTime"),
+        "PLAYER_PROP",
+        row.get("propType"),
+        row.get("providerMarketKey"),
+        row.get("period") or "FULL_GAME",
+        row.get("phase") or "PREGAME",
+        state_label,
+        closing_status,
+        closing_cutoff_utc,
+        closing_max_age_seconds,
+        row.get("providerPlayerName"),
+        row.get("normalizedPlayerName"),
+        row.get("playerMatchStatus"),
+        row.get("providerPlayerId"),
+        row.get("canonicalPlayerId"),
+        row.get("playerName"),
+        row.get("team"),
+        row.get("opponent"),
+        row.get("position"),
+        row.get("selection"),
+        row.get("side"),
+        row.get("point"),
+        row.get("price"),
+        row.get("sportsbook"),
+        row.get("bookmakerKey"),
+        row.get("marketTimestamp"),
+        row.get("fetchedAt"),
+        row.get("sourceSnapshotId"),
+        row.get("bookCoverageCount"),
+        json.dumps(row.get("availableBooks") or [], separators=(",", ":")),
+        row.get("marketDepthStatus"),
+        json.dumps(row.get("allBooks") or [], separators=(",", ":")),
+        row.get("bestMarketBook"),
+        row.get("bestMarketPoint"),
+        row.get("bestMarketPrice"),
+        row.get("marketNoVigProbability"),
+        row.get("noVigStatus"),
+        0,
+        0,
+        "DATA_COLLECTION_ONLY",
+        0,
+        0,
+        0,
+        settings.DEFAULT_MODEL_VERSION,
+        settings.DEFAULT_PROBABILITY_ENGINE_VERSION,
+        settings.DEFAULT_CALIBRATION_VERSION,
+        settings.DEFAULT_RANKING_VERSION,
+        settings.DEFAULT_QUALIFICATION_POLICY_VERSION,
+        settings.DEFAULT_GIT_COMMIT_HASH,
+        row.get("gameStateTimestamp"),
+        row.get("gameQuarter"),
+        row.get("gameClock"),
+        payload_hash,
+        canonical,
+        idem,
+    ]
+
+    before = con.total_changes
+    con.execute(
+        f"""
+        INSERT OR IGNORE INTO player_prop_market_snapshots (
+            snapshot_id, captured_at_utc,
+            season, week, event_id, provider_event_id, commence_time,
+            market_family, prop_type, provider_market_key,
+            period, phase, state_label,
+            closing_status, closing_cutoff_utc, closing_max_age_seconds,
+            provider_player_name, normalized_player_name, player_match_status,
+            provider_player_id, canonical_player_id,
+            player_name, team, opponent, position,
+            selection, side, point, price,
+            sportsbook, bookmaker_key,
+            market_timestamp, fetched_at, source_snapshot_id,
+            book_coverage_count, available_books, market_depth_status, all_books,
+            best_market_book, best_market_point, best_market_price,
+            market_no_vig_probability, no_vig_status,
+            production_eligible, cross_market_comparable, market_validation_status,
+            model_available, model_validated, shadow_recommendation_eligible,
+            model_version, probability_engine_version, calibration_version,
+            ranking_version, qualification_policy_version, git_commit_hash,
+            game_state_timestamp, game_quarter, game_clock,
+            payload_hash, canonical_payload, idempotency_key
+        ) VALUES ({','.join(['?'] * len(values))})
+        """,
+        values,
+    )
+    return con.total_changes > before
+
+
+def ingest_player_prop_market_snapshots(discovery: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    _ensure_schema()
+    if discovery is None:
+        discovery = discover_player_props()
+
+    payload_by_event = dict(discovery.get("eventPayloadById") or {})
+    event_samples = list(discovery.get("eventSamples") or [])
+    if not payload_by_event and event_samples:
+        requested = list(PLAYER_PROP_TARGET_MARKETS.keys())
+        for e in event_samples:
+            event_id = str(e.get("eventId") or "")
+            if not event_id:
+                continue
+            status, _, payload = _call_odds_api_event_odds(event_id, requested)
+            if status == 200 and isinstance(payload, dict):
+                payload_by_event[event_id] = payload
+
+    rows_received = 0
+    current_inserted = 0
+    opening_inserted = 0
+    closing_inserted = 0
+    stale_rejected = 0
+    post_kickoff_rejected = 0
+    duplicates = 0
+
+    con = _connect()
+
+    def _merge_fallback_event_payload(event_id: str) -> Optional[dict[str, Any]]:
+        merged_books: dict[str, dict[str, Any]] = {}
+        prefix = f"{event_id}:"
+        for key, payload in payload_by_event.items():
+            if not str(key).startswith(prefix) or not isinstance(payload, dict):
+                continue
+            for book in payload.get("bookmakers", []) or []:
+                book_key = _normalize_bookmaker_key(book.get("key"))
+                if not book_key:
+                    continue
+                entry = merged_books.get(book_key)
+                if entry is None:
+                    entry = {
+                        "key": book.get("key"),
+                        "title": book.get("title"),
+                        "last_update": book.get("last_update"),
+                        "markets": [],
+                    }
+                    merged_books[book_key] = entry
+                if book.get("last_update"):
+                    entry["last_update"] = book.get("last_update")
+
+                existing_market_keys = {
+                    str(m.get("key") or "")
+                    for m in (entry.get("markets") or [])
+                }
+                for market in book.get("markets", []) or []:
+                    mk = str(market.get("key") or "")
+                    if mk in existing_market_keys:
+                        continue
+                    entry["markets"].append(market)
+                    existing_market_keys.add(mk)
+
+        if not merged_books:
+            return None
+        return {"bookmakers": list(merged_books.values())}
+
+    for event in event_samples:
+        event_id = str(event.get("eventId") or "")
+        if not event_id:
+            continue
+        payload = payload_by_event.get(event_id)
+        if not isinstance(payload, dict):
+            payload = _merge_fallback_event_payload(event_id)
+        if not isinstance(payload, dict):
+            continue
+
+        event_team_codes = {
+            _normalize_player_prop_team_code(event.get("awayTeam")),
+            _normalize_player_prop_team_code(event.get("homeTeam")),
+        }
+        event_team_codes = {t for t in event_team_codes if t}
+
+        event_meta_by_key: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+
+        for book in payload.get("bookmakers", []) or []:
+            book_key = _normalize_bookmaker_key(book.get("key"))
+            book_display = _normalize_bookmaker_display(book.get("title") or book.get("key"), book_key)
+            for market in book.get("markets", []) or []:
+                mk = str(market.get("key") or "")
+                if mk not in PLAYER_PROP_TARGET_MARKETS:
+                    continue
+                prop_type = PLAYER_PROP_TARGET_MARKETS[mk]
+                m_ts = str(market.get("last_update") or book.get("last_update") or event.get("commenceTime") or "")
+                for outcome in market.get("outcomes", []) or []:
+                    raw_name = str(outcome.get("name") or "").strip()
+                    raw_desc = str(outcome.get("description") or "").strip()
+                    side = raw_name.upper() if raw_name.lower() in {"over", "under"} else None
+                    if side:
+                        provider_player_name = raw_desc or raw_name
+                    elif raw_name.lower() in {"yes", "no"} and raw_desc:
+                        provider_player_name = raw_desc
+                    else:
+                        provider_player_name = raw_name or raw_desc
+                    team_hint = _normalize_player_prop_team_code(outcome.get("team"))
+                    provider_player_id = str(outcome.get("player_id") or "").strip() or None
+                    identity = _resolve_player_identity(
+                        provider_player_name,
+                        team_hint,
+                        provider_player_id=provider_player_id,
+                        event_team_codes=event_team_codes,
+                    )
+                    normalized_player = str(identity.get("normalizedPlayerName") or "")
+                    point = _safe_float(outcome.get("point"))
+                    price = _safe_float(outcome.get("price"))
+                    selection = (
+                        f"{provider_player_name} {side} {point:g}" if side and point is not None
+                        else f"{provider_player_name} {side}" if side
+                        else provider_player_name
+                    )
+                    key = (prop_type, normalized_player, str(side or ""))
+                    event_meta_by_key.setdefault(key, []).append(
+                        {
+                            "eventId": event_id,
+                            "providerEventId": event_id,
+                            "commenceTime": str(event.get("commenceTime") or ""),
+                            "propType": prop_type,
+                            "providerMarketKey": mk,
+                            "period": "FULL_GAME",
+                            "phase": "PREGAME",
+                            "providerPlayerName": provider_player_name,
+                            "normalizedPlayerName": normalized_player,
+                            "playerMatchStatus": identity.get("matchStatus"),
+                            "providerPlayerId": provider_player_id,
+                            "canonicalPlayerId": identity.get("canonicalPlayerId"),
+                            "playerName": identity.get("canonicalPlayerName") or provider_player_name,
+                            "team": identity.get("team"),
+                            "opponent": identity.get("opponent"),
+                            "position": identity.get("position"),
+                            "selection": selection,
+                            "side": side,
+                            "point": point,
+                            "price": price,
+                            "sportsbook": book_display,
+                            "bookmakerKey": book_key,
+                            "marketTimestamp": m_ts,
+                            "fetchedAt": _utc_now_iso(),
+                            "sourceSnapshotId": _sha256(
+                                _canonical_json(
+                                    {
+                                        "eventId": event_id,
+                                        "providerMarketKey": mk,
+                                        "player": provider_player_name,
+                                        "side": side,
+                                        "point": point,
+                                        "price": price,
+                                        "bookmakerKey": book_key,
+                                        "marketTimestamp": m_ts,
+                                    }
+                                )
+                            ),
+                            "gameStateTimestamp": None,
+                            "gameQuarter": None,
+                            "gameClock": None,
+                        }
+                    )
+
+        for _, quotes in event_meta_by_key.items():
+            available_books = sorted({str(q.get("bookmakerKey") or "") for q in quotes if str(q.get("bookmakerKey") or "")})
+            book_count = len(available_books)
+            depth = _market_depth_status(book_count)
+            sorted_quotes = sorted(
+                quotes,
+                key=lambda q: _player_prop_sort_key(
+                    q.get("side"),
+                    _safe_float(q.get("point")),
+                    _safe_float(q.get("price")),
+                ),
+                reverse=True,
+            )
+            best = sorted_quotes[0]
+
+            for quote in quotes:
+                quote["availableBooks"] = available_books
+                quote["bookCoverageCount"] = book_count
+                quote["marketDepthStatus"] = depth
+                quote["allBooks"] = [
+                    {
+                        "sportsbook": q.get("sportsbook"),
+                        "bookmakerKey": q.get("bookmakerKey"),
+                        "point": q.get("point"),
+                        "price": q.get("price"),
+                        "side": q.get("side"),
+                    }
+                    for q in quotes
+                ]
+                quote["bestMarketBook"] = best.get("sportsbook")
+                quote["bestMarketPoint"] = best.get("point")
+                quote["bestMarketPrice"] = best.get("price")
+                novig, novig_status = _player_prop_two_sided_no_vig(quotes, quote)
+                quote["marketNoVigProbability"] = novig
+                quote["noVigStatus"] = novig_status
+
+                rows_received += 1
+                if _persist_player_prop_state_row(
+                    con,
+                    row=quote,
+                    state_label="CURRENT",
+                    closing_status=None,
+                    closing_cutoff_utc=None,
+                    closing_max_age_seconds=None,
+                ):
+                    current_inserted += 1
+                else:
+                    duplicates += 1
+
+                if not _player_prop_opening_exists(con, quote):
+                    if _persist_player_prop_state_row(
+                        con,
+                        row=quote,
+                        state_label="OPENING",
+                        closing_status=None,
+                        closing_cutoff_utc=None,
+                        closing_max_age_seconds=None,
+                    ):
+                        opening_inserted += 1
+                    else:
+                        duplicates += 1
+
+                closing_ok, close_status, close_cutoff, close_age = _closing_cutoff_details(
+                    commence_time=quote.get("commenceTime"),
+                    market_timestamp=quote.get("marketTimestamp"),
+                    fetched_at=quote.get("fetchedAt"),
+                )
+                if closing_ok:
+                    if _persist_player_prop_state_row(
+                        con,
+                        row=quote,
+                        state_label="CLOSING",
+                        closing_status="AVAILABLE",
+                        closing_cutoff_utc=close_cutoff,
+                        closing_max_age_seconds=close_age,
+                    ):
+                        closing_inserted += 1
+                    else:
+                        duplicates += 1
+                elif close_status == "STALE_REJECTED":
+                    stale_rejected += 1
+                elif close_status == "POST_KICKOFF_REJECTED":
+                    post_kickoff_rejected += 1
+
+    con.commit()
+    con.close()
+
+    return {
+        "rowsReceived": rows_received,
+        "currentInserted": current_inserted,
+        "openingInserted": opening_inserted,
+        "closingInserted": closing_inserted,
+        "duplicateRejectionCount": duplicates,
+        "staleSnapshotCount": stale_rejected,
+        "postKickoffRejectedCount": post_kickoff_rejected,
+    }
+
+
+def player_prop_grading_source_audit() -> dict[str, Any]:
+    try:
+        import duckdb  # type: ignore
+    except Exception:
+        return {
+            "statusByPropType": {
+                prop: "MISSING_STAT_SOURCE"
+                for prop in PLAYER_PROP_TARGET_MARKETS.values()
+            },
+            "availableStatColumns": [],
+            "reason": "duckdb unavailable",
+        }
 
     db = MODEL_ROOT / "database" / "nfl_model.duckdb"
     if not db.exists():
         return {
-            "exactMatchRate": 0.0,
-            "normalizedMatchRate": 0.0,
-            "ambiguousMatches": [],
-            "unmatchedPlayers": [p.get("name") for p in sampled_players if p.get("name")],
-            "feasible": False,
+            "statusByPropType": {
+                prop: "MISSING_STAT_SOURCE"
+                for prop in PLAYER_PROP_TARGET_MARKETS.values()
+            },
+            "availableStatColumns": [],
             "reason": "nfl_model.duckdb not found",
         }
 
     con = duckdb.connect(str(db), read_only=True)
-    table_rows = con.execute(
+    try:
+        cols = con.execute(
+            """
+            SELECT lower(column_name)
+            FROM information_schema.columns
+            WHERE table_schema = 'main'
+            """
+        ).fetchall()
+    finally:
+        con.close()
+
+    available = {str(r[0]) for r in cols}
+    status: dict[str, str] = {}
+    for prop_type, candidates in PLAYER_PROP_GRADING_COLUMN_CANDIDATES.items():
+        status[prop_type] = "GRADING_READY" if any(c.lower() in available for c in candidates) else "MISSING_STAT_SOURCE"
+
+    return {
+        "statusByPropType": status,
+        "availableStatColumns": sorted(available),
+    }
+
+
+def player_prop_coverage_report() -> dict[str, Any]:
+    _ensure_schema()
+    con = _connect()
+    rows = con.execute(
         """
-        select distinct cast(player_id as varchar) as player_id,
-               cast(player_name as varchar) as player_name,
-               cast(team as varchar) as team
-        from player_pregame_features
-        where player_id is not null and player_name is not null
+        SELECT *
+        FROM player_prop_market_snapshots
+        WHERE phase = 'PREGAME'
         """
     ).fetchall()
     con.close()
 
-    exact_map: dict[str, list[tuple[str, str]]] = {}
-    norm_map: dict[str, list[tuple[str, str]]] = {}
+    grading = player_prop_grading_source_audit()
+    by_state = {"OPENING": 0, "CURRENT": 0, "CLOSING": 0}
+    by_prop_books: dict[str, set[str]] = {}
+    for r in rows:
+        state = str(r["state_label"] or "")
+        if state in by_state:
+            by_state[state] += 1
+        prop = str(r["prop_type"] or "")
+        by_prop_books.setdefault(prop, set()).add(str(r["bookmaker_key"] or ""))
 
-    def _norm(name: str) -> str:
-        return "".join(ch for ch in name.lower() if ch.isalnum())
+    identities = {
+        (
+            str(r["event_id"] or ""),
+            str(r["prop_type"] or ""),
+            str(r["normalized_player_name"] or ""),
+            str(r["side"] or ""),
+            str(r["point"]),
+            str(r["bookmaker_key"] or ""),
+        )
+        for r in rows
+    }
 
-    for pid, pname, team in table_rows:
-        pname_s = str(pname).strip()
-        exact_map.setdefault(pname_s, []).append((str(pid), str(team or "")))
-        norm_map.setdefault(_norm(pname_s), []).append((str(pid), str(team or "")))
+    exact = sum(1 for r in rows if str(r["player_match_status"] or "") == "EXACT")
+    normalized = sum(1 for r in rows if str(r["player_match_status"] or "") == "NORMALIZED")
+    ambiguous = sum(1 for r in rows if str(r["player_match_status"] or "") == "AMBIGUOUS")
+    unmatched = sum(1 for r in rows if str(r["player_match_status"] or "") == "UNMATCHED")
+    total = max(1, exact + normalized + ambiguous + unmatched)
 
-    names = [str(p.get("name") or "").strip() for p in sampled_players if str(p.get("name") or "").strip()]
-    unique_names = sorted(set(names))
+    ts_values = [
+        str(r["market_timestamp"] or r["fetched_at"] or "")
+        for r in rows
+        if str(r["market_timestamp"] or r["fetched_at"] or "")
+    ]
 
-    exact = 0
-    normalized = 0
-    ambiguous: list[dict[str, Any]] = []
-    unmatched: list[str] = []
-
-    for name in unique_names:
-        exact_hits = exact_map.get(name, [])
-        if len(exact_hits) == 1:
-            exact += 1
-            continue
-        if len(exact_hits) > 1:
-            ambiguous.append({"providerName": name, "method": "exact", "matches": exact_hits})
-            continue
-
-        norm_hits = norm_map.get(_norm(name), [])
-        if len(norm_hits) == 1:
-            normalized += 1
-        elif len(norm_hits) > 1:
-            ambiguous.append({"providerName": name, "method": "normalized", "matches": norm_hits})
-        else:
-            unmatched.append(name)
-
-    total = max(1, len(unique_names))
     return {
-        "totalDistinctProviderPlayers": len(unique_names),
-        "exactMatchRate": exact / total,
-        "normalizedMatchRate": normalized / total,
-        "ambiguousMatches": ambiguous,
-        "unmatchedPlayers": unmatched,
-        "feasible": len(ambiguous) == 0,
+        "eventsCaptured": len({str(r["event_id"] or "") for r in rows if str(r["event_id"] or "")}),
+        "uniquePlayersCaptured": len({str(r["normalized_player_name"] or "") for r in rows if str(r["normalized_player_name"] or "")}),
+        "propMarketsCaptured": len({str(r["prop_type"] or "") for r in rows if str(r["prop_type"] or "")}),
+        "quotesCaptured": len(rows),
+        "booksPerPropFamily": {k: len(v) for k, v in by_prop_books.items()},
+        "earliestSnapshot": min(ts_values) if ts_values else None,
+        "latestSnapshot": max(ts_values) if ts_values else None,
+        "openingCoverage": by_state["OPENING"] / max(1, len(identities)),
+        "currentCoverage": by_state["CURRENT"] / max(1, len(identities)),
+        "closingCoverage": by_state["CLOSING"] / max(1, len(identities)),
+        "gradingReadiness": grading.get("statusByPropType") or {},
+        "identityMatchRates": {
+            "EXACT": exact / total,
+            "NORMALIZED": normalized / total,
+            "AMBIGUOUS": ambiguous / total,
+            "UNMATCHED": unmatched / total,
+            "AMBIGUOUS_COUNT": ambiguous,
+            "UNMATCHED_COUNT": unmatched,
+        },
+        "modelStatus": {
+            "MODEL_AVAILABLE": False,
+            "MODEL_VALIDATED": False,
+            "SHADOW_RECOMMENDATION_ELIGIBLE": False,
+            "PRODUCTION_ELIGIBLE": False,
+        },
+    }
+
+
+def player_prop_model_interface_contract() -> dict[str, Any]:
+    return {
+        "futureAttachableFields": [
+            "projectedStat",
+            "rawProbability",
+            "calibratedProbability",
+            "pushProbability",
+            "fairPrice",
+            "edge",
+            "EV",
+            "PlayableTo",
+            "siScore",
+        ],
+        "notes": "Design-only interface; no model values are populated in this phase.",
     }
 
 

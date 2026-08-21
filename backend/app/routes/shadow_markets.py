@@ -17,12 +17,17 @@ from app.services.shadow_markets import (
     discover_player_props,
     expanded_market_collection_status,
     ingest_expanded_market_snapshots,
+    ingest_player_prop_market_snapshots,
     live_sia_future_schema_compatibility,
     player_identity_mapping_plan,
     prospective_data_integrity_audit,
     prospective_market_capture_report,
     publish_shadow_snapshot,
     line_shopping_market_view,
+    player_prop_coverage_report,
+    player_prop_grading_source_audit,
+    player_prop_market_contract,
+    player_prop_model_interface_contract,
     shadow_performance_report,
     shadow_promotion_gates,
     sportsbook_coverage_audit,
@@ -77,6 +82,10 @@ class LineShoppingMarketViewRequest(BaseModel):
     selection: Optional[str] = None
     playableToLine: Optional[float] = None
     playableToPrice: Optional[float] = None
+
+
+class PlayerPropIngestionRequest(BaseModel):
+    runDiscovery: bool = True
 
 
 @router.post("/boards/build")
@@ -237,6 +246,31 @@ def player_prop_discovery(x_admin_token: str | None = Header(default=None)):
     return {
         "discovery": discovery,
         "mappingPlan": mapping,
+    }
+
+
+@router.post("/discovery/player-props/ingest")
+def player_prop_ingest(request: PlayerPropIngestionRequest, x_admin_token: str | None = Header(default=None)):
+    _require_admin_token(x_admin_token)
+    discovery = discover_player_props() if request.runDiscovery else None
+    ingested = ingest_player_prop_market_snapshots(discovery=discovery)
+    return {
+        "discovery": discovery,
+        "ingested": ingested,
+        "coverage": player_prop_coverage_report(),
+        "capturedAtUTC": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@router.get("/discovery/player-props/status")
+def player_prop_status(x_admin_token: str | None = Header(default=None)):
+    _require_admin_token(x_admin_token)
+    return {
+        "contract": player_prop_market_contract(),
+        "grading": player_prop_grading_source_audit(),
+        "coverage": player_prop_coverage_report(),
+        "futureModelInterface": player_prop_model_interface_contract(),
+        "liveCompatibility": live_sia_future_schema_compatibility(),
     }
 
 
