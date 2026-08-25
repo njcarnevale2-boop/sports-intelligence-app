@@ -108,6 +108,70 @@ def _seed_run_and_candidate(
     con.close()
 
 
+def _seed_prospective_snapshot(
+    db_path: Path,
+    *,
+    snapshot_id: str,
+    event_id: str,
+    market_family: str,
+    market_key: str,
+    state_label: str,
+    side: str,
+    selection: str,
+    line: float | None,
+    price: float,
+    sportsbook: str,
+    book_coverage_count: int,
+    market_no_vig_probability: float | None,
+) -> None:
+    con = sqlite3.connect(str(db_path))
+    placeholders = ",".join(["?"] * 26)
+    con.execute(
+        f"""
+        INSERT INTO prospective_market_snapshots (
+            snapshot_id, captured_at_utc,
+            season, week, event_id,
+            market_family, market_key, phase, period, state_label,
+            team_code, selection, side, line, price, sportsbook,
+            book_coverage_count, market_no_vig_probability,
+            production_eligible, cross_market_comparable,
+            market_validation_status, model_state, shadow_recommendations,
+            payload_hash, canonical_payload, idempotency_key
+        ) VALUES ({placeholders})
+        """,
+        [
+            snapshot_id,
+            "2026-08-18T00:00:00+00:00",
+            2026,
+            38,
+            event_id,
+            market_family,
+            market_key,
+            "PREGAME",
+            "FULL_GAME",
+            state_label,
+            None,
+            selection,
+            side,
+            line,
+            price,
+            sportsbook,
+            book_coverage_count,
+            market_no_vig_probability,
+            0,
+            0,
+            "AVAILABLE_TWO_SIDED_MARKET" if market_no_vig_probability is not None else "UNAVAILABLE_TWO_SIDED_MARKET",
+            "RESEARCH_ONLY",
+            "DISABLED",
+            f"hash-{snapshot_id}",
+            f"canonical-{snapshot_id}",
+            f"idem-{snapshot_id}",
+        ],
+    )
+    con.commit()
+    con.close()
+
+
 @pytest.fixture
 def shadow_db(monkeypatch, tmp_path):
     db = tmp_path / "shadow_test.sqlite"
@@ -129,6 +193,7 @@ def test_shadow_snapshot_immutability_and_duplicate_protection(shadow_db):
         period="FULL_GAME",
         line=None,
         price=-150,
+        commence_time="2026-09-20T17:00:00+00:00",
     )
 
     first = shadow_markets.publish_shadow_snapshot(run_id="run-1", is_official=False)
@@ -248,6 +313,7 @@ def test_market_and_period_separation(shadow_db):
         period="FULL_GAME",
         line=None,
         price=130,
+        commence_time="2026-09-20T17:00:00+00:00",
     )
     _seed_run_and_candidate(
         shadow_db,
@@ -805,6 +871,229 @@ def test_shadow_report_includes_spread_and_global_rank_fields(shadow_db):
     spread = report["markets"]["SPREAD"]
     assert "byGlobalResearchRank" in spread
     assert "globalResearchTopRanksTracked" in spread
+
+
+def test_moneyline_total_progress_report_and_gates(monkeypatch, shadow_db):
+    # Moneyline side 1.
+    _seed_run_and_candidate(
+        shadow_db,
+        run_id="run-ml-home",
+        season=2026,
+        week=15,
+        candidate_id="cand-ml-home",
+        market_family="MONEYLINE",
+        market_key="moneyline",
+        side="home",
+        period="FULL_GAME",
+        line=None,
+        price=-150,
+        commence_time="2026-09-20T17:00:00+00:00",
+    )
+    # Moneyline side 2.
+    _seed_run_and_candidate(
+        shadow_db,
+        run_id="run-ml-away",
+        season=2026,
+        week=15,
+        candidate_id="cand-ml-away",
+        market_family="MONEYLINE",
+        market_key="moneyline",
+        side="away",
+        period="FULL_GAME",
+        line=None,
+        price=130,
+        commence_time="2026-09-20T17:00:00+00:00",
+    )
+    # Total over/under pair.
+    _seed_run_and_candidate(
+        shadow_db,
+        run_id="run-total-over",
+        season=2026,
+        week=15,
+        candidate_id="cand-total-over",
+        market_family="TOTAL",
+        market_key="total",
+        side="over",
+        period="FULL_GAME",
+        line=45.5,
+        price=-110,
+        commence_time="2026-09-20T17:00:00+00:00",
+    )
+    _seed_run_and_candidate(
+        shadow_db,
+        run_id="run-total-under",
+        season=2026,
+        week=15,
+        candidate_id="cand-total-under",
+        market_family="TOTAL",
+        market_key="total",
+        side="under",
+        period="FULL_GAME",
+        line=45.5,
+        price=-110,
+        commence_time="2026-09-20T17:00:00+00:00",
+    )
+
+    shadow_markets.publish_shadow_snapshot(run_id="run-ml-home", is_official=False)
+    shadow_markets.publish_shadow_snapshot(run_id="run-ml-away", is_official=False)
+    shadow_markets.publish_shadow_snapshot(run_id="run-total-over", is_official=False)
+    shadow_markets.publish_shadow_snapshot(run_id="run-total-under", is_official=False)
+
+    class _Close:
+        def __init__(self, closing_point, closing_price):
+            self.closing_status = "AVAILABLE"
+            self.closing_point = closing_point
+            self.closing_price = closing_price
+            self.closing_timestamp = pd.Timestamp("2026-09-20T16:58:00+00:00").to_pydatetime()
+
+    def _get_closing_line(**kwargs):
+        market_key = str(kwargs.get("market_key") or "")
+        outcome_code = str(kwargs.get("outcome_code") or "").lower()
+        if market_key == "h2h":
+            return _Close(None, -170.0 if outcome_code == "home" else 120.0)
+        if market_key == "totals":
+            return _Close(46.5 if outcome_code == "over" else 44.5, -115.0)
+        return _Close(None, None)
+
+    monkeypatch.setattr(shadow_markets, "get_closing_line", _get_closing_line)
+    monkeypatch.setattr(shadow_markets, "_two_sided_closing_no_vig", lambda **_: (0.58, "AVAILABLE_TWO_SIDED_MARKET"))
+
+    shadow_markets.append_shadow_outcomes(
+        fetch_scores_fn=lambda _: {
+            "finalAwayScore": 21,
+            "finalHomeScore": 28,
+        }
+    )
+
+    _seed_prospective_snapshot(
+        shadow_db,
+        snapshot_id="snap-ml-opening",
+        event_id="evt-ml",
+        market_family="MONEYLINE",
+        market_key="moneyline",
+        state_label="OPENING",
+        side="home",
+        selection="HOME",
+        line=None,
+        price=-150,
+        sportsbook="DraftKings",
+        book_coverage_count=4,
+        market_no_vig_probability=0.58,
+    )
+    _seed_prospective_snapshot(
+        shadow_db,
+        snapshot_id="snap-ml-current",
+        event_id="evt-ml",
+        market_family="MONEYLINE",
+        market_key="moneyline",
+        state_label="CURRENT",
+        side="home",
+        selection="HOME",
+        line=None,
+        price=-145,
+        sportsbook="DraftKings",
+        book_coverage_count=5,
+        market_no_vig_probability=0.56,
+    )
+    _seed_prospective_snapshot(
+        shadow_db,
+        snapshot_id="snap-ml-closing",
+        event_id="evt-ml",
+        market_family="MONEYLINE",
+        market_key="moneyline",
+        state_label="CLOSING",
+        side="home",
+        selection="HOME",
+        line=None,
+        price=-140,
+        sportsbook="DraftKings",
+        book_coverage_count=5,
+        market_no_vig_probability=0.55,
+    )
+
+    _seed_prospective_snapshot(
+        shadow_db,
+        snapshot_id="snap-total-opening",
+        event_id="evt-total",
+        market_family="TOTAL",
+        market_key="total",
+        state_label="OPENING",
+        side="over",
+        selection="OVER 45.5",
+        line=45.5,
+        price=-110,
+        sportsbook="DraftKings",
+        book_coverage_count=5,
+        market_no_vig_probability=0.51,
+    )
+    _seed_prospective_snapshot(
+        shadow_db,
+        snapshot_id="snap-total-current",
+        event_id="evt-total",
+        market_family="TOTAL",
+        market_key="total",
+        state_label="CURRENT",
+        side="over",
+        selection="OVER 45.5",
+        line=45.5,
+        price=-108,
+        sportsbook="DraftKings",
+        book_coverage_count=4,
+        market_no_vig_probability=0.505,
+    )
+    _seed_prospective_snapshot(
+        shadow_db,
+        snapshot_id="snap-total-closing",
+        event_id="evt-total",
+        market_family="TOTAL",
+        market_key="total",
+        state_label="CLOSING",
+        side="over",
+        selection="OVER 45.5",
+        line=46.5,
+        price=-115,
+        sportsbook="DraftKings",
+        book_coverage_count=4,
+        market_no_vig_probability=0.53,
+    )
+
+    report = shadow_markets.shadow_performance_report()
+    ml = report["markets"]["MONEYLINE"]
+    total = report["markets"]["TOTAL"]
+
+    assert ml["published"] == 2
+    assert ml["graded"] == 2
+    assert ml["settledSampleTarget"] == 200
+    assert ml["settledSampleProgress"] == pytest.approx(2 / 200)
+    assert ml["openingCoverage"] == 1.0
+    assert ml["currentCoverage"] == 1.0
+    assert ml["closingCoverage"] == 1.0
+    assert ml["twoSidedNoVigCoverage"] == 1.0
+    assert ml["averageSportsbookDepth"] == pytest.approx(4.6666666667)
+    assert ml["medianSportsbookDepth"] == 5.0
+    assert ml["averageModelProbability"] is not None
+    assert ml["averageCLV"] is not None
+    assert ml["positiveCLVRate"] is not None
+
+    assert total["published"] == 2
+    assert total["graded"] == 2
+    assert total["settledSampleTarget"] == 300
+    assert total["settledSampleProgress"] == pytest.approx(2 / 300)
+    assert total["openingCoverage"] == 1.0
+    assert total["currentCoverage"] == 1.0
+    assert total["closingCoverage"] == 1.0
+    assert total["twoSidedNoVigCoverage"] == 1.0
+    assert total["averageSportsbookDepth"] == pytest.approx(4.3333333333)
+    assert total["medianSportsbookDepth"] == 4.0
+    assert total["averageModelProbability"] is not None
+    assert total["averageCLV"] is not None
+    assert total["positiveCLVRate"] is not None
+
+    gates = shadow_markets.shadow_promotion_gates()["markets"]
+    assert gates["MONEYLINE"]["criteria"]["settledSampleTarget"] == 200
+    assert gates["TOTAL"]["criteria"]["settledSampleTarget"] == 300
+    assert gates["MONEYLINE"]["productionEligibility"] == "NO"
+    assert gates["TOTAL"]["productionEligibility"] == "NO"
 
 
 def test_team_total_candidate_team_identity_and_period(monkeypatch, shadow_db):

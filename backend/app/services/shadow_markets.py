@@ -3702,10 +3702,91 @@ def _roi_ci(profits: list[float], n_boot: int = 1000) -> Optional[tuple[float, f
     return float(lo), float(hi)
 
 
+PROSPECTIVE_SETTLED_TARGETS = {
+    "MONEYLINE": 200,
+    "TOTAL": 300,
+}
+
+
+def _settled_target_for_family(family: str) -> int:
+    return int(PROSPECTIVE_SETTLED_TARGETS.get(str(family).upper(), 100))
+
+
+def _prospective_snapshot_metrics(con: sqlite3.Connection, family: str) -> dict[str, Any]:
+    rows = con.execute(
+        """
+        SELECT event_id, state_label, book_coverage_count, market_no_vig_probability, sportsbook
+        FROM prospective_market_snapshots
+        WHERE phase = 'PREGAME' AND market_family = ?
+        """,
+        [family],
+    ).fetchall()
+
+    if not rows:
+        return {
+            "openingCoverage": 0.0,
+            "currentCoverage": 0.0,
+            "closingCoverage": 0.0,
+            "twoSidedNoVigCoverage": 0.0,
+            "averageSportsbookDepth": None,
+            "medianSportsbookDepth": None,
+            "snapshotEventCount": 0,
+            "snapshotRowCount": 0,
+        }
+
+    events = {str(r["event_id"] or "") for r in rows if str(r["event_id"] or "")}
+    per_state_events: dict[str, set[str]] = {"OPENING": set(), "CURRENT": set(), "CLOSING": set()}
+    depth_values: list[float] = []
+    two_sided = 0
+
+    for r in rows:
+        event_id = str(r["event_id"] or "")
+        state = str(r["state_label"] or "")
+        if event_id and state in per_state_events:
+            per_state_events[state].add(event_id)
+        if r["book_coverage_count"] is not None:
+            depth_values.append(float(r["book_coverage_count"]))
+        if r["market_no_vig_probability"] is not None:
+            two_sided += 1
+
+    def _coverage(state: str) -> float:
+        return float(len(per_state_events[state]) / len(events)) if events else 0.0
+
+    avg_depth = (sum(depth_values) / len(depth_values)) if depth_values else None
+    median_depth = None
+    if depth_values:
+        ordered = sorted(depth_values)
+        mid = len(ordered) // 2
+        median_depth = float(ordered[mid]) if len(ordered) % 2 else float((ordered[mid - 1] + ordered[mid]) / 2.0)
+
+    return {
+        "openingCoverage": _coverage("OPENING"),
+        "currentCoverage": _coverage("CURRENT"),
+        "closingCoverage": _coverage("CLOSING"),
+        "twoSidedNoVigCoverage": float(two_sided / len(rows)),
+        "averageSportsbookDepth": avg_depth,
+        "medianSportsbookDepth": median_depth,
+        "snapshotEventCount": len(events),
+        "snapshotRowCount": len(rows),
+    }
+
+
 def shadow_performance_report() -> dict[str, Any]:
     _ensure_schema()
     con = _connect()
     rows = _extract_numeric_rows(con)
+    family_snapshot_metrics = {
+        fam: _prospective_snapshot_metrics(con, fam)
+        for fam in [
+            "SPREAD",
+            "MONEYLINE",
+            "TOTAL",
+            "TEAM_TOTAL",
+            "FIRST_HALF_SPREAD",
+            "FIRST_HALF_MONEYLINE",
+            "FIRST_HALF_TOTAL",
+        ]
+    }
     con.close()
 
     by_market: dict[str, dict[str, Any]] = {}
@@ -3749,9 +3830,20 @@ def shadow_performance_report() -> dict[str, Any]:
 
         clv_vals = [float(r["clv"]) for r in graded if r["clv"] is not None]
         avg_clv = (sum(clv_vals) / len(clv_vals)) if clv_vals else None
+        positive_clv_rate = (sum(1 for r in graded if r["clv"] is not None and float(r["clv"]) > 0) / len(clv_vals)) if clv_vals else None
         line_clv_vals = [float(r["line_clv_points"]) for r in graded if r["line_clv_points"] is not None]
         price_clv_vals = [float(r["price_clv_probability"]) for r in graded if r["price_clv_probability"] is not None]
         clv_cov = (sum(1 for r in graded if r["clv"] is not None) / len(graded)) if graded else 0.0
+
+        target = _settled_target_for_family(fam)
+        snapshot_metrics = family_snapshot_metrics.get(fam, {})
+        published = len(fam_rows)
+        graded_count = len(graded)
+
+        avg_model_probability = None
+        model_probs = [float(r["calibrated_probability"]) for r in fam_rows if r["calibrated_probability"] is not None]
+        if model_probs:
+            avg_model_probability = sum(model_probs) / len(model_probs)
 
         # Breakdown
         by_rank: dict[str, int] = {}
@@ -3781,11 +3873,14 @@ def shadow_performance_report() -> dict[str, Any]:
             by_week[wk] = by_week.get(wk, 0) + 1
 
         by_market[fam] = {
-            "bets": len(graded),
+            "published": published,
+            "graded": graded_count,
+            "bets": graded_count,
             "wins": wins,
             "losses": losses,
             "pushes": pushes,
             "winRate": win_rate,
+            "actualWinRate": win_rate,
             "roi": roi,
             "roiCI95": list(roi_ci) if roi_ci else None,
             "brier": b_model,
@@ -3795,12 +3890,24 @@ def shadow_performance_report() -> dict[str, Any]:
             "modelMinusMarketBrier": None if b_model is None or b_mkt is None else (b_model - b_mkt),
             "modelMinusMarketLogLoss": None if l_model is None or l_mkt is None else (l_model - l_mkt),
             "ece": _ece(y, p_model),
+            "averageModelProbability": avg_model_probability,
             "averageEdge": avg_edge,
             "averageEV": avg_ev,
             "averageCLV": avg_clv,
+            "positiveCLVRate": positive_clv_rate,
             "averageLineCLVPoints": (sum(line_clv_vals) / len(line_clv_vals)) if line_clv_vals else None,
             "averagePriceCLVProbability": (sum(price_clv_vals) / len(price_clv_vals)) if price_clv_vals else None,
             "clvCoverage": clv_cov,
+            "settledSampleTarget": target,
+            "settledSampleProgress": float(graded_count / target) if target else None,
+            "openingCoverage": snapshot_metrics.get("openingCoverage"),
+            "currentCoverage": snapshot_metrics.get("currentCoverage"),
+            "closingCoverage": snapshot_metrics.get("closingCoverage"),
+            "twoSidedNoVigCoverage": snapshot_metrics.get("twoSidedNoVigCoverage"),
+            "averageSportsbookDepth": snapshot_metrics.get("averageSportsbookDepth"),
+            "medianSportsbookDepth": snapshot_metrics.get("medianSportsbookDepth"),
+            "snapshotEventCount": snapshot_metrics.get("snapshotEventCount"),
+            "snapshotRowCount": snapshot_metrics.get("snapshotRowCount"),
             "bySeasonWeek": by_week,
             "byRank": by_rank,
             "byGlobalResearchRank": by_global_research_rank,
@@ -3837,21 +3944,45 @@ def shadow_promotion_gates() -> dict[str, Any]:
 
     gates = {}
     for fam, data in report.get("markets", {}).items():
-        sample_ok = int(data.get("bets") or 0) >= 100
+        target_sample = int(data.get("settledSampleTarget") or _settled_target_for_family(fam))
+        graded_sample = int(data.get("graded") or 0)
+        sample_ok = graded_sample >= target_sample
         brier_ok = (data.get("modelMinusMarketBrier") is not None) and (float(data["modelMinusMarketBrier"]) <= 0.0)
         ll_ok = (data.get("modelMinusMarketLogLoss") is not None) and (float(data["modelMinusMarketLogLoss"]) <= 0.0)
+        ece_ok = (data.get("ece") is not None) and (float(data["ece"]) <= 0.03)
+
+        opening_ok = (data.get("openingCoverage") is not None) and (float(data["openingCoverage"]) >= 0.95)
+        current_ok = (data.get("currentCoverage") is not None) and (float(data["currentCoverage"]) >= 0.95)
+        closing_ok = (data.get("closingCoverage") is not None) and (float(data["closingCoverage"]) >= 0.95)
+        no_vig_ok = (data.get("twoSidedNoVigCoverage") is not None) and (float(data["twoSidedNoVigCoverage"]) >= 0.95)
+
+        avg_depth = data.get("averageSportsbookDepth")
+        med_depth = data.get("medianSportsbookDepth")
+        depth_ok = bool(avg_depth is not None and med_depth is not None and float(avg_depth) >= 4.0 and float(med_depth) >= 3.0)
 
         roi_ci = data.get("roiCI95")
         roi_ok = bool(roi_ci and roi_ci[0] is not None and float(roi_ci[0]) >= 0.0)
 
-        eligible = bool(sample_ok and brier_ok and ll_ok and roi_ok)
+        eligible = bool(sample_ok and brier_ok and ll_ok and ece_ok and opening_ok and current_ok and closing_ok and no_vig_ok and depth_ok and roi_ok)
 
         gates[fam] = {
             "productionEligibility": "YES" if eligible else "NO",
             "criteria": {
+                "settledSampleTarget": target_sample,
+                "settledSampleCount": graded_sample,
+                "settledSampleProgress": data.get("settledSampleProgress"),
                 "sufficientProspectiveSample": sample_ok,
+                "openingCoverageAtLeast95Percent": opening_ok,
+                "currentCoverageAtLeast95Percent": current_ok,
+                "closingCoverageAtLeast95Percent": closing_ok,
+                "twoSidedNoVigCoverageAtLeast95Percent": no_vig_ok,
                 "brierVsNoVigMarket": brier_ok,
                 "logLossVsNoVigMarket": ll_ok,
+                "eceAtMost003": ece_ok,
+                "minimumAverageSportsbookDepth": avg_depth is not None and float(avg_depth) >= 4.0,
+                "minimumMedianSportsbookDepth": med_depth is not None and float(med_depth) >= 3.0,
+                "averageSportsbookDepth": avg_depth,
+                "medianSportsbookDepth": med_depth,
                 "roiCI": roi_ok,
                 "calibrationQualityAvailable": data.get("brier") is not None and data.get("logLoss") is not None,
                 "clvAvailable": data.get("averageCLV") is not None,
