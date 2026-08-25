@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import re
 from typing import Any, Dict, List, Optional
 
@@ -28,6 +29,27 @@ def _american_implied_probability(odds: float) -> float:
     return abs(odds) / (abs(odds) + 100.0)
 
 
+def _quote_freshness(last_updated: Any) -> str:
+    text = str(last_updated or "").strip()
+    if not text:
+        return "UNKNOWN"
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return "UNKNOWN"
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    age_seconds = (now - parsed.astimezone(timezone.utc)).total_seconds()
+    if age_seconds <= 300:
+        return "FRESH"
+    if age_seconds <= 1800:
+        return "WARM"
+    return "STALE"
+
+
 def classify_intent(question: str) -> str:
     q = str(question or "").strip().lower()
     if not q:
@@ -36,28 +58,47 @@ def classify_intent(question: str) -> str:
     if "stronger" in q and (("spread" in q and "moneyline" in q) or ("spread" in q and "total" in q) or ("moneyline" in q and "total" in q)):
         return "CROSS_MARKET_COMPARE"
 
+    if any(term in q for term in ["player prop", "player props", "prop", "team total", "first half", "1h"]):
+        return "MARKET_FIREWALL"
+
+    if any(term in q for term in ["moneyline", "total"]):
+        if any(term in q for term in ["what about", "how about", "where", "best", "line", "bet", "price", "playable"]):
+            return "MARKET_FIREWALL"
+
     if "best sportsbook" in q or "best price" in q:
+        return "BEST_SPORTSBOOK"
+    if "where should i bet" in q or "which book" in q or "best line" in q:
         return "BEST_SPORTSBOOK"
     if "value" in q and ("lost" in q or "lose" in q):
         return "VALUE_LOST"
     if "why is this still playable" in q or "why still playable" in q:
         return "WHY_STILL_PLAYABLE"
+    if "why aren" in q and ("bet" in q or "betting" in q or "wager" in q):
+        return "NO_BET_REASON"
+    if "why no bet" in q or "why not bet" in q or "why isn" in q and "bet" in q:
+        return "NO_BET_REASON"
     if "why does" in q and "pass" in q:
         return "WHY_PASS"
     if "social" in q or "news" in q:
         return "SOCIAL"
     if "playable to mean" in q or "what does playable" in q:
         return "PLAYABLE_TO_MEANING"
+    if "too expensive" in q or "too much" in q or "too high" in q or "current line" in q:
+        return "PLAYABLE_BOUNDARY"
     if "still bet" in q or "still playable" in q or re.search(r"\bat\s*[+-]?\d", q):
         return "PLAYABLE_CHECK"
-    if "biggest risk" in q:
+    if "what scares you" in q or "biggest risk" in q or "could this bet lose" in q:
         return "BIGGEST_RISK"
     if "what would make" in q and "pass" in q:
+        return "PASS_CONDITION"
+    if "what would make" in q and "qualify" in q:
         return "PASS_CONDITION"
     if "what changes" in q and ("bet" in q or "decision" in q):
         return "PASS_CONDITION"
     if "against the market" in q or "higher than the market" in q or "probability higher" in q:
         return "MARKET_VS_MODEL"
+    if "has the line moved" in q or "line moved" in q or "moving toward" in q:
+        return "LINE_TREND"
     if "compare" in q or "other sia 3" in q or "which pick does sia like most" in q or "strong is this" in q:
         return "SIA3_COMPARE"
     if "line getting worse" in q or "line worse" in q:
@@ -66,6 +107,8 @@ def classify_intent(question: str) -> str:
         return "INJURY"
     if "weather" in q:
         return "WEATHER"
+    if "rest" in q or "travel" in q or "timezone" in q:
+        return "REST_TRAVEL"
     if "why" in q:
         return "WHY"
     if "sia score" in q or ("score" in q and "sia" in q):
@@ -165,8 +208,82 @@ def _missing_messages_for_intent(intent: str, context: Dict[str, Any]) -> List[s
             messages.append("Weather data is not currently available.")
         if flags["socialMissing"]:
             messages.append("Live social intelligence is not connected yet.")
+    if intent == "REST_TRAVEL":
+        rest_travel = context.get("restTravel") or {}
+        if not rest_travel:
+            messages.append("SIA doesn't currently have enough verified rest/travel context for this game.")
 
     return messages
+
+
+def _no_bet_summary(context: Dict[str, Any]) -> tuple[str, List[str], str]:
+    report_status = str(context.get("betStatus") or context.get("recommendation") or "").upper()
+    reasons = [str(reason) for reason in (context.get("qualificationReasons") or []) if str(reason).strip()]
+    why_summary = str(context.get("whySummary") or "").strip()
+    trigger = (context.get("betTrigger") or {}).get("message") if isinstance(context.get("betTrigger"), dict) else None
+
+    if report_status in {"NO QUALIFIED BET", "NO BET", "PASS", "INSUFFICIENT DATA"}:
+        answer = why_summary or "SIA is passing on this game right now."
+    else:
+        answer = f"SIA currently sees this as {context.get('recommendation') or 'PASS'}."
+
+    why = reasons[:3]
+    if not why:
+        why = ["The current market, price, and confidence do not clear SIA's qualification policy."]
+    if trigger and trigger not in why:
+        why.append(str(trigger))
+
+    return answer, why[:3], trigger or "I don't have enough verified SIA data to identify a qualified bet right now."
+
+
+def _shadow_market_answer(context: Dict[str, Any], question: str) -> tuple[str, List[str], str]:
+    q = str(question or "").lower()
+    market = str(context.get("market") or "").lower()
+    selection = str(context.get("selection") or "that market")
+    sportsbook = context.get("sportsbook")
+    price = _to_float(context.get("price"))
+    quote_freshness = str(context.get("quoteFreshness") or "UNKNOWN")
+
+    if any(term in q for term in ["player prop", "player props", "prop"]):
+        return (
+            "SIA is collecting and analyzing player-prop data, but it does not currently issue validated player-prop recommendations.",
+            ["Player props remain outside the validated production recommendation set."],
+            "Validated player-prop recommendations are disabled.",
+        )
+    if "team total" in q:
+        return (
+            "SIA is collecting and analyzing team-total data, but it does not currently issue validated team-total recommendations.",
+            ["Team totals remain outside the validated production recommendation set."],
+            "Validated team-total recommendations are disabled.",
+        )
+    if "first half" in q or "1h" in q:
+        return (
+            "SIA is collecting and analyzing first-half data, but it does not currently issue validated first-half recommendations.",
+            ["First-half markets remain outside the validated production recommendation set."],
+            "Validated first-half recommendations are disabled.",
+        )
+
+    if market in {"moneyline", "total"}:
+        if sportsbook and price is not None:
+            line_text = f"{selection} ({price:+.0f}) at {sportsbook}"
+        else:
+            line_text = selection
+        answer = f"{market.title()} is still shadow validation and not an official SIA bet."
+        if quote_freshness == "STALE":
+            answer += " The current quote is stale and should be re-verified before betting."
+        if line_text:
+            answer += f" Research view: {line_text}."
+        why = [
+            "Official production SIA3 remains spread-only.",
+            f"{market.title()} is not currently production-eligible.",
+        ]
+        return answer, why, "Only the spread is eligible for production SIA3 right now."
+
+    return (
+        "SIA cannot promote that market into an official recommendation.",
+        ["The market family is not production-eligible."],
+        "That market family is not production-eligible.",
+    )
 
 
 def _format_playable_to_with_selection(selection: str, playable_to: Optional[float]) -> str:
@@ -411,6 +528,12 @@ def _build_structured_explanation(
     si_score = _to_float(context.get("siScore"))
     production_eligible = bool(context.get("productionEligible")) if context.get("productionEligible") is not None else (market.lower() in {"spread", "spreads"})
     validation_status = str(context.get("marketValidationStatus") or "UNKNOWN")
+    bet_status = str(context.get("betStatus") or "").upper()
+    why_summary = str(context.get("whySummary") or "").strip()
+    quote_freshness = str(context.get("quoteFreshness") or "UNKNOWN")
+    best_available_price = _to_float(context.get("bestAvailablePrice"))
+    best_available_line = _to_float(context.get("bestAvailableLine"))
+    best_available_sportsbook = str(context.get("bestAvailableSportsbook") or context.get("sportsbook") or "").strip()
 
     primary_reason = ""
     supporting_reasons: List[str] = []
@@ -430,6 +553,8 @@ def _build_structured_explanation(
         supporting_reasons.append(f"Push-aware EV is {current_ev:+.3f} per $1.")
     if si_score is not None:
         supporting_reasons.append(f"SI Score is {si_score:.1f} ({recommendation}).")
+    if why_summary:
+        supporting_reasons.append(why_summary)
 
     market_intel = context.get("marketIntelligence") or {}
     if market_intel:
@@ -453,6 +578,48 @@ def _build_structured_explanation(
     why = supporting_reasons[:3]
     what_changes = decision_boundary
     move_summary = _move_value_summary(move_the_line) if isinstance(move_the_line, dict) else None
+
+    if intent == "NO_BET_REASON":
+        answer = why_summary or "SIA is passing on this game right now."
+        why = [reason for reason in (context.get("qualificationReasons") or []) if str(reason).strip()][:3]
+        if not why:
+            why = ["The current market, price, and confidence do not clear SIA's qualification policy."]
+        trigger = context.get("betTrigger") or {}
+        trigger_text = None
+        if isinstance(trigger, dict) and str(trigger.get("message") or "").strip():
+            trigger_text = str(trigger.get("message") or "").strip()
+            if trigger_text not in why:
+                why.append(trigger_text)
+        if trigger_text:
+            what_changes = trigger_text
+        else:
+            what_changes = decision_boundary
+        primary_reason = "Canonical no-bet explanation."
+
+    elif intent == "MARKET_FIREWALL":
+        q = str(question or "").lower()
+        if any(term in q for term in ["player prop", "player props", "prop"]):
+            answer = "SIA is collecting and analyzing player-prop data, but it does not currently issue validated player-prop recommendations."
+            why = ["Player props remain outside the validated production recommendation set."]
+            what_changes = "Validated player-prop recommendations are disabled."
+        elif "team total" in q:
+            answer = "SIA is collecting and analyzing team-total data, but it does not currently issue validated team-total recommendations."
+            why = ["Team totals remain outside the validated production recommendation set."]
+            what_changes = "Validated team-total recommendations are disabled."
+        elif "first half" in q or "1h" in q:
+            answer = "SIA is collecting and analyzing first-half data, but it does not currently issue validated first-half recommendations."
+            why = ["First-half markets remain outside the validated production recommendation set."]
+            what_changes = "Validated first-half recommendations are disabled."
+        else:
+            answer = f"{market.title()} is still shadow validation and not an official SIA bet."
+            if quote_freshness == "STALE":
+                answer += " The current quote is stale and should be re-verified before betting."
+            if best_available_sportsbook and best_available_price is not None:
+                line_part = f" {best_available_line:+g}" if best_available_line is not None and market.lower() in {"spread", "total"} else ""
+                answer += f" Research view: {selection}{line_part} ({best_available_price:+.0f}) at {best_available_sportsbook}."
+            why = ["Official production SIA3 remains spread-only.", f"{market.title()} is not currently production-eligible."]
+            what_changes = "Only the spread is eligible for production SIA3 right now."
+        primary_reason = "Production firewall disclosure."
 
     if move_summary and intent == "WHY_STILL_PLAYABLE":
         if move_summary.get("inside"):
@@ -496,15 +663,22 @@ def _build_structured_explanation(
         primary_reason = "Move-the-Line value deterioration metrics."
 
     elif intent == "WHY":
-        answer = f"SIA currently favors {selection}."
-        primary_reason = "Positive value based on calibrated probability versus price."
-        if calibrated_prob is not None and implied_prob is not None:
-            why = [
-                f"SIA gives {selection} a {calibrated_prob * 100:.1f}% win/cover probability versus {implied_prob:.1f}% implied by the market.",
-                f"Push-aware EV is {current_ev:+.3f} per $1 at the current price." if current_ev is not None else "Current push-aware EV is positive at the quoted price.",
-            ]
-        if not production_eligible:
-            why.append("This market is currently in shadow validation and is not eligible for The SIA 3.")
+        if bet_status in {"NO QUALIFIED BET", "INSUFFICIENT DATA", "PASS"} or "PASS" in recommendation.upper() or not production_eligible:
+            answer = why_summary or "SIA is passing on this game right now."
+            why = [reason for reason in (context.get("qualificationReasons") or []) if str(reason).strip()][:3]
+            if not why:
+                why = ["The current market, price, and confidence do not clear SIA's qualification policy."]
+            primary_reason = "No-qualified-bet explanation."
+        else:
+            answer = f"SIA currently favors {selection}."
+            primary_reason = "Positive value based on calibrated probability versus price."
+            if calibrated_prob is not None and implied_prob is not None:
+                why = [
+                    f"SIA gives {selection} a {calibrated_prob * 100:.1f}% win/cover probability versus {implied_prob:.1f}% implied by the market.",
+                    f"Push-aware EV is {current_ev:+.3f} per $1 at the current price." if current_ev is not None else "Current push-aware EV is positive at the quoted price.",
+                ]
+            if not production_eligible:
+                why.append("This market is currently in shadow validation and is not eligible for The SIA 3.")
 
     elif intent == "BIGGEST_RISK":
         if verified_risk:
@@ -589,6 +763,19 @@ def _build_structured_explanation(
             what_changes = f"{hypo:+g} remains {'inside' if playable else 'outside'} SIA's current playable range."
         primary_reason = "Deterministic playable-to boundary check."
 
+    elif intent == "PLAYABLE_BOUNDARY":
+        if true_playable_to is None:
+            answer = "I don't have enough verified SIA data to identify the playable boundary right now."
+            why = ["The current game context does not expose a verified Playable-To boundary."]
+        else:
+            boundary_text = _format_playable_to_with_selection(selection, true_playable_to)
+            answer = f"SIA treats {selection} as too expensive once the line moves beyond its Playable-To boundary of Playable-To {boundary_text}."
+            why = [
+                f"Canonical Playable-To boundary: {boundary_text}.",
+                "That boundary comes from SIA's existing playable-range calculation.",
+            ]
+        primary_reason = "Canonical playable boundary lookup."
+
     elif intent == "PASS_CONDITION":
         answer = decision_boundary
         why = [
@@ -628,6 +815,29 @@ def _build_structured_explanation(
             answer = "I don't have enough verified SIA data to confirm directional line movement right now."
         primary_reason = "Observed market movement metadata."
 
+    elif intent == "REST_TRAVEL":
+        rest_travel = context.get("restTravel") or {}
+        if not rest_travel:
+            answer = "I don't have enough verified SIA data to answer that reliably."
+            why = ["Verified rest/travel context is missing for this game."]
+        else:
+            rest = rest_travel.get("rest") or {}
+            travel = rest_travel.get("travel") or {}
+            parts: List[str] = []
+            rest_text = str(rest.get("label") or rest.get("summary") or "").strip()
+            if rest_text:
+                parts.append(rest_text)
+            travel_miles = _to_float(travel.get("awayMiles"))
+            if travel_miles is not None:
+                parts.append(f"Travel is {travel_miles:.0f} miles.")
+            tz_shift = _to_float(travel.get("awayTimezoneShiftHours"))
+            if tz_shift is not None:
+                parts.append(f"Timezone shift is {tz_shift:+.1f} hours.")
+            answer = " ".join(parts) if parts else "I don't have enough verified SIA data to answer that reliably."
+            if not parts:
+                why = ["Verified rest/travel context is missing for this game."]
+        primary_reason = "Schedule context lookup."
+
     elif intent == "INJURY":
         if injury_summary:
             answer = f"Injury context for this pick: {injury_summary}"
@@ -659,10 +869,15 @@ def _build_structured_explanation(
         primary_reason = "Playable-To semantics."
 
     elif intent == "BEST_SPORTSBOOK":
-        sportsbook = context.get("sportsbook")
-        price = _to_float(context.get("price"))
+        sportsbook = best_available_sportsbook or context.get("sportsbook")
+        price = best_available_price if best_available_price is not None else _to_float(context.get("price"))
         if sportsbook and price is not None:
-            answer = f"The best current sportsbook price in SIA's canonical snapshot is {selection} ({price:+.0f}) at {sportsbook}."
+            if best_available_line is not None and market.lower() in {"spread", "total"}:
+                answer = f"The best current sportsbook price in SIA's canonical snapshot is {selection} {best_available_line:+g} ({price:+.0f}) at {sportsbook}."
+            else:
+                answer = f"The best current sportsbook price in SIA's canonical snapshot is {selection} ({price:+.0f}) at {sportsbook}."
+            if quote_freshness == "STALE":
+                answer += " The quote looks stale, so re-check it before betting."
         else:
             answer = "I don't have enough verified SIA data to identify the best sportsbook right now."
         primary_reason = "Canonical selected sportsbook for this recommendation."
@@ -783,6 +998,9 @@ def _build_live_context(event_id: str) -> Dict[str, Any]:
         "truePlayableTo": _to_float(opportunity.get("truePlayableTo")),
         "siScore": _to_float((opportunity.get("sportsIntelligenceScore") or {}).get("score")),
         "recommendation": opportunity.get("recommendation") or report.get("betStatus"),
+        "betStatus": report.get("betStatus"),
+        "whySummary": report.get("whySummary"),
+        "betTrigger": report.get("betTrigger"),
         "marketIntelligence": opportunity.get("marketIntelligence"),
         "lineMovement": opportunity.get("marketIntelligence"),
         "restTravel": context_payload,
@@ -791,6 +1009,12 @@ def _build_live_context(event_id: str) -> Dict[str, Any]:
         "socialIntelligence": social_payload,
         "qualificationReasons": opportunity.get("qualificationReasons") or report.get("qualificationReasons") or [],
         "snapshotTimestamp": opportunity.get("marketLastUpdated"),
+        "marketLastUpdated": opportunity.get("marketLastUpdated"),
+        "marketDataStatus": opportunity.get("marketDataStatus"),
+        "quoteFreshness": _quote_freshness(opportunity.get("marketLastUpdated")),
+        "bestAvailablePrice": opportunity.get("bestAvailablePrice"),
+        "bestAvailableLine": opportunity.get("bestAvailableLine"),
+        "bestAvailableSportsbook": opportunity.get("book"),
         "rank": opportunity.get("rank"),
         "snapshotId": opportunities_payload.get("snapshotId"),
         "topSia3": top_sia3,
@@ -841,7 +1065,16 @@ def _context_for_market(live_context: Dict[str, Any], market_key: Optional[str])
             "recommendation": selected.get("recommendation"),
             "marketIntelligence": selected.get("marketIntelligence"),
             "qualificationReasons": selected.get("qualificationReasons") or [],
+            "betStatus": selected.get("betStatus"),
+            "whySummary": selected.get("whySummary"),
+            "betTrigger": selected.get("betTrigger"),
             "snapshotTimestamp": selected.get("marketLastUpdated"),
+            "marketLastUpdated": selected.get("marketLastUpdated"),
+            "marketDataStatus": selected.get("marketDataStatus"),
+            "quoteFreshness": selected.get("quoteFreshness"),
+            "bestAvailablePrice": selected.get("bestAvailablePrice"),
+            "bestAvailableLine": selected.get("bestAvailableLine"),
+            "bestAvailableSportsbook": selected.get("bestAvailableSportsbook") or selected.get("book"),
             "rank": selected.get("rank"),
             "marketValidationStatus": selected.get("marketValidationStatus"),
             "productionEligible": selected.get("productionEligible"),
@@ -927,6 +1160,9 @@ def answer_from_context(
             "playableTo": scoped_context.get("truePlayableTo"),
             "siScore": scoped_context.get("siScore"),
             "recommendation": scoped_context.get("recommendation"),
+            "betStatus": scoped_context.get("betStatus"),
+            "whySummary": scoped_context.get("whySummary"),
+            "betTrigger": scoped_context.get("betTrigger"),
             "marketIntelligence": scoped_context.get("marketIntelligence"),
             "lineMovement": live_context.get("lineMovement"),
             "restTravel": live_context.get("restTravel"),
@@ -935,6 +1171,12 @@ def answer_from_context(
             "socialIntelligence": live_context.get("socialIntelligence"),
             "qualificationReasons": scoped_context.get("qualificationReasons"),
             "snapshotTimestamp": scoped_context.get("snapshotTimestamp"),
+            "marketDataStatus": scoped_context.get("marketDataStatus"),
+            "marketLastUpdated": scoped_context.get("marketLastUpdated"),
+            "quoteFreshness": scoped_context.get("quoteFreshness"),
+            "bestAvailablePrice": scoped_context.get("bestAvailablePrice"),
+            "bestAvailableLine": scoped_context.get("bestAvailableLine"),
+            "bestAvailableSportsbook": scoped_context.get("bestAvailableSportsbook"),
             "snapshotId": live_context.get("snapshotId"),
             "marketValidationStatus": scoped_context.get("marketValidationStatus"),
             "productionEligible": scoped_context.get("productionEligible"),

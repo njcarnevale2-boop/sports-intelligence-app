@@ -196,6 +196,11 @@ def test_frontend_label_and_timezone_policy_regression_guards():
     assert "Execution Panel" in games_intel_page
     assert "Research-only alternates" in games_intel_page
     assert "Invalidation trigger" in games_intel_page
+    assert "Why does SIA like this?" in games_intel_page
+    assert "What's the biggest risk?" in games_intel_page
+    assert "What would make SIA pass?" in games_intel_page
+    assert "Why isn't SIA betting this?" in games_intel_page
     assert "Playable-To EV floor:" in games_intel_page
+    assert "What would make this a no-bet?" not in games_intel_page
     assert "Minimum required EV:" not in games_intel_page
     assert "America/New_York" in time_format

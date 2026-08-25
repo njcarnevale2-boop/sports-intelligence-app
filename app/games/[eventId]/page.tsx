@@ -506,6 +506,22 @@ export default function GameIntelligencePage() {
   const alternateMarketCards = ["spread", "moneyline", "total"]
     .map((marketKey) => ({ marketKey, item: bestByMarket[marketKey] ?? null }))
     .filter(({ marketKey, item }) => item != null && marketKey !== opportunity?.market);
+  const quickPrompts = isPass
+    ? [
+        "Why isn't SIA betting this?",
+        "What would make this qualify?",
+        "Which side is closest?",
+        "What is the biggest uncertainty?",
+        "What changes SIA's mind?",
+      ]
+    : [
+        "Why does SIA like this?",
+        "What's the biggest risk?",
+        "Is this still playable?",
+        "Where should I bet it?",
+        "What would make SIA pass?",
+        "What is SIA seeing differently from the market?",
+      ];
 
   return (
     <main className="min-h-screen bg-[#070A0F] text-white">
@@ -610,7 +626,7 @@ export default function GameIntelligencePage() {
           <p className="mt-2 text-sm text-zinc-400">Complex Engine. Simple Answer.</p>
 
           <div className="mt-4 flex flex-wrap gap-2">
-            {["Why does SIA like this bet?", "What would make this a no-bet?", "Is this still playable?", "Which sportsbook has the best line?", "What is SIA seeing that the market isn't?"].map((prompt) => (
+            {quickPrompts.map((prompt) => (
               <button
                 key={prompt}
                 className="rounded-full border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs text-zinc-300 transition hover:bg-white/[0.08]"

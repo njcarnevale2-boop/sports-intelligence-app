@@ -33,12 +33,21 @@ def _base_live_context() -> dict:
         "truePlayableTo": -5.0,
         "siScore": 81.8,
         "recommendation": "STRONG BET",
+        "betStatus": "STRONG BET",
+        "whySummary": "SIA identified a qualified edge based on model probability, price, and confidence.",
+        "betTrigger": {"available": False, "message": "Actionable price not currently available"},
         "marketIntelligence": {"signal": "CONFIRMED", "booksMoving": 5, "booksTracked": 8, "steamBooks": 2},
         "lineMovement": {
             "signal": "CONFIRMED",
             "booksMoving": 5,
             "booksTracked": 8,
         },
+        "marketDataStatus": "LIVE",
+        "marketLastUpdated": "2026-09-13T15:00:00+00:00",
+        "quoteFreshness": "FRESH",
+        "bestAvailablePrice": -115.0,
+        "bestAvailableLine": 7.0,
+        "bestAvailableSportsbook": "Bovada",
         "restTravel": {"rest": {"advantageHomeDays": 0.0}, "travel": {"awayMiles": 220.0, "awayTimezoneShiftHours": 0.0}},
         "injuryContext": {"summary": "Neutral", "severity": "neutral"},
         "weather": {"dataStatus": "UNAVAILABLE"},
@@ -85,6 +94,28 @@ def _base_live_context() -> dict:
                 "sportsIntelligenceScore": {"score": 73.3},
             },
         ],
+        "bestByMarket": {
+            "moneyline": {
+                "pick": "NO",
+                "market": "moneyline",
+                "side": "away",
+                "price": 130,
+                "book": "DraftKings",
+                "productionEligible": False,
+                "marketValidationStatus": "SHADOW_VALIDATION",
+                "quoteFreshness": "FRESH",
+            },
+            "total": {
+                "pick": "OVER 45.5",
+                "market": "total",
+                "side": "over",
+                "price": -110,
+                "book": "FanDuel",
+                "productionEligible": False,
+                "marketValidationStatus": "SHADOW_VALIDATION",
+                "quoteFreshness": "FRESH",
+            },
+        },
     }
 
 
@@ -540,3 +571,152 @@ def test_endpoint_accepts_snapshot_and_returns_context(monkeypatch):
     payload = response.json()
     assert payload["eventId"] == "evt-1"
     assert payload["context"]["selection"] == "NO +7"
+
+
+def test_no_bet_question_uses_canonical_report():
+    context = _base_live_context()
+    context["betStatus"] = "NO QUALIFIED BET"
+    context["recommendation"] = "PASS"
+    context["whySummary"] = "SIA is passing because the current edge does not clear the qualification policy."
+    context["betTrigger"] = {"available": False, "message": "Actionable price not currently available"}
+    context["qualificationReasons"] = ["Current model edge and confidence do not meet SIA qualification thresholds."]
+
+    result = ask_sia.answer_from_context(
+        event_id="evt-1",
+        question="Why aren't you betting this?",
+        live_context=context,
+    )
+
+    assert result["intent"] == "NO_BET_REASON"
+    assert result["answer"].startswith("SIA is passing")
+    assert "qualification thresholds" in " ".join(result["why"]).lower()
+    assert result["whatChangesDecision"] == "Actionable price not currently available"
+
+
+def test_playable_boundary_question_uses_canonical_boundary():
+    result = ask_sia.answer_from_context(
+        event_id="evt-1",
+        question="What line is too expensive?",
+        live_context=_base_live_context(),
+    )
+
+    assert result["intent"] == "PLAYABLE_BOUNDARY"
+    assert "Playable-To" in result["answer"]
+    assert "NO -5" in result["answer"]
+
+
+def test_best_sportsbook_marks_stale_quote():
+    context = _base_live_context()
+    context["quoteFreshness"] = "STALE"
+    context["bestAvailablePrice"] = -120.0
+    context["bestAvailableLine"] = 7.5
+    context["bestAvailableSportsbook"] = "FanDuel"
+
+    result = ask_sia.answer_from_context(
+        event_id="evt-1",
+        question="Which sportsbook has the best line?",
+        live_context=context,
+    )
+
+    assert result["intent"] == "BEST_SPORTSBOOK"
+    assert "stale" in result["answer"].lower()
+    assert "FanDuel" in result["answer"]
+
+
+def test_market_firewall_for_shadow_market_research():
+    result = ask_sia.answer_from_context(
+        event_id="evt-1",
+        question="What about the moneyline?",
+        live_context=_base_live_context(),
+    )
+
+    assert result["intent"] == "MARKET_FIREWALL"
+    assert "shadow validation" in result["answer"].lower()
+    assert "spread-only" in " ".join(result["why"]).lower()
+
+
+def test_market_firewall_for_disabled_market_families():
+    prop_result = ask_sia.answer_from_context(
+        event_id="evt-1",
+        question="What about player props?",
+        live_context=_base_live_context(),
+    )
+    team_total_result = ask_sia.answer_from_context(
+        event_id="evt-1",
+        question="What about team totals?",
+        live_context=_base_live_context(),
+    )
+    first_half_result = ask_sia.answer_from_context(
+        event_id="evt-1",
+        question="What about first half?",
+        live_context=_base_live_context(),
+    )
+
+    assert prop_result["intent"] == "MARKET_FIREWALL"
+    assert "player-prop" in prop_result["answer"].lower()
+    assert "team-total" in team_total_result["answer"].lower()
+    assert "first-half" in first_half_result["answer"].lower()
+
+
+def test_rest_travel_question_uses_existing_context():
+    result = ask_sia.answer_from_context(
+        event_id="evt-1",
+        question="Is rest/travel important?",
+        live_context=_base_live_context(),
+    )
+
+    assert result["intent"] == "REST_TRAVEL"
+    assert "Travel is 220 miles" in result["answer"]
+
+
+def test_follow_up_context_reuses_current_game_state():
+    context = _base_live_context()
+    first = ask_sia.answer_from_context(
+        event_id="evt-1",
+        question="Why does SIA like this bet?",
+        live_context=context,
+    )
+    second = ask_sia.answer_from_context(
+        event_id="evt-1",
+        question="What's the biggest risk?",
+        live_context=context,
+    )
+
+    assert first["context"]["selection"] == second["context"]["selection"] == "NO +7"
+    assert "NO +7" in first["answer"] or "NO +7" in " ".join(first["why"])
+    assert second["intent"] == "BIGGEST_RISK"
+
+
+def test_missing_optional_context_does_not_fabricate_zeroes():
+    context = _base_live_context()
+    context["truePlayableTo"] = None
+    context["bestAvailablePrice"] = None
+    context["bestAvailableLine"] = None
+    context["bestAvailableSportsbook"] = ""
+    context["marketIntelligence"] = {}
+    context["injuryContext"] = {"summary": "", "severity": "neutral"}
+    context["weather"] = {"dataStatus": "UNAVAILABLE"}
+    context["socialIntelligence"] = {"isLive": False, "dataStatus": "MOCK"}
+
+    result = ask_sia.answer_from_context(
+        event_id="evt-1",
+        question="What is the biggest risk?",
+        live_context=context,
+    )
+
+    assert "0.0" not in result["answer"]
+    assert "Weather data is not currently available." in result["missingData"]
+    assert "Live social intelligence is not connected yet." in result["missingData"]
+
+
+def test_game_detail_consistency_fields_match_canonical_context():
+    result = ask_sia.answer_from_context(
+        event_id="evt-1",
+        question="Why does SIA like this bet?",
+        live_context=_base_live_context(),
+    )
+
+    assert result["context"]["selection"] == "NO +7"
+    assert result["context"]["bestPrice"] == -115.0
+    assert result["context"]["playableTo"] == -5.0
+    assert result["context"]["sportsbook"] == "Bovada"
