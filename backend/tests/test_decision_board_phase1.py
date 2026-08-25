@@ -66,6 +66,27 @@ def test_zero_qualifying_opportunities_yields_no_bet_state():
     assert "NO HIGH-CONVICTION BETS" in payload["noBetState"]["headline"]
 
 
+def test_zero_qualifying_opportunities_exposes_closest_opportunity_contract():
+    opportunities = [
+        _base_opp(
+            qualificationStatus="NOT_QUALIFIED",
+            recommendation="WATCH",
+            eventId="evt-watch",
+            pick="BUF -4",
+            side="away",
+            marketType="SPREAD",
+        ),
+    ]
+
+    payload = build_decision_board_payload(opportunities, limit=3)
+    closest = payload["noBetState"]["closestOpportunity"]
+
+    assert closest is not None
+    assert closest["eventId"] == "evt-watch"
+    assert closest["selection"] == "BUF -4"
+    assert closest["distanceFromTrigger"] is not None
+
+
 def test_fewer_than_three_not_padded_and_order_preserved():
     opportunities = [
         _base_opp(rank=2, eventId="evt-2", pick="A"),
