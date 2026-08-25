@@ -192,6 +192,10 @@ def test_frontend_label_and_timezone_policy_regression_guards():
     games_intel_page = (repo_root / "app" / "games" / "[eventId]" / "page.tsx").read_text(encoding="utf-8")
     time_format = (repo_root / "app" / "lib" / "time-format.ts").read_text(encoding="utf-8")
 
+    assert "SIA&apos;s TAKE" in games_intel_page
+    assert "Execution Panel" in games_intel_page
+    assert "Research-only alternates" in games_intel_page
+    assert "Invalidation trigger" in games_intel_page
     assert "Playable-To EV floor:" in games_intel_page
     assert "Minimum required EV:" not in games_intel_page
     assert "America/New_York" in time_format

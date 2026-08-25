@@ -463,7 +463,7 @@ export default function GameIntelligencePage() {
     const winPct = displayWinProbability(opportunity);
     const ev = opportunity.currentEV ?? opportunity.evPerDollar;
     factors.push(`Model vs Market: SIA probability ${Math.round(winPct ?? 0)}% vs market ${Math.round(opportunity.impliedProbability)}%.`);
-    factors.push(`Price / Value: ${opportunity.pick} at ${signed(opportunity.price)} returns +$${ev.toFixed(3)} EV per $1 (push-aware).`);
+    factors.push(`Price / Value: ${opportunity.pick} at ${signed(opportunity.price)} returns ${ev != null ? `+$${ev.toFixed(3)}` : "Unavailable"} EV per $1 (push-aware).`);
     factors.push(`Confidence: ${opportunity.confidence}/100 with market support ${opportunity.marketIntelligence.booksMoving}/${opportunity.marketIntelligence.booksTracked} books moving.`);
     if (opportunity.marketIntelligence.steamBooks > 0) {
       factors.push(`Supporting signal: ${opportunity.marketIntelligence.steamBooks} steam books aligned.`);
@@ -496,6 +496,16 @@ export default function GameIntelligencePage() {
   const betSize = suggestedBetText(opportunity, bankroll);
   const hasContext = hasScheduleContext(context);
   const directionalEdge = edgeDirection(projection);
+  const isPass = status === "PASS";
+  const decisionHeadline = isPass ? (intelligenceReport?.currentLean || "NO LEAN") : (opportunity?.pick || intelligenceReport?.currentLean || "NO LEAN");
+  const invalidationTrigger =
+    opportunity?.truePlayableToReason ??
+    intelligenceReport?.betTrigger?.message ??
+    intelligenceReport?.qualificationReasons?.[0] ??
+    "The market no longer offers enough edge at the current price.";
+  const alternateMarketCards = ["spread", "moneyline", "total"]
+    .map((marketKey) => ({ marketKey, item: bestByMarket[marketKey] ?? null }))
+    .filter(({ marketKey, item }) => item != null && marketKey !== opportunity?.market);
 
   return (
     <main className="min-h-screen bg-[#070A0F] text-white">
@@ -510,77 +520,75 @@ export default function GameIntelligencePage() {
         </div>
 
         <section className="rounded-3xl border border-white/[0.08] bg-[#0B1119] p-6 md:p-8">
-          <p className="text-sm text-zinc-500">{projection.awayTeam} @ {projection.homeTeam}</p>
-          <p className="mt-1 text-sm text-zinc-500">{formatKickoff(projection.commenceTime)}</p>
-
-          <div className="mt-5 flex flex-wrap items-center gap-3">
-            <Badge className="bg-white text-black hover:bg-zinc-100">{status === "PASS" ? "PASS" : "SIA PICK"}</Badge>
-            {opportunity?.sportsIntelligenceScore?.score != null && (
-              <span className="text-lg font-semibold text-zinc-200">{opportunity.sportsIntelligenceScore.score.toFixed(1)} · {status}</span>
-            )}
-          </div>
-
-          <h1 className="mt-4 text-3xl font-semibold tracking-tight md:text-4xl">
-            {status === "PASS" ? (intelligenceReport?.currentLean || "NO LEAN") : (opportunity?.pick || intelligenceReport?.currentLean || "NO LEAN")}
-          </h1>
-
-          <div className="mt-5 grid gap-3 md:grid-cols-2">
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">SIA Projection</p>
-              <p className="mt-2 text-lg font-semibold">{projection.awayTeam} {projection.model.projectedScore.away.toFixed(1)} - {projection.homeTeam} {projection.model.projectedScore.home.toFixed(1)}</p>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-sm text-zinc-500">{projection.awayTeam} @ {projection.homeTeam}</p>
+              <p className="mt-1 text-sm text-zinc-500">{formatKickoff(projection.commenceTime)}</p>
             </div>
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Market</p>
-              <p className="mt-2 text-lg font-semibold">{projection.homeTeam} {signed(projection.market.homeSpread)} · O/U {projection.market.total.toFixed(1)}</p>
-              <p className="mt-1 text-xs text-zinc-500">Spread source: model feed market_home_spread for this game endpoint.</p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Best Price</p>
-              <p className="mt-2 text-lg font-semibold">{formatBestPrice(opportunity)}</p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Playable To</p>
-              <p className="mt-2 text-lg font-semibold">{formatTruePlayableTo(opportunity)}</p>
-              <p className="mt-1 text-xs text-zinc-500">Uses true line-specific threshold only.</p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Suggested Bet</p>
-              <p className="mt-2 text-lg font-semibold">{betSize.headline}</p>
-              <p className="mt-1 text-xs text-zinc-500">{betSize.detail}</p>
+            <div className="flex flex-wrap items-center gap-3">
+              <Badge className="bg-white text-black hover:bg-zinc-100">SIA&apos;s TAKE</Badge>
+              {opportunity?.sportsIntelligenceScore?.score != null && (
+                <span className="text-sm font-semibold text-zinc-300">{opportunity.sportsIntelligenceScore.score.toFixed(1)} · {status}</span>
+              )}
             </div>
           </div>
 
-          <div className="mt-5 grid gap-3 md:grid-cols-3">
-            {["spread", "moneyline", "total"].map((marketKey) => {
-              const item = bestByMarket[marketKey] ?? null;
-              const isShadow = item != null && item.productionEligible === false;
-              const title = marketKey === "spread" ? "BEST SPREAD" : marketKey === "moneyline" ? "BEST MONEYLINE" : "BEST TOTAL";
-              return (
-                <div key={marketKey} className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                  <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">{title}</p>
-                  <p className="mt-2 text-sm font-semibold text-zinc-100">{marketLabel(item)}</p>
-                  <p className="mt-1 text-xs text-zinc-400">{item?.book ?? "No current quote"}</p>
-                  {isShadow ? (
-                    <p className="mt-2 text-[11px] text-amber-300">Shadow intelligence - not currently eligible for The SIA 3.</p>
-                  ) : null}
-                  {item ? (
-                    <div className="mt-2 space-y-1 text-xs text-zinc-400">
-                      <p>SIA probability: {item.currentWinProbability != null ? `${(item.currentWinProbability * 100).toFixed(1)}%` : `${item.modelProbability.toFixed(1)}%`}</p>
-                      <p>Market probability: {item.impliedProbability.toFixed(1)}%</p>
-                      <p>Edge: {item.edge.toFixed(1)} pts</p>
-                      <p>EV: {item.currentEV != null ? `${item.currentEV >= 0 ? "+" : ""}${item.currentEV.toFixed(3)}` : "Unavailable"}</p>
-                      <p>Playable-To: {formatTruePlayableTo(item)}</p>
-                      <p>Qualification: {item.qualificationStatus ?? "UNKNOWN"}</p>
-                    </div>
-                  ) : null}
+          <div className="mt-5 grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
+            <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5 md:p-6">
+              <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Decision</p>
+              <div className="mt-3 flex flex-wrap items-baseline gap-3">
+                <span className="rounded-full border border-white/10 bg-black/20 px-3 py-1 text-xs uppercase tracking-[0.2em] text-zinc-300">{status === "PASS" ? "PASS" : "BET"}</span>
+                <h1 className="text-3xl font-semibold tracking-tight md:text-4xl">{decisionHeadline}</h1>
+              </div>
+              <p className="mt-4 max-w-2xl text-sm leading-6 text-zinc-300">{reasonSummary}</p>
+              <p className="mt-3 text-xs uppercase tracking-[0.16em] text-zinc-600">Invalidation trigger</p>
+              <p className="mt-1 text-sm text-zinc-400">{invalidationTrigger}</p>
+
+              <div className="mt-5 grid gap-3 md:grid-cols-2">
+                <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">SIA Projection</p>
+                  <p className="mt-2 text-lg font-semibold">{projection.awayTeam} {projection.model.projectedScore.away.toFixed(1)} - {projection.homeTeam} {projection.model.projectedScore.home.toFixed(1)}</p>
                 </div>
-              );
-            })}
-          </div>
+                <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Market</p>
+                  <p className="mt-2 text-lg font-semibold">{projection.homeTeam} {signed(projection.market.homeSpread)} · O/U {projection.market.total.toFixed(1)}</p>
+                  <p className="mt-1 text-xs text-zinc-500">Spread source: model feed market_home_spread for this game endpoint.</p>
+                </div>
+              </div>
+            </div>
 
-          <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-            <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Why SIA Likes It</p>
-            <p className="mt-2 text-sm text-zinc-300 leading-6">{reasonSummary}</p>
+            <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5 md:p-6">
+              <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Execution Panel</p>
+              <div className="mt-4 space-y-3">
+                <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Best Price</p>
+                  <p className="mt-2 text-base font-semibold text-zinc-100">{formatBestPrice(opportunity)}</p>
+                  <p className="mt-1 text-xs text-zinc-400">{opportunity?.book ?? "No current quote"}</p>
+                </div>
+                <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Playable To</p>
+                  <p className="mt-2 text-base font-semibold text-zinc-100">{formatTruePlayableTo(opportunity)}</p>
+                  <p className="mt-1 text-xs text-zinc-500">Uses true line-specific threshold only.</p>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                    <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Edge</p>
+                    <p className="mt-2 text-base font-semibold text-zinc-100">{opportunity ? `${opportunity.edge.toFixed(1)} pts` : "Unavailable"}</p>
+                    <p className="mt-1 text-xs text-zinc-500">SIA vs market.</p>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                    <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Confidence</p>
+                    <p className="mt-2 text-base font-semibold text-zinc-100">{opportunity ? `${opportunity.confidence}/100` : "Unavailable"}</p>
+                    <p className="mt-1 text-xs text-zinc-500">Model and market support.</p>
+                  </div>
+                </div>
+                <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Suggested Bet</p>
+                  <p className="mt-2 text-base font-semibold text-zinc-100">{betSize.headline}</p>
+                  <p className="mt-1 text-xs text-zinc-500">{betSize.detail}</p>
+                </div>
+              </div>
+            </div>
           </div>
 
           <div className="mt-5 flex flex-wrap gap-3">
@@ -667,6 +675,35 @@ export default function GameIntelligencePage() {
                 ) : null}
               </div>
             ))}
+          </div>
+        </section>
+
+        <section className="rounded-3xl border border-white/[0.08] bg-[#0B1119] p-6 md:p-8">
+          <p className="text-xs uppercase tracking-[0.2em] text-zinc-600">Research-only alternates</p>
+          <p className="mt-2 text-sm text-zinc-400">These are supporting market views only. They are not presented as official SIA bets unless they are production eligible.</p>
+          <div className="mt-4 grid gap-3 md:grid-cols-3">
+            {alternateMarketCards.length > 0 ? alternateMarketCards.map(({ marketKey, item }) => {
+              const title = marketKey === "spread" ? "BEST SPREAD" : marketKey === "moneyline" ? "BEST MONEYLINE" : "BEST TOTAL";
+              const isShadow = item.productionEligible === false;
+              return (
+                <div key={marketKey} className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">{title}</p>
+                  <p className="mt-2 text-sm font-semibold text-zinc-100">{marketLabel(item)}</p>
+                  <p className="mt-1 text-xs text-zinc-400">{item.book}</p>
+                  <p className="mt-2 text-[11px] text-zinc-500">{isShadow ? "Shadow intelligence - not currently eligible for The SIA 3." : "Production-eligible market view."}</p>
+                  <div className="mt-2 space-y-1 text-xs text-zinc-400">
+                    <p>SIA probability: {item.currentWinProbability != null ? `${(item.currentWinProbability * 100).toFixed(1)}%` : `${item.modelProbability.toFixed(1)}%`}</p>
+                    <p>Market probability: {item.impliedProbability.toFixed(1)}%</p>
+                    <p>Edge: {item.edge.toFixed(1)} pts</p>
+                    <p>EV: {item.currentEV != null ? `${item.currentEV >= 0 ? "+" : ""}${item.currentEV.toFixed(3)}` : "Unavailable"}</p>
+                    <p>Playable-To: {formatTruePlayableTo(item)}</p>
+                    <p>Qualification: {item.qualificationStatus ?? "UNKNOWN"}</p>
+                  </div>
+                </div>
+              );
+            }) : (
+              <p className="text-sm text-zinc-500">No alternate market views are available right now.</p>
+            )}
           </div>
         </section>
 
