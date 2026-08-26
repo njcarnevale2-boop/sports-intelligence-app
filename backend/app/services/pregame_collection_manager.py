@@ -22,6 +22,19 @@ DEFAULT_PROP_ALLOWLIST = (
     "player_anytime_td",
 )
 TELEMETRY_PROVIDER = "the-odds-api"
+PLAYER_PROP_ENDPOINT_TYPE = "EVENT_ODDS"
+PLAYER_PROP_REGION = "us"
+VERIFIED_PLAYER_PROP_MARKET_SET = frozenset(
+    {
+        "player_pass_yds",
+        "player_pass_tds",
+        "player_rush_yds",
+        "player_reception_yds",
+        "player_receptions",
+        "player_anytime_td",
+    }
+)
+VERIFIED_PLAYER_PROP_CREDITS_PER_REQUEST = 6.0
 
 
 @dataclass(frozen=True)
@@ -29,8 +42,6 @@ class ManagerConfig:
     dry_run: bool
     max_requests_per_run: int
     max_estimated_credits_per_run: float
-    estimated_credits_per_request: float
-    deterministic_credit_rule_verified: bool
     allow_unknown_credit_cost: bool
     daily_estimated_credit_budget: Optional[float]
     opening_window_hours: int
@@ -112,22 +123,15 @@ def _resolve_config(
     max_requests_per_run: Optional[int] = None,
     max_estimated_credits_per_run: Optional[float] = None,
     daily_estimated_credit_budget: Optional[float] = None,
-    estimated_credits_per_request: Optional[float] = None,
+    estimated_credits_per_request: Optional[float] = None,  # retained for backward compatibility; not used by verified rule.
     deterministic_credit_rule_verified: Optional[bool] = None,
     allow_unknown_credit_cost: bool = False,
     prop_allowlist: Optional[list[str]] = None,
 ) -> ManagerConfig:
-    verified = (
-        bool(deterministic_credit_rule_verified)
-        if deterministic_credit_rule_verified is not None
-        else str(os.getenv("PREGAME_CREDIT_RULE_VERIFIED", "false")).strip().lower() in {"1", "true", "yes"}
-    )
     return ManagerConfig(
         dry_run=bool(dry_run),
         max_requests_per_run=int(max_requests_per_run if max_requests_per_run is not None else int(os.getenv("PREGAME_MAX_REQUESTS_PER_RUN", "25"))),
         max_estimated_credits_per_run=float(max_estimated_credits_per_run if max_estimated_credits_per_run is not None else float(os.getenv("PREGAME_MAX_ESTIMATED_CREDITS_PER_RUN", "25"))),
-        estimated_credits_per_request=float(estimated_credits_per_request if estimated_credits_per_request is not None else float(os.getenv("PREGAME_ESTIMATED_CREDITS_PER_REQUEST", "1"))),
-        deterministic_credit_rule_verified=verified,
         allow_unknown_credit_cost=bool(allow_unknown_credit_cost),
         daily_estimated_credit_budget=float(daily_estimated_credit_budget) if daily_estimated_credit_budget is not None else _to_float(os.getenv("PREGAME_DAILY_ESTIMATED_CREDIT_BUDGET")),
         opening_window_hours=int(os.getenv("PREGAME_OPENING_WINDOW_HOURS", "24")),
@@ -160,7 +164,8 @@ def _ensure_manager_schema() -> None:
             quota_used REAL,
             skipped INTEGER NOT NULL DEFAULT 0,
             skip_reason TEXT,
-            duplicate_requests_prevented INTEGER NOT NULL DEFAULT 0
+            duplicate_requests_prevented INTEGER NOT NULL DEFAULT 0,
+            credit_cost_estimate_mismatch INTEGER
         )
         """
     )
@@ -172,6 +177,7 @@ def _ensure_manager_schema() -> None:
         ("endpoint_type", "TEXT"),
         ("region", "TEXT"),
         ("market_count", "INTEGER"),
+        ("credit_cost_estimate_mismatch", "INTEGER"),
     ]:
         if col_name not in existing:
             con.execute(f"ALTER TABLE pregame_collection_request_telemetry ADD COLUMN {col_name} {definition}")
@@ -198,6 +204,7 @@ def _record_telemetry(
     skipped: bool,
     skip_reason: Optional[str],
     duplicate_requests_prevented: int,
+    credit_cost_estimate_mismatch: Optional[bool] = None,
 ) -> None:
     con = shadow_markets._connect()
     con.execute(
@@ -206,8 +213,8 @@ def _record_telemetry(
             run_id, collected_at_utc, provider, request_type, endpoint,
             endpoint_type, region, markets_requested, market_count, events_requested, request_count,
             estimated_credits, actual_credits, quota_remaining, quota_used,
-            skipped, skip_reason, duplicate_requests_prevented
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            skipped, skip_reason, duplicate_requests_prevented, credit_cost_estimate_mismatch
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             run_id,
@@ -228,10 +235,30 @@ def _record_telemetry(
             1 if skipped else 0,
             skip_reason,
             int(duplicate_requests_prevented),
+            None if credit_cost_estimate_mismatch is None else (1 if credit_cost_estimate_mismatch else 0),
         ],
     )
     con.commit()
     con.close()
+
+
+def _estimate_credits_for_request_shape(*, endpoint_type: str, region: str, markets: list[str]) -> dict[str, Any]:
+    endpoint_key = str(endpoint_type or "").strip().upper()
+    region_key = str(region or "").strip().lower()
+    market_list = [str(m or "").strip() for m in markets]
+    market_set = set(market_list)
+
+    exact_market_match = len(market_list) == len(VERIFIED_PLAYER_PROP_MARKET_SET) and market_set == VERIFIED_PLAYER_PROP_MARKET_SET
+    if endpoint_key == PLAYER_PROP_ENDPOINT_TYPE and region_key == PLAYER_PROP_REGION and exact_market_match:
+        return {
+            "status": "VERIFIED",
+            "creditsPerRequest": VERIFIED_PLAYER_PROP_CREDITS_PER_REQUEST,
+        }
+
+    return {
+        "status": "UNKNOWN",
+        "creditsPerRequest": None,
+    }
 
 
 def _target_state_for_event(commence_time: Optional[str], *, config: ManagerConfig, now: datetime) -> Optional[str]:
@@ -387,13 +414,18 @@ def build_pregame_collection_plan(
         player_prop_due_event_ids.append(event_id)
 
     planned_requests = player_prop_due
-    estimated_credits: Optional[float]
-    if config.deterministic_credit_rule_verified:
-        estimated_credits = float(round(planned_requests * config.estimated_credits_per_request, 4))
-        estimated_credits_status = "KNOWN"
-    else:
-        estimated_credits = None
-        estimated_credits_status = "UNKNOWN"
+    estimate_contract = _estimate_credits_for_request_shape(
+        endpoint_type=PLAYER_PROP_ENDPOINT_TYPE,
+        region=PLAYER_PROP_REGION,
+        markets=list(config.prop_allowlist),
+    )
+    estimated_credits_per_request = estimate_contract.get("creditsPerRequest")
+    estimated_credits_status = str(estimate_contract.get("status") or "UNKNOWN")
+    estimated_credits = (
+        float(round(float(estimated_credits_per_request) * planned_requests, 4))
+        if estimated_credits_per_request is not None
+        else None
+    )
 
     api_today = _api_usage_today()
     skip_reasons: list[str] = []
@@ -420,6 +452,7 @@ def build_pregame_collection_plan(
         },
         "plannedRequests": planned_requests,
         "estimatedRequests": planned_requests,
+        "estimatedCreditsPerRequest": estimated_credits_per_request,
         "estimatedCredits": estimated_credits,
         "estimatedCreditsStatus": estimated_credits_status,
         "duplicatesPrevented": duplicates_prevented,
@@ -445,6 +478,8 @@ def build_pregame_collection_plan(
             "known": estimated_credits is not None,
         },
         "playerProp": {
+            "endpointType": PLAYER_PROP_ENDPOINT_TYPE,
+            "region": PLAYER_PROP_REGION,
             "allowlistProviderMarkets": list(config.prop_allowlist),
             "allowlistPropTypes": [shadow_markets.PLAYER_PROP_TARGET_MARKETS[m] for m in config.prop_allowlist],
             "statePolicy": {
@@ -539,6 +574,7 @@ def run_pregame_collection_manager(
             skipped=True,
             skip_reason=plan["skipReasons"][0],
             duplicate_requests_prevented=int(plan.get("duplicatesPrevented") or 0),
+            credit_cost_estimate_mismatch=None,
         )
         return {
             "runId": run_id,
@@ -573,6 +609,7 @@ def run_pregame_collection_manager(
             skipped=True,
             skip_reason="DRY_RUN",
             duplicate_requests_prevented=int(plan.get("duplicatesPrevented") or 0),
+            credit_cost_estimate_mismatch=None,
         )
         return {
             "runId": run_id,
@@ -610,6 +647,7 @@ def run_pregame_collection_manager(
             skipped=True,
             skip_reason="UNKNOWN_PROVIDER_CREDIT_COST",
             duplicate_requests_prevented=int(plan.get("duplicatesPrevented") or 0),
+            credit_cost_estimate_mismatch=None,
         )
         return {
             "runId": run_id,
@@ -634,17 +672,13 @@ def run_pregame_collection_manager(
     requests_made = 0
     actual_credits_total = 0.0
     actual_credits_seen = False
+    credit_cost_estimate_mismatch = False
     last_quota_remaining: Optional[float] = None
     last_quota_used: Optional[float] = None
 
     _, games = _load_week_events(week=plan.get("week"))
     games_by_id = {str(g.get("eventId") or ""): g for g in games if str(g.get("eventId") or "")}
-    estimated_total = plan.get("estimatedCredits")
-    per_request_estimated: Optional[float]
-    if estimated_total is None:
-        per_request_estimated = None
-    else:
-        per_request_estimated = float(estimated_total) / max(1, len(due_prop_events))
+    per_request_estimated = _to_float(plan.get("estimatedCreditsPerRequest"))
 
     for event_id in due_prop_events:
         requests_made += 1
@@ -660,6 +694,11 @@ def run_pregame_collection_manager(
             last_quota_remaining = quota_remaining
         if quota_used is not None:
             last_quota_used = quota_used
+        request_mismatch: Optional[bool] = None
+        if per_request_estimated is not None and last_cost is not None:
+            request_mismatch = abs(float(last_cost) - float(per_request_estimated)) > 1e-9
+            if request_mismatch:
+                credit_cost_estimate_mismatch = True
 
         if status != 200 or not isinstance(payload, dict):
             _record_telemetry(
@@ -680,6 +719,7 @@ def run_pregame_collection_manager(
                 skipped=True,
                 skip_reason=f"HTTP_{status}",
                 duplicate_requests_prevented=0,
+                credit_cost_estimate_mismatch=request_mismatch,
             )
             continue
 
@@ -712,6 +752,7 @@ def run_pregame_collection_manager(
             skipped=False,
             skip_reason=None,
             duplicate_requests_prevented=0,
+            credit_cost_estimate_mismatch=request_mismatch,
         )
 
     discovery = {
@@ -736,6 +777,7 @@ def run_pregame_collection_manager(
             "coreCapture": core_capture,
             "playerPropIngestion": player_prop_ingestion,
             "actualCreditsConsumed": round(actual_credits_total, 4) if actual_credits_seen else None,
+            "creditCostEstimateMismatch": credit_cost_estimate_mismatch,
             "quotaRemaining": last_quota_remaining,
             "quotaUsed": last_quota_used,
         },

@@ -45,6 +45,20 @@ def _games(now: datetime) -> list[dict]:
     ]
 
 
+def _sixteen_games(now: datetime) -> list[dict]:
+    games: list[dict] = []
+    for idx in range(16):
+        games.append(
+            {
+                "eventId": f"evt-{idx:02d}",
+                "commenceTime": (now + timedelta(hours=30)).isoformat(),
+                "awayAbbreviation": f"A{idx:02d}",
+                "homeAbbreviation": f"H{idx:02d}",
+            }
+        )
+    return games
+
+
 def test_target_state_opening_current_closing_and_post_kickoff(shadow_db):
     cfg = mgr._resolve_config(dry_run=True)
     now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
@@ -86,9 +100,91 @@ def test_dry_run_makes_zero_provider_calls(shadow_db, monkeypatch):
     assert out["status"] == "DRY_RUN"
     assert out["execution"]["providerRequests"] == 0
     assert out["plan"]["plannedRequests"] == 3
-    assert out["plan"]["estimatedCredits"] is None
-    assert out["plan"]["estimatedCreditsStatus"] == "UNKNOWN"
+    assert out["plan"]["estimatedCreditsStatus"] == "VERIFIED"
+    assert out["plan"]["estimatedCreditsPerRequest"] == 6.0
+    assert out["plan"]["estimatedCredits"] == 18.0
     assert called["provider"] == 0
+
+
+def test_exact_verified_shape_is_6_credits(shadow_db):
+    out = mgr._estimate_credits_for_request_shape(
+        endpoint_type="EVENT_ODDS",
+        region="us",
+        markets=list(mgr.DEFAULT_PROP_ALLOWLIST),
+    )
+    assert out["status"] == "VERIFIED"
+    assert out["creditsPerRequest"] == 6.0
+
+
+def test_market_order_independent_verified_match(shadow_db):
+    out = mgr._estimate_credits_for_request_shape(
+        endpoint_type="EVENT_ODDS",
+        region="us",
+        markets=list(reversed(mgr.DEFAULT_PROP_ALLOWLIST)),
+    )
+    assert out["status"] == "VERIFIED"
+    assert out["creditsPerRequest"] == 6.0
+
+
+def test_subset_market_shape_is_unknown(shadow_db):
+    out = mgr._estimate_credits_for_request_shape(
+        endpoint_type="EVENT_ODDS",
+        region="us",
+        markets=["player_pass_yds", "player_pass_tds", "player_rush_yds", "player_reception_yds", "player_receptions"],
+    )
+    assert out["status"] == "UNKNOWN"
+    assert out["creditsPerRequest"] is None
+
+
+def test_superset_market_shape_is_unknown(shadow_db):
+    out = mgr._estimate_credits_for_request_shape(
+        endpoint_type="EVENT_ODDS",
+        region="us",
+        markets=list(mgr.DEFAULT_PROP_ALLOWLIST) + ["player_first_td"],
+    )
+    assert out["status"] == "UNKNOWN"
+    assert out["creditsPerRequest"] is None
+
+
+def test_different_region_is_unknown(shadow_db):
+    out = mgr._estimate_credits_for_request_shape(
+        endpoint_type="EVENT_ODDS",
+        region="eu",
+        markets=list(mgr.DEFAULT_PROP_ALLOWLIST),
+    )
+    assert out["status"] == "UNKNOWN"
+    assert out["creditsPerRequest"] is None
+
+
+def test_different_endpoint_is_unknown(shadow_db):
+    out = mgr._estimate_credits_for_request_shape(
+        endpoint_type="SPORT_ODDS",
+        region="us",
+        markets=list(mgr.DEFAULT_PROP_ALLOWLIST),
+    )
+    assert out["status"] == "UNKNOWN"
+    assert out["creditsPerRequest"] is None
+
+
+def test_16_event_verified_plan_estimates_96_credits(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    games = _sixteen_games(now)
+    monkeypatch.setattr(mgr, "_load_week_events", lambda week=None: (1, games))
+    monkeypatch.setattr(
+        mgr,
+        "_load_line_board_market_presence",
+        lambda: {str(g["eventId"]): {"SPREAD", "MONEYLINE", "TOTAL"} for g in games},
+    )
+    monkeypatch.setattr(mgr, "_state_exists_for_market", lambda event_id, family, state: False)
+    monkeypatch.setattr(mgr, "_state_exists_for_player_prop_event", lambda event_id, state: False)
+
+    plan = mgr.build_pregame_collection_plan(dry_run=True, now_utc=now)
+    assert plan["eventsEvaluated"] == 16
+    assert plan["snapshotsDue"]["playerProp"] == 16
+    assert plan["plannedRequests"] == 16
+    assert plan["estimatedCreditsStatus"] == "VERIFIED"
+    assert plan["estimatedCreditsPerRequest"] == 6.0
+    assert plan["estimatedCredits"] == 96.0
 
 
 def test_request_budget_enforcement(shadow_db, monkeypatch):
@@ -113,12 +209,54 @@ def test_estimated_credit_budget_enforcement(shadow_db, monkeypatch):
     plan = mgr.build_pregame_collection_plan(
         dry_run=True,
         max_estimated_credits_per_run=1.0,
-        estimated_credits_per_request=1.0,
-        deterministic_credit_rule_verified=True,
         now_utc=now,
     )
     assert "RUN_CREDIT_BUDGET_EXCEEDED" in plan["skipReasons"]
     assert plan["creditBudget"]["pass"] is False
+
+
+def test_verified_credit_budget_blocks_execution_before_provider_calls(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(mgr, "_utc_now", lambda: now)
+    games = _sixteen_games(now)
+    monkeypatch.setattr(mgr, "_load_week_events", lambda week=None: (1, games))
+    monkeypatch.setattr(
+        mgr,
+        "_load_line_board_market_presence",
+        lambda: {str(g["eventId"]): {"SPREAD", "MONEYLINE", "TOTAL"} for g in games},
+    )
+    monkeypatch.setattr(mgr, "_state_exists_for_market", lambda event_id, family, state: False)
+    monkeypatch.setattr(mgr, "_state_exists_for_player_prop_event", lambda event_id, state: False)
+
+    called = {"provider": 0}
+
+    def _provider(*args, **kwargs):
+        called["provider"] += 1
+        raise AssertionError("provider should not be called when verified credit budget fails")
+
+    monkeypatch.setattr(shadow_markets, "_call_odds_api_event_odds", _provider)
+    out = mgr.run_pregame_collection_manager(dry_run=False, max_estimated_credits_per_run=95.0)
+    assert out["status"] == "SKIPPED"
+    assert out["execution"]["providerRequests"] == 0
+    assert out["execution"]["skipReason"] == "RUN_CREDIT_BUDGET_EXCEEDED"
+    assert called["provider"] == 0
+
+
+def test_verified_credit_budget_passes_when_budget_sufficient(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    games = _sixteen_games(now)
+    monkeypatch.setattr(mgr, "_load_week_events", lambda week=None: (1, games))
+    monkeypatch.setattr(
+        mgr,
+        "_load_line_board_market_presence",
+        lambda: {str(g["eventId"]): {"SPREAD", "MONEYLINE", "TOTAL"} for g in games},
+    )
+    monkeypatch.setattr(mgr, "_state_exists_for_market", lambda event_id, family, state: False)
+    monkeypatch.setattr(mgr, "_state_exists_for_player_prop_event", lambda event_id, state: False)
+
+    plan = mgr.build_pregame_collection_plan(dry_run=True, max_estimated_credits_per_run=96.0, now_utc=now)
+    assert "RUN_CREDIT_BUDGET_EXCEEDED" not in plan["skipReasons"]
+    assert plan["creditBudget"]["pass"] is True
 
 
 def test_unknown_cost_real_execution_blocked_by_default(shadow_db, monkeypatch):
@@ -136,12 +274,43 @@ def test_unknown_cost_real_execution_blocked_by_default(shadow_db, monkeypatch):
         raise AssertionError("provider should not be called when unknown cost is not explicitly allowed")
 
     monkeypatch.setattr(shadow_markets, "_call_odds_api_event_odds", _provider)
-    out = mgr.run_pregame_collection_manager(dry_run=False)
+    out = mgr.run_pregame_collection_manager(dry_run=False, prop_allowlist=["player_pass_yds"])
 
     assert out["status"] == "SKIPPED"
     assert out["execution"]["providerRequests"] == 0
     assert out["execution"]["skipReason"] == "UNKNOWN_PROVIDER_CREDIT_COST"
     assert called["provider"] == 0
+
+
+def test_unknown_cost_explicit_opt_in_still_allows_execution(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(mgr, "_utc_now", lambda: now)
+    games = [
+        {
+            "eventId": "evt-day",
+            "commenceTime": (now + timedelta(hours=2)).isoformat(),
+            "awayAbbreviation": "KC",
+            "homeAbbreviation": "BUF",
+        }
+    ]
+    monkeypatch.setattr(mgr, "_load_week_events", lambda week=None: (1, games))
+    monkeypatch.setattr(mgr, "_load_line_board_market_presence", lambda: {"evt-day": {"SPREAD", "MONEYLINE", "TOTAL"}})
+    monkeypatch.setattr(mgr, "_state_exists_for_market", lambda event_id, family, state: False)
+    monkeypatch.setattr(mgr, "_state_exists_for_player_prop_event", lambda event_id, state: False)
+    monkeypatch.setattr(shadow_markets, "capture_prospective_from_line_board", lambda week=None, season=None: {"rowsReceived": 1})
+
+    def _provider(event_id: str, markets: list[str]):
+        return 200, {"x-requests-last": "1"}, {"bookmakers": []}
+
+    monkeypatch.setattr(shadow_markets, "_call_odds_api_event_odds", _provider)
+    out = mgr.run_pregame_collection_manager(
+        dry_run=False,
+        allow_unknown_credit_cost=True,
+        prop_allowlist=["player_pass_yds"],
+    )
+
+    assert out["status"] == "COMPLETED"
+    assert out["execution"]["providerRequests"] == 1
 
 
 def test_unknown_quota_behavior_is_null_when_unavailable(shadow_db):
@@ -254,12 +423,12 @@ def test_unknown_cost_explicit_opt_in_allows_execution_and_tracks_actual_credits
 
     out = mgr.run_pregame_collection_manager(
         dry_run=False,
-        allow_unknown_credit_cost=True,
-        prop_allowlist=["player_pass_yds"],
+        prop_allowlist=list(mgr.DEFAULT_PROP_ALLOWLIST),
     )
     assert out["status"] == "COMPLETED"
     assert out["execution"]["providerRequests"] == 1
     assert out["execution"]["actualCreditsConsumed"] == 1.0
+    assert out["execution"]["creditCostEstimateMismatch"] is True
 
     status = mgr.pregame_collection_status_report()
     assert status["api"]["requestsToday"] >= 1
@@ -293,11 +462,11 @@ def test_missing_actual_credit_telemetry_remains_unknown(shadow_db, monkeypatch)
 
     out = mgr.run_pregame_collection_manager(
         dry_run=False,
-        allow_unknown_credit_cost=True,
-        prop_allowlist=["player_pass_yds"],
+        prop_allowlist=list(mgr.DEFAULT_PROP_ALLOWLIST),
     )
     assert out["status"] == "COMPLETED"
     assert out["execution"]["actualCreditsConsumed"] is None
+    assert out["execution"]["creditCostEstimateMismatch"] is False
 
 
 def test_request_budget_enforced_even_when_credit_cost_unknown(shadow_db, monkeypatch):
@@ -311,6 +480,7 @@ def test_request_budget_enforced_even_when_credit_cost_unknown(shadow_db, monkey
     plan = mgr.build_pregame_collection_plan(
         dry_run=False,
         max_requests_per_run=2,
+        prop_allowlist=["player_pass_yds"],
         now_utc=now,
     )
     assert plan["estimatedCredits"] is None
@@ -324,7 +494,7 @@ def test_request_count_not_treated_as_credit_cost(shadow_db, monkeypatch):
     monkeypatch.setattr(mgr, "_state_exists_for_market", lambda event_id, family, state: False)
     monkeypatch.setattr(mgr, "_state_exists_for_player_prop_event", lambda event_id, state: False)
 
-    plan = mgr.build_pregame_collection_plan(dry_run=True, now_utc=now)
+    plan = mgr.build_pregame_collection_plan(dry_run=True, now_utc=now, prop_allowlist=["player_pass_yds"])
     assert plan["plannedRequests"] == 3
     assert plan["estimatedCredits"] is None
 
