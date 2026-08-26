@@ -33,6 +33,11 @@ from app.services.shadow_markets import (
     sportsbook_coverage_audit,
     universal_candidate_contract_design,
 )
+from app.services.pregame_collection_manager import (
+    build_pregame_collection_plan,
+    pregame_collection_status_report,
+    run_pregame_collection_manager,
+)
 
 
 router = APIRouter(prefix="/api/admin/shadow", tags=["admin-shadow"])
@@ -86,6 +91,18 @@ class LineShoppingMarketViewRequest(BaseModel):
 
 class PlayerPropIngestionRequest(BaseModel):
     runDiscovery: bool = True
+
+
+class PregameCollectionRunRequest(BaseModel):
+    week: Optional[int] = None
+    dryRun: bool = True
+    maxRequestsPerRun: Optional[int] = None
+    maxEstimatedCreditsPerRun: Optional[float] = None
+    dailyEstimatedCreditBudget: Optional[float] = None
+    estimatedCreditsPerRequest: Optional[float] = None
+    deterministicCreditRuleVerified: bool = False
+    allowUnknownCreditCost: bool = False
+    propAllowlist: Optional[list[str]] = None
 
 
 @router.post("/boards/build")
@@ -284,3 +301,44 @@ def universal_contract(x_admin_token: str | None = Header(default=None)):
 def correlation_design(x_admin_token: str | None = Header(default=None)):
     _require_admin_token(x_admin_token)
     return correlation_metadata_design()
+
+
+@router.post("/capture/pregame-manager/plan")
+def pregame_collection_plan(request: PregameCollectionRunRequest, x_admin_token: str | None = Header(default=None)):
+    _require_admin_token(x_admin_token)
+    return build_pregame_collection_plan(
+        week=request.week,
+        dry_run=request.dryRun,
+        max_requests_per_run=request.maxRequestsPerRun,
+        max_estimated_credits_per_run=request.maxEstimatedCreditsPerRun,
+        daily_estimated_credit_budget=request.dailyEstimatedCreditBudget,
+        estimated_credits_per_request=request.estimatedCreditsPerRequest,
+        deterministic_credit_rule_verified=request.deterministicCreditRuleVerified,
+        allow_unknown_credit_cost=request.allowUnknownCreditCost,
+        prop_allowlist=request.propAllowlist,
+    )
+
+
+@router.post("/capture/pregame-manager/run")
+def pregame_collection_run(request: PregameCollectionRunRequest, x_admin_token: str | None = Header(default=None)):
+    _require_admin_token(x_admin_token)
+    return run_pregame_collection_manager(
+        week=request.week,
+        dry_run=request.dryRun,
+        max_requests_per_run=request.maxRequestsPerRun,
+        max_estimated_credits_per_run=request.maxEstimatedCreditsPerRun,
+        daily_estimated_credit_budget=request.dailyEstimatedCreditBudget,
+        estimated_credits_per_request=request.estimatedCreditsPerRequest,
+        deterministic_credit_rule_verified=request.deterministicCreditRuleVerified,
+        allow_unknown_credit_cost=request.allowUnknownCreditCost,
+        prop_allowlist=request.propAllowlist,
+    )
+
+
+@router.get("/capture/pregame-manager/status")
+def pregame_collection_status(
+    week: Optional[int] = Query(default=None),
+    x_admin_token: str | None = Header(default=None),
+):
+    _require_admin_token(x_admin_token)
+    return pregame_collection_status_report(week=week)
