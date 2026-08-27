@@ -227,14 +227,20 @@ def _run_once() -> bool:
             closing_capture_error = str(exc)[:300]
             log.warning("Closing line capture step failed (non-fatal): %s", exc)
 
-        # Step 3b: append ledger outcomes for finished games (append-only).
+        # Step 3b: process OFFICIAL ledger postgame lifecycle for finished games.
         ledger_outcomes: Dict[str, int] = {"checked": 0, "appended": 0, "pending": 0}
         ledger_outcome_error: Optional[str] = None
         try:
-            from app.services.decision_ledger import auto_append_outcomes_from_scores
-            ledger_outcomes = auto_append_outcomes_from_scores(fetch_scores_fn=_fetch_final_score_from_duckdb)
+            from app.services.decision_ledger import run_official_postgame_lifecycle
+
+            lifecycle = run_official_postgame_lifecycle(fetch_scores_fn=_fetch_final_score_from_duckdb)
+            ledger_outcomes = {
+                "checked": int(lifecycle.get("checked") or 0),
+                "appended": int(lifecycle.get("settled") or 0),
+                "pending": int(lifecycle.get("pending") or 0),
+            }
             log.info(
-                "Ledger outcome append: checked=%d appended=%d pending=%d",
+                "Ledger postgame lifecycle: checked=%d settled=%d pending=%d",
                 ledger_outcomes.get("checked", 0),
                 ledger_outcomes.get("appended", 0),
                 ledger_outcomes.get("pending", 0),

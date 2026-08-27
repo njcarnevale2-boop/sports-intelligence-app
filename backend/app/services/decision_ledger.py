@@ -1181,6 +1181,32 @@ def _profit_per_dollar(price: Optional[float], bet_result: str) -> Optional[floa
     return round(price / 100.0, 6)
 
 
+def _derive_bet_result(*, market: str, side: str, point: Optional[float], away_score: int, home_score: int) -> Optional[str]:
+    if point is None:
+        return None
+
+    market_key = str(market or "").lower()
+    side_key = str(side or "").lower()
+    result = None
+
+    if market_key in {"spread", "spreads"}:
+        margin = float(home_score) - float(away_score)
+        if side_key == "home":
+            ats = margin + point
+            result = "WIN" if ats > 0 else "LOSS" if ats < 0 else "PUSH"
+        elif side_key == "away":
+            ats = -margin - point
+            result = "WIN" if ats > 0 else "LOSS" if ats < 0 else "PUSH"
+    elif market_key in {"total", "totals"}:
+        total = float(home_score) + float(away_score)
+        if side_key == "over":
+            result = "WIN" if total > point else "LOSS" if total < point else "PUSH"
+        elif side_key == "under":
+            result = "WIN" if total < point else "LOSS" if total > point else "PUSH"
+
+    return result
+
+
 def append_outcome(payload: Dict[str, Any]) -> Dict[str, Any]:
     _ensure_schema()
     decision_id = payload.get("decisionId")
@@ -1389,6 +1415,9 @@ def get_admin_ledger_summary(limit: int = 200) -> Dict[str, Any]:
 
     con.close()
 
+    prospective = get_prospective_performance()
+    promotion = _official_promotion_progress(prospective)
+
     return {
         "decisionsRecorded": decisions_recorded,
         "sia3DecisionsCaptured": sia3_decisions,
@@ -1408,6 +1437,8 @@ def get_admin_ledger_summary(limit: int = 200) -> Dict[str, Any]:
         "missingOutcomes": missing_outcomes,
         "missingClosingLines": missing_closing_lines,
         "missingOddsSnapshotLinkages": missing_snapshot_linkages,
+        "prospectivePerformance": prospective,
+        "promotionProgress": promotion,
         "auditRows": [
             {
                 "timestamp": r["published_at_utc"],
@@ -1513,6 +1544,194 @@ def get_prospective_performance() -> Dict[str, Any]:
     }
 
 
+def _official_promotion_progress(performance: Dict[str, Any]) -> Dict[str, Any]:
+    # Align with the existing spread-family settled-sample expectation used in promotion gates.
+    target = 100
+    graded = int(performance.get("gradedDecisions") or 0)
+    return {
+        "sampleTarget": target,
+        "sampleCount": graded,
+        "sampleProgress": float(graded / target) if target > 0 else None,
+    }
+
+
+def _fetch_unsettled_official_decisions(con: sqlite3.Connection) -> list[sqlite3.Row]:
+    return con.execute(
+        """
+        SELECT DISTINCT d.*
+        FROM decision_ledger d
+        JOIN sia3_publication_slots s ON s.decision_id = d.decision_id
+        JOIN sia3_publications p ON p.publication_id = s.publication_id
+        WHERE p.is_official = 1
+          AND NOT EXISTS (
+              SELECT 1
+              FROM decision_outcomes o
+              WHERE o.decision_id = d.decision_id
+                AND o.bet_result IN ('WIN','LOSS','PUSH')
+          )
+        ORDER BY d.published_at_utc ASC, d.id ASC
+        """
+    ).fetchall()
+
+
+def _extract_final_score(score: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not score or not isinstance(score, dict):
+        return {"status": "MISSING"}
+
+    raw_status = str(score.get("status") or score.get("gameStatus") or "").strip().upper()
+    if raw_status and raw_status not in {"FINAL", "COMPLETED", "POST", "POSTGAME"}:
+        return {"status": "NOT_FINAL", "gameStatus": raw_status}
+
+    away = score.get("finalAwayScore")
+    home = score.get("finalHomeScore")
+    if away is None:
+        away = score.get("awayScore")
+    if home is None:
+        home = score.get("homeScore")
+
+    if away is None or home is None:
+        return {"status": "MISSING"}
+
+    try:
+        away_score = int(away)
+        home_score = int(home)
+    except (TypeError, ValueError):
+        return {"status": "INVALID"}
+
+    return {
+        "status": "FINAL",
+        "finalAwayScore": away_score,
+        "finalHomeScore": home_score,
+        "sourceSnapshotId": score.get("sourceSnapshotId"),
+    }
+
+
+def run_official_postgame_lifecycle(
+    *,
+    fetch_scores_fn: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Process unsettled OFFICIAL SIA3 decisions through canonical outcome/CLV grading.
+
+    The coordinator is append-only and idempotent because it delegates writes to append_outcome,
+    which has canonical idempotency keys, and only selects currently unsettled official decisions.
+    """
+    _ensure_schema()
+
+    if fetch_scores_fn is None:
+        def _default_fetch_scores(event_id: str) -> Optional[Dict[str, Any]]:
+            return None
+        fetch_scores_fn = _default_fetch_scores
+
+    con = _connect()
+    pending_rows = _fetch_unsettled_official_decisions(con)
+    con.close()
+
+    settled = 0
+    skipped_not_final = 0
+    skipped_missing_score = 0
+    skipped_invalid_score = 0
+    closing_attached = 0
+    clv_available = 0
+    clv_pending = 0
+    win_count = 0
+    loss_count = 0
+    push_count = 0
+    errors: list[dict[str, Any]] = []
+
+    for row in pending_rows:
+        decision_id = str(row["decision_id"])
+        event_id = str(row["event_id"] or "")
+        score_payload = fetch_scores_fn(event_id)
+        extracted = _extract_final_score(score_payload)
+        score_status = str(extracted.get("status") or "MISSING").upper()
+
+        if score_status == "NOT_FINAL":
+            skipped_not_final += 1
+            continue
+        if score_status == "MISSING":
+            skipped_missing_score += 1
+            continue
+        if score_status == "INVALID":
+            skipped_invalid_score += 1
+            continue
+
+        point = _to_float(row["point"])
+        result = _derive_bet_result(
+            market=str(row["market"] or ""),
+            side=str(row["side"] or ""),
+            point=point,
+            away_score=int(extracted.get("finalAwayScore")),
+            home_score=int(extracted.get("finalHomeScore")),
+        )
+        if result is None:
+            skipped_invalid_score += 1
+            continue
+
+        try:
+            outcome = append_outcome(
+                {
+                    "decisionId": decision_id,
+                    "capturedAtUTC": _utc_now_iso(),
+                    "betResult": result,
+                    "finalAwayScore": extracted.get("finalAwayScore"),
+                    "finalHomeScore": extracted.get("finalHomeScore"),
+                    "sourceSnapshotId": extracted.get("sourceSnapshotId"),
+                }
+            )
+        except Exception as exc:
+            errors.append(
+                {
+                    "decisionId": decision_id,
+                    "eventId": event_id,
+                    "error": str(exc),
+                }
+            )
+            continue
+
+        settled += 1
+        result = str(outcome.get("betResult") or "").upper()
+        if result == "WIN":
+            win_count += 1
+        elif result == "LOSS":
+            loss_count += 1
+        elif result == "PUSH":
+            push_count += 1
+
+        if outcome.get("closingLine") is not None or outcome.get("closingPrice") is not None:
+            closing_attached += 1
+
+        if outcome.get("clv") is not None:
+            clv_available += 1
+        else:
+            clv_pending += 1
+
+    prospective = get_prospective_performance()
+    promotion = _official_promotion_progress(prospective)
+
+    return {
+        "checked": len(pending_rows),
+        "settled": settled,
+        "pending": len(pending_rows) - settled - len(errors),
+        "skipped": {
+            "gameNotFinal": skipped_not_final,
+            "missingFinalScore": skipped_missing_score,
+            "invalidScore": skipped_invalid_score,
+        },
+        "resultBreakdown": {
+            "WIN": win_count,
+            "LOSS": loss_count,
+            "PUSH": push_count,
+        },
+        "closingLineAttached": closing_attached,
+        "closingLineMissing": settled - closing_attached,
+        "clvAvailable": clv_available,
+        "clvPending": clv_pending,
+        "errors": errors,
+        "prospectivePerformance": prospective,
+        "promotionProgress": promotion,
+    }
+
+
 def auto_append_outcomes_from_scores(
     *,
     fetch_scores_fn: Optional[Any] = None,
@@ -1557,28 +1776,13 @@ def auto_append_outcomes_from_scores(
             still_pending += 1
             continue
 
-        market = str(row["market"] or "").lower()
-        side = str(row["side"] or "").lower()
-        point = _to_float(row["point"])
-        if point is None:
-            still_pending += 1
-            continue
-
-        result = None
-        if market in {"spread", "spreads"}:
-            margin = float(home) - float(away)
-            if side == "home":
-                ats = margin + point
-                result = "WIN" if ats > 0 else "LOSS" if ats < 0 else "PUSH"
-            elif side == "away":
-                ats = -margin - point
-                result = "WIN" if ats > 0 else "LOSS" if ats < 0 else "PUSH"
-        elif market in {"total", "totals"}:
-            total = float(home) + float(away)
-            if side == "over":
-                result = "WIN" if total > point else "LOSS" if total < point else "PUSH"
-            elif side == "under":
-                result = "WIN" if total < point else "LOSS" if total > point else "PUSH"
+        result = _derive_bet_result(
+            market=str(row["market"] or ""),
+            side=str(row["side"] or ""),
+            point=_to_float(row["point"]),
+            away_score=int(away),
+            home_score=int(home),
+        )
 
         if result is None:
             still_pending += 1

@@ -271,7 +271,7 @@ def test_closing_capture_failure_does_not_break_refresh(tmp_path):
 
     with (
         patch.object(orch, "_STATE_FILE", state_file),
-        patch.object(orch.subprocess, "run", side_effect=[success, success]),
+        patch.object(orch.subprocess, "run", side_effect=lambda *args, **kwargs: success),
         patch("app.services.recommendation_snapshot.capture_closing_lines", side_effect=RuntimeError("capture blew up")),
         patch("app.services.performance.get_performance_service") as perf_factory,
         patch("app.services.injuries.InjuryAnalyzer") as injury_analyzer,
@@ -305,9 +305,9 @@ def test_shadow_outcome_append_failure_is_non_fatal(tmp_path):
 
     with (
         patch.object(orch, "_STATE_FILE", state_file),
-        patch.object(orch.subprocess, "run", side_effect=[success, success]),
+        patch.object(orch.subprocess, "run", side_effect=lambda *args, **kwargs: success),
         patch("app.services.recommendation_snapshot.capture_closing_lines", return_value={"eligible": 0, "captured": 0, "pending": 0, "missing": 0, "errors": 0}),
-        patch("app.services.decision_ledger.auto_append_outcomes_from_scores", return_value={"checked": 0, "appended": 0, "pending": 0}),
+        patch("app.services.decision_ledger.run_official_postgame_lifecycle", return_value={"checked": 0, "settled": 0, "pending": 0}),
         patch("app.services.shadow_markets.append_shadow_outcomes", side_effect=RuntimeError("shadow blew up")),
         patch("app.services.performance.get_performance_service") as perf_factory,
         patch("app.services.injuries.InjuryAnalyzer") as injury_analyzer,

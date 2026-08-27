@@ -639,3 +639,231 @@ def test_official_preview_and_publish_routes_enforce_admin_token_and_overrides(t
     assert allowed.status_code == 200
     body = allowed.json()
     assert body["publication"]["isOfficial"] is True
+
+
+def _publish_official_slot(decision_id: str, *, week: int = 1):
+    return client.post(
+        "/api/admin/ledger/publications/sia3",
+        headers=ADMIN_HEADERS,
+        json={
+            "publicationType": "SIA_3",
+            "publishedAtUTC": f"2026-09-{12 + week:02d}T16:00:00+00:00",
+            "season": 2026,
+            "week": week,
+            "isOfficial": True,
+            "slots": [
+                {"decisionId": decision_id, "slotLabel": "BET", "qualificationStatus": "QUALIFIED"},
+                {"slotLabel": "WATCH", "qualificationStatus": "NOT_QUALIFIED"},
+                {"slotLabel": "WATCH", "qualificationStatus": "NOT_QUALIFIED"},
+            ],
+        },
+    )
+
+
+def test_official_postgame_lifecycle_win_idempotent_three_runs(tmp_path, monkeypatch):
+    import app.services.decision_ledger as dl
+
+    db_path = tmp_path / "ledger.db"
+    monkeypatch.setattr(dl, "_DB_PATH", db_path)
+
+    payload = _decision_payload("evt-official-win")
+    payload["selection"] = "ATL -3"
+    payload["side"] = "home"
+    payload["point"] = -3.0
+
+    decision_id = _post_decision(payload).json()["decisionId"]
+    publication = _publish_official_slot(decision_id, week=1)
+    assert publication.status_code == 200
+
+    with patch.object(dl, "get_closing_line") as mocked_closing:
+        mocked_closing.return_value = type(
+            "C",
+            (),
+            {
+                "closing_status": "AVAILABLE",
+                "closing_point": -4.0,
+                "closing_price": -110.0,
+                "closing_timestamp": datetime.fromisoformat("2026-09-13T16:59:00+00:00"),
+            },
+        )()
+
+        run1 = dl.run_official_postgame_lifecycle(
+            fetch_scores_fn=lambda event_id: {
+                "status": "FINAL",
+                "finalAwayScore": 17,
+                "finalHomeScore": 24,
+                "sourceSnapshotId": "score-snap-1",
+            }
+            if event_id == "evt-official-win"
+            else None
+        )
+        assert run1["checked"] == 1
+        assert run1["settled"] == 1
+        assert run1["resultBreakdown"]["WIN"] == 1
+        assert run1["closingLineAttached"] == 1
+        assert run1["clvAvailable"] == 1
+        assert run1["promotionProgress"]["sampleCount"] == 1
+
+        run2 = dl.run_official_postgame_lifecycle(
+            fetch_scores_fn=lambda event_id: {
+                "status": "FINAL",
+                "finalAwayScore": 17,
+                "finalHomeScore": 24,
+            }
+            if event_id == "evt-official-win"
+            else None
+        )
+        assert run2["checked"] == 0
+        assert run2["settled"] == 0
+        assert run2["promotionProgress"]["sampleCount"] == 1
+
+        run3 = dl.run_official_postgame_lifecycle(
+            fetch_scores_fn=lambda event_id: {
+                "status": "FINAL",
+                "finalAwayScore": 17,
+                "finalHomeScore": 24,
+            }
+            if event_id == "evt-official-win"
+            else None
+        )
+        assert run3["checked"] == 0
+        assert run3["settled"] == 0
+        assert run3["promotionProgress"]["sampleCount"] == 1
+
+    con = sqlite3.connect(str(db_path))
+    con.row_factory = sqlite3.Row
+    rows = con.execute("SELECT * FROM decision_outcomes WHERE decision_id = ?", [decision_id]).fetchall()
+    con.close()
+    assert len(rows) == 1
+    assert rows[0]["bet_result"] == "WIN"
+
+
+def test_official_postgame_lifecycle_loss_and_push(tmp_path, monkeypatch):
+    import app.services.decision_ledger as dl
+
+    monkeypatch.setattr(dl, "_DB_PATH", tmp_path / "ledger.db")
+
+    loss_payload = _decision_payload("evt-official-loss")
+    loss_payload["selection"] = "ATL -3"
+    loss_payload["side"] = "home"
+    loss_payload["point"] = -3.0
+
+    push_payload = _decision_payload("evt-official-push")
+    push_payload["selection"] = "ATL -3"
+    push_payload["side"] = "home"
+    push_payload["point"] = -3.0
+
+    loss_id = _post_decision(loss_payload).json()["decisionId"]
+    push_id = _post_decision(push_payload).json()["decisionId"]
+    assert _publish_official_slot(loss_id, week=2).status_code == 200
+    assert _publish_official_slot(push_id, week=3).status_code == 200
+
+    with patch.object(dl, "get_closing_line") as mocked_closing:
+        mocked_closing.return_value = type(
+            "C",
+            (),
+            {
+                "closing_status": "AVAILABLE",
+                "closing_point": -3.5,
+                "closing_price": -110.0,
+                "closing_timestamp": datetime.fromisoformat("2026-09-13T16:59:00+00:00"),
+            },
+        )()
+
+        result = dl.run_official_postgame_lifecycle(
+            fetch_scores_fn=lambda event_id: {
+                "evt-official-loss": {"status": "FINAL", "finalAwayScore": 24, "finalHomeScore": 20},
+                "evt-official-push": {"status": "FINAL", "finalAwayScore": 20, "finalHomeScore": 23},
+            }.get(event_id)
+        )
+
+    assert result["checked"] == 2
+    assert result["settled"] == 2
+    assert result["resultBreakdown"]["LOSS"] == 1
+    assert result["resultBreakdown"]["PUSH"] == 1
+
+
+def test_official_postgame_lifecycle_missing_closing_line_still_grades(tmp_path, monkeypatch):
+    import app.services.decision_ledger as dl
+
+    monkeypatch.setattr(dl, "_DB_PATH", tmp_path / "ledger.db")
+
+    payload = _decision_payload("evt-official-no-closing")
+    payload["selection"] = "ATL -3"
+    payload["side"] = "home"
+    payload["point"] = -3.0
+    decision_id = _post_decision(payload).json()["decisionId"]
+    assert _publish_official_slot(decision_id, week=4).status_code == 200
+
+    with patch.object(dl, "get_closing_line") as mocked_closing:
+        mocked_closing.return_value = type(
+            "C",
+            (),
+            {
+                "closing_status": "NOT_CAPTURED",
+                "closing_point": None,
+                "closing_price": None,
+                "closing_timestamp": None,
+            },
+        )()
+
+        result = dl.run_official_postgame_lifecycle(
+            fetch_scores_fn=lambda event_id: {
+                "status": "FINAL",
+                "finalAwayScore": 17,
+                "finalHomeScore": 24,
+            }
+            if event_id == "evt-official-no-closing"
+            else None
+        )
+
+    assert result["settled"] == 1
+    assert result["closingLineAttached"] == 0
+    assert result["closingLineMissing"] == 1
+    assert result["clvPending"] == 1
+
+
+def test_official_postgame_lifecycle_game_not_final_and_invalid_score_safety(tmp_path, monkeypatch):
+    import app.services.decision_ledger as dl
+
+    monkeypatch.setattr(dl, "_DB_PATH", tmp_path / "ledger.db")
+
+    pending_payload = _decision_payload("evt-official-pending")
+    pending_payload["selection"] = "ATL -3"
+    pending_payload["side"] = "home"
+    pending_payload["point"] = -3.0
+
+    invalid_payload = _decision_payload("evt-official-invalid")
+    invalid_payload["selection"] = "ATL -3"
+    invalid_payload["side"] = "home"
+    invalid_payload["point"] = -3.0
+
+    pending_id = _post_decision(pending_payload).json()["decisionId"]
+    invalid_id = _post_decision(invalid_payload).json()["decisionId"]
+    assert _publish_official_slot(pending_id, week=5).status_code == 200
+    assert _publish_official_slot(invalid_id, week=6).status_code == 200
+
+    result = dl.run_official_postgame_lifecycle(
+        fetch_scores_fn=lambda event_id: {
+            "evt-official-pending": {"status": "IN_PROGRESS"},
+            "evt-official-invalid": {"status": "FINAL", "finalAwayScore": "xx", "finalHomeScore": 17},
+        }.get(event_id)
+    )
+
+    assert result["checked"] == 2
+    assert result["settled"] == 0
+    assert result["skipped"]["gameNotFinal"] == 1
+    assert result["skipped"]["invalidScore"] == 1
+
+
+def test_official_postgame_lifecycle_ignores_non_official_decisions(tmp_path, monkeypatch):
+    import app.services.decision_ledger as dl
+
+    monkeypatch.setattr(dl, "_DB_PATH", tmp_path / "ledger.db")
+    _post_decision(_decision_payload("evt-non-official"))
+
+    result = dl.run_official_postgame_lifecycle(
+        fetch_scores_fn=lambda event_id: {"status": "FINAL", "finalAwayScore": 21, "finalHomeScore": 17}
+    )
+    assert result["checked"] == 0
+    assert result["settled"] == 0
