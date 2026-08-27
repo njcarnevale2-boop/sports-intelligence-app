@@ -13,6 +13,7 @@ from app.services.games import service as games_service
 
 
 TRACKED_MARKET_FAMILIES = ("SPREAD", "MONEYLINE", "TOTAL")
+RESEARCH_ONLY_MARKET_FAMILIES = ("TEAM_TOTAL", "FIRST_HALF_SPREAD", "FIRST_HALF_MONEYLINE", "FIRST_HALF_TOTAL")
 DEFAULT_PROP_ALLOWLIST = (
     "player_pass_yds",
     "player_pass_tds",
@@ -364,6 +365,66 @@ def _state_exists_for_player_prop_event(event_id: str, state: str) -> bool:
     return row is not None
 
 
+def _load_market_state_index() -> dict[tuple[str, str, str], dict[str, Any]]:
+    con = shadow_markets._connect()
+    rows = con.execute(
+        """
+        SELECT
+            event_id,
+            market_family,
+            state_label,
+            MAX(captured_at_utc) AS captured_at_utc,
+            MAX(book_coverage_count) AS book_coverage_count
+        FROM prospective_market_snapshots
+        WHERE phase = 'PREGAME'
+        GROUP BY event_id, market_family, state_label
+        """
+    ).fetchall()
+    con.close()
+
+    out: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for row in rows:
+        event_id = str(row["event_id"] or "")
+        family = str(row["market_family"] or "").upper()
+        state = str(row["state_label"] or "").upper()
+        if not event_id or not family or not state:
+            continue
+        out[(event_id, family, state)] = {
+            "capturedAtUTC": row["captured_at_utc"],
+            "bookDepth": _to_int(row["book_coverage_count"]),
+        }
+    return out
+
+
+def _load_player_prop_state_index() -> dict[tuple[str, str], dict[str, Any]]:
+    con = shadow_markets._connect()
+    rows = con.execute(
+        """
+        SELECT
+            event_id,
+            state_label,
+            MAX(captured_at_utc) AS captured_at_utc,
+            COUNT(DISTINCT bookmaker_key) AS book_coverage_count
+        FROM player_prop_market_snapshots
+        WHERE phase = 'PREGAME'
+        GROUP BY event_id, state_label
+        """
+    ).fetchall()
+    con.close()
+
+    out: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        event_id = str(row["event_id"] or "")
+        state = str(row["state_label"] or "").upper()
+        if not event_id or not state:
+            continue
+        out[(event_id, state)] = {
+            "capturedAtUTC": row["captured_at_utc"],
+            "bookDepth": _to_int(row["book_coverage_count"]),
+        }
+    return out
+
+
 def _has_any_market_state(event_id: str, family: str) -> bool:
     return any(_state_exists_for_market(event_id, family, LIFECYCLE_TO_STORAGE_STATE[state]) for state in STANDARD_LIFECYCLE_STATES)
 
@@ -399,6 +460,28 @@ def _player_prop_lifecycle_status(*, window: str, captured: bool) -> str:
     if window == LIFECYCLE_CLOSING:
         return "MISSED"
     return "CLOSED"
+
+
+def _next_collection_state_from_statuses(*, window: str, standard_statuses: dict[str, dict[str, str]], player_prop_status: str) -> Optional[str]:
+    if window == LIFECYCLE_CLOSED:
+        return None
+
+    for lifecycle_state in STANDARD_LIFECYCLE_STATES:
+        for family in TRACKED_MARKET_FAMILIES:
+            if standard_statuses.get(family, {}).get(lifecycle_state) == "DUE":
+                return lifecycle_state
+
+    if player_prop_status == "DUE":
+        return LIFECYCLE_GAME_DAY
+
+    for lifecycle_state in STANDARD_LIFECYCLE_STATES:
+        for family in TRACKED_MARKET_FAMILIES:
+            if standard_statuses.get(family, {}).get(lifecycle_state) == "FUTURE":
+                return lifecycle_state
+
+    if player_prop_status == "FUTURE":
+        return LIFECYCLE_GAME_DAY
+    return None
 
 
 def build_pregame_collection_plan(
@@ -999,6 +1082,8 @@ def build_pregame_collection_schedule_v1(
     now = now_utc or _utc_now()
     resolved_week, games = _load_week_events(week=week)
     line_board_markets = _load_line_board_market_presence()
+    market_state_index = _load_market_state_index()
+    player_prop_state_index = _load_player_prop_state_index()
 
     window_breakdown = {
         LIFECYCLE_OPENING: 0,
@@ -1011,9 +1096,41 @@ def build_pregame_collection_schedule_v1(
     standard_captured = 0
     standard_due = 0
     standard_missed = 0
+    standard_future = 0
+    opening_captured = 0
+    opening_due = 0
+    opening_future = 0
+    game_day_captured = 0
+    game_day_due = 0
+    game_day_future = 0
+    closing_captured = 0
+    closing_due = 0
+    closing_future = 0
     player_prop_captured = 0
     player_prop_due = 0
     player_prop_missed = 0
+    player_prop_future = 0
+
+    standard_due_by_state = {
+        LIFECYCLE_OPENING: 0,
+        LIFECYCLE_GAME_DAY: 0,
+        LIFECYCLE_CLOSING: 0,
+    }
+    standard_provider_requests_by_state = {
+        LIFECYCLE_OPENING: 0,
+        LIFECYCLE_GAME_DAY: 0,
+        LIFECYCLE_CLOSING: 0,
+    }
+
+    player_prop_due_by_state = {
+        LIFECYCLE_GAME_DAY: 0,
+    }
+
+    market_family_coverage = {
+        "SPREAD": 0,
+        "MONEYLINE": 0,
+        "TOTAL": 0,
+    }
 
     for game in games:
         event_id = str(game.get("eventId") or "")
@@ -1025,54 +1142,156 @@ def build_pregame_collection_schedule_v1(
         supported_families = line_board_markets.get(event_id, set())
 
         market_blocks: dict[str, dict[str, str]] = {}
+        market_state_details: dict[str, dict[str, dict[str, Any]]] = {}
         for family in TRACKED_MARKET_FAMILIES:
             statuses: dict[str, str] = {}
             has_captured = False
+            per_state_details: dict[str, dict[str, Any]] = {}
+
+            tracked = family in supported_families
             for lifecycle_state in STANDARD_LIFECYCLE_STATES:
                 storage_state = LIFECYCLE_TO_STORAGE_STATE[lifecycle_state]
-                captured = _state_exists_for_market(event_id, family, storage_state)
+                snapshot_meta = market_state_index.get((event_id, family, storage_state), {})
+                captured = bool(snapshot_meta) or _state_exists_for_market(event_id, family, storage_state)
                 has_captured = has_captured or captured
                 statuses[lifecycle_state] = _lifecycle_status(window=window, lifecycle_state=lifecycle_state, captured=captured)
+                per_state_details[lifecycle_state] = {
+                    "state": lifecycle_state,
+                    "storageState": storage_state,
+                    "status": statuses[lifecycle_state],
+                    "captured": captured,
+                    "capturedAtUTC": snapshot_meta.get("capturedAtUTC"),
+                    "bookDepth": snapshot_meta.get("bookDepth"),
+                    "providerRequestRequired": "NO",
+                }
 
-            tracked = (family in supported_families) or has_captured
+            tracked = tracked or has_captured
             if not tracked:
-                statuses = {state: "CLOSED" for state in STANDARD_LIFECYCLE_STATES}
+                statuses = {state: "NOT_TRACKED" for state in STANDARD_LIFECYCLE_STATES}
+                for lifecycle_state in STANDARD_LIFECYCLE_STATES:
+                    per_state_details[lifecycle_state].update(
+                        {
+                            "status": "NOT_TRACKED",
+                            "captured": False,
+                            "capturedAtUTC": None,
+                            "bookDepth": None,
+                        }
+                    )
+            else:
+                market_family_coverage[family] = int(market_family_coverage.get(family, 0)) + 1
 
-            for status in statuses.values():
+            for lifecycle_state, status in statuses.items():
                 if status == "CAPTURED":
                     standard_captured += 1
+                    if lifecycle_state == LIFECYCLE_OPENING:
+                        opening_captured += 1
+                    elif lifecycle_state == LIFECYCLE_GAME_DAY:
+                        game_day_captured += 1
+                    elif lifecycle_state == LIFECYCLE_CLOSING:
+                        closing_captured += 1
                 elif status == "DUE":
                     standard_due += 1
+                    standard_due_by_state[lifecycle_state] = int(standard_due_by_state.get(lifecycle_state, 0)) + 1
+                    standard_provider_requests_by_state[lifecycle_state] = int(standard_provider_requests_by_state.get(lifecycle_state, 0))
+                    if lifecycle_state == LIFECYCLE_OPENING:
+                        opening_due += 1
+                    elif lifecycle_state == LIFECYCLE_GAME_DAY:
+                        game_day_due += 1
+                    elif lifecycle_state == LIFECYCLE_CLOSING:
+                        closing_due += 1
                 elif status == "MISSED":
                     standard_missed += 1
+                elif status == "FUTURE":
+                    standard_future += 1
+                    if lifecycle_state == LIFECYCLE_OPENING:
+                        opening_future += 1
+                    elif lifecycle_state == LIFECYCLE_GAME_DAY:
+                        game_day_future += 1
+                    elif lifecycle_state == LIFECYCLE_CLOSING:
+                        closing_future += 1
 
             market_blocks[family] = statuses
+            market_state_details[family] = per_state_details
 
-        prop_captured = _state_exists_for_player_prop_event(event_id, LIFECYCLE_TO_STORAGE_STATE[LIFECYCLE_GAME_DAY])
-        prop_has_any = _has_any_player_prop_state(event_id)
+        prop_storage_state = LIFECYCLE_TO_STORAGE_STATE[LIFECYCLE_GAME_DAY]
+        prop_meta = player_prop_state_index.get((event_id, prop_storage_state), {})
+        prop_captured = bool(prop_meta) or _state_exists_for_player_prop_event(event_id, prop_storage_state)
+        prop_has_any = any(idx_event_id == event_id for idx_event_id, _ in player_prop_state_index.keys()) or _has_any_player_prop_state(event_id)
         prop_status = _player_prop_lifecycle_status(window=window, captured=prop_captured)
         prop_tracked = prop_has_any or bool(config.prop_allowlist)
         if not prop_tracked:
-            prop_status = "CLOSED"
+            prop_status = "NOT_TRACKED"
 
         if prop_status == "CAPTURED":
             player_prop_captured += 1
         elif prop_status == "DUE":
             player_prop_due += 1
+            player_prop_due_by_state[LIFECYCLE_GAME_DAY] = int(player_prop_due_by_state.get(LIFECYCLE_GAME_DAY, 0)) + 1
         elif prop_status == "MISSED":
             player_prop_missed += 1
+        elif prop_status == "FUTURE":
+            player_prop_future += 1
+
+        next_state = _next_collection_state_from_statuses(
+            window=window,
+            standard_statuses=market_blocks,
+            player_prop_status=prop_status,
+        )
+
+        player_prop_request_cost = verified_cost = _estimate_credits_for_request_shape(
+            endpoint_type=PLAYER_PROP_ENDPOINT_TYPE,
+            region=PLAYER_PROP_REGION,
+            markets=list(config.prop_allowlist),
+        ).get("creditsPerRequest")
 
         events_out.append(
             {
                 "eventId": event_id,
                 "awayTeam": str(game.get("awayAbbreviation") or game.get("awayTeam") or ""),
                 "homeTeam": str(game.get("homeAbbreviation") or game.get("homeTeam") or ""),
+                "matchup": f"{str(game.get('awayAbbreviation') or game.get('awayTeam') or '')} @ {str(game.get('homeAbbreviation') or game.get('homeTeam') or '')}",
                 "kickoff": str(game.get("commenceTime") or ""),
                 "currentLifecycleWindow": window,
+                "nextCollectionState": next_state,
+                "nextCollectionWindow": next_state,
+                "standardOpeningStatus": {
+                    "SPREAD": market_blocks["SPREAD"][LIFECYCLE_OPENING],
+                    "MONEYLINE": market_blocks["MONEYLINE"][LIFECYCLE_OPENING],
+                    "TOTAL": market_blocks["TOTAL"][LIFECYCLE_OPENING],
+                },
+                "standardGameDayStatus": {
+                    "SPREAD": market_blocks["SPREAD"][LIFECYCLE_GAME_DAY],
+                    "MONEYLINE": market_blocks["MONEYLINE"][LIFECYCLE_GAME_DAY],
+                    "TOTAL": market_blocks["TOTAL"][LIFECYCLE_GAME_DAY],
+                },
+                "standardClosingStatus": {
+                    "SPREAD": market_blocks["SPREAD"][LIFECYCLE_CLOSING],
+                    "MONEYLINE": market_blocks["MONEYLINE"][LIFECYCLE_CLOSING],
+                    "TOTAL": market_blocks["TOTAL"][LIFECYCLE_CLOSING],
+                },
+                "playerPropGameDayStatus": prop_status,
+                "playerPropRequestCostCredits": player_prop_request_cost,
+                "postKickoffCollectionAllowed": "NO",
                 "spread": market_blocks["SPREAD"],
                 "moneyline": market_blocks["MONEYLINE"],
                 "total": market_blocks["TOTAL"],
                 "playerProps": {LIFECYCLE_GAME_DAY: prop_status},
+                "stateTelemetry": {
+                    "SPREAD": market_state_details["SPREAD"],
+                    "MONEYLINE": market_state_details["MONEYLINE"],
+                    "TOTAL": market_state_details["TOTAL"],
+                    "PLAYER_PROPS": {
+                        LIFECYCLE_GAME_DAY: {
+                            "state": LIFECYCLE_GAME_DAY,
+                            "storageState": prop_storage_state,
+                            "status": prop_status,
+                            "captured": prop_captured,
+                            "capturedAtUTC": prop_meta.get("capturedAtUTC"),
+                            "bookDepth": prop_meta.get("bookDepth"),
+                            "providerRequestRequired": "YES" if prop_status == "DUE" else "NO",
+                        }
+                    },
+                },
             }
         )
 
@@ -1088,9 +1307,22 @@ def build_pregame_collection_schedule_v1(
     grading = _grading_workflow_status(now_utc=now)
     season_projection = _regular_season_player_prop_credit_projection()
 
+    next_collection_window = None
+    for lifecycle_state in STANDARD_LIFECYCLE_STATES:
+        if int(standard_due_by_state.get(lifecycle_state, 0)) > 0:
+            next_collection_window = lifecycle_state
+            break
+    if next_collection_window is None and int(player_prop_due_by_state.get(LIFECYCLE_GAME_DAY, 0)) > 0:
+        next_collection_window = LIFECYCLE_GAME_DAY
+
+    covered_standard_families = [family for family in TRACKED_MARKET_FAMILIES if int(market_family_coverage.get(family, 0)) > 0]
+    uncovered_standard_families = [family for family in TRACKED_MARKET_FAMILIES if family not in set(covered_standard_families)]
+
     return {
         "manager": "SIA_PREGAME_COLLECTION_SCHEDULE_V1",
+        "generatedAtUTC": now.replace(microsecond=0).isoformat(),
         "week": resolved_week,
+        "eventsTracked": len(events_out),
         "policy": {
             "windows": {
                 "openingHoursGreaterThan": config.opening_window_hours,
@@ -1101,20 +1333,54 @@ def build_pregame_collection_schedule_v1(
             "standardMarketLifecycle": list(STANDARD_LIFECYCLE_STATES),
             "playerPropLifecycle": list(PLAYER_PROP_LIFECYCLE_STATES),
             "storageStateLabels": LIFECYCLE_TO_STORAGE_STATE,
+            "lifecycleNormalization": {
+                "operatorFacing": {"OPENING": "OPENING", "GAME_DAY": "GAME_DAY", "CLOSING": "CLOSING"},
+                "storage": {"OPENING": "OPENING", "GAME_DAY": "CURRENT", "CLOSING": "CLOSING"},
+            },
             "postgameState": "POSTGAME_WORKFLOW_ONLY",
+            "continuousPolling": "NO",
+            "postKickoffSportsbookCollection": "NO",
+            "canonicalScheduleSource": "backend/app/services/pregame_collection_manager.py:build_pregame_collection_schedule_v1",
+            "canonicalScheduledMarkets": {
+                "standard": list(TRACKED_MARKET_FAMILIES),
+                "playerProps": list(PLAYER_PROP_LIFECYCLE_STATES),
+                "researchOnlyNotScheduled": list(RESEARCH_ONLY_MARKET_FAMILIES),
+            },
         },
         "events": events_out,
         "totals": {
             "events": len(events_out),
             "windowBreakdown": window_breakdown,
+            "standardFamilyCoverage": {
+                "coveredFamilies": covered_standard_families,
+                "uncoveredFamilies": uncovered_standard_families,
+                "eventsByFamily": market_family_coverage,
+            },
             "standardSnapshotsCaptured": standard_captured,
             "standardSnapshotsDue": standard_due,
             "standardSnapshotsMissed": standard_missed,
+            "standardSnapshotsFuture": standard_future,
             "playerPropSnapshotsCaptured": player_prop_captured,
             "playerPropSnapshotsDue": player_prop_due,
             "playerPropSnapshotsMissed": player_prop_missed,
+            "playerPropSnapshotsFuture": player_prop_future,
+            "openingCaptured": opening_captured,
+            "openingDue": opening_due,
+            "openingFuture": opening_future,
+            "gameDayCaptured": game_day_captured,
+            "gameDayDue": game_day_due,
+            "gameDayFuture": game_day_future,
+            "closingCaptured": closing_captured,
+            "closingDue": closing_due,
+            "closingFuture": closing_future,
+            "standardDueByState": standard_due_by_state,
+            "playerPropDueByState": player_prop_due_by_state,
+            "nextCollectionWindow": next_collection_window,
             "plannedStandardProviderRequests": 0,
             "plannedPlayerPropProviderRequests": player_prop_due,
+            "standardProviderRequestsRequired": 0,
+            "playerPropProviderRequestsRequired": player_prop_due,
+            "standardProviderRequestsByState": standard_provider_requests_by_state,
             "standardProviderVerifiedCreditCost": "ZERO",
             "playerPropVerifiedCreditCostStatus": verified_status,
             "verifiedPlayerPropCreditsDue": verified_credits_due,

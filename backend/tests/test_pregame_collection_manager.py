@@ -744,3 +744,63 @@ def test_production_firewall_invariants_unchanged(shadow_db):
     assert model["modelValidated"] is False
     assert model["crossMarketComparable"] is False
     assert model["shadowRecommendationEligible"] is False
+
+
+def test_schedule_contract_includes_canonical_fields(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    games = _n_games(now, count=1, hours_to_kickoff=10)
+    out = _build_schedule(monkeypatch, now, games)
+    event = out["events"][0]
+
+    assert out["generatedAtUTC"]
+    assert out["eventsTracked"] == 1
+    assert out["policy"]["lifecycleNormalization"]["storage"]["GAME_DAY"] == "CURRENT"
+    assert out["policy"]["continuousPolling"] == "NO"
+    assert out["policy"]["postKickoffSportsbookCollection"] == "NO"
+
+    assert event["matchup"]
+    assert event["nextCollectionState"] == "GAME_DAY"
+    assert event["nextCollectionWindow"] == "GAME_DAY"
+    assert event["playerPropGameDayStatus"] == "DUE"
+    assert event["postKickoffCollectionAllowed"] == "NO"
+
+    telemetry = event["stateTelemetry"]
+    assert telemetry["SPREAD"]["GAME_DAY"]["storageState"] == "CURRENT"
+    assert telemetry["SPREAD"]["GAME_DAY"]["providerRequestRequired"] == "NO"
+    assert telemetry["PLAYER_PROPS"]["GAME_DAY"]["storageState"] == "CURRENT"
+
+
+def test_p1_inconsistency_fixed_not_tracked_family_is_explicit(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    games = _n_games(now, count=1, hours_to_kickoff=30)
+
+    monkeypatch.setattr(mgr, "_load_week_events", lambda week=None: (1, games))
+    monkeypatch.setattr(mgr, "_load_line_board_market_presence", lambda: {str(games[0]["eventId"]): {"MONEYLINE", "TOTAL"}})
+    monkeypatch.setattr(mgr, "_state_exists_for_market", lambda event_id, family, state: False)
+    monkeypatch.setattr(mgr, "_state_exists_for_player_prop_event", lambda event_id, state: False)
+
+    out = mgr.build_pregame_collection_schedule_v1(week=1, now_utc=now)
+    event = out["events"][0]
+
+    assert event["spread"]["OPENING"] == "NOT_TRACKED"
+    assert event["moneyline"]["OPENING"] == "DUE"
+    assert event["total"]["OPENING"] == "DUE"
+    assert out["totals"]["openingDue"] == 2
+    assert out["totals"]["standardSnapshotsDue"] == 2
+    assert out["totals"]["standardFamilyCoverage"]["coveredFamilies"] == ["MONEYLINE", "TOTAL"]
+    assert out["totals"]["standardFamilyCoverage"]["uncoveredFamilies"] == ["SPREAD"]
+
+
+def test_state_telemetry_marks_captured_without_reschedule(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    games = _n_games(now, count=1, hours_to_kickoff=10)
+
+    def _market_exists(event_id: str, family: str, state: str) -> bool:
+        return family == "SPREAD" and state == "CURRENT"
+
+    out = _build_schedule(monkeypatch, now, games, market_exists=_market_exists)
+    event = out["events"][0]
+
+    assert event["spread"]["GAME_DAY"] == "CAPTURED"
+    assert event["stateTelemetry"]["SPREAD"]["GAME_DAY"]["status"] == "CAPTURED"
+    assert out["totals"]["gameDayDue"] == 2
