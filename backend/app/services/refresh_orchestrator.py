@@ -43,6 +43,18 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = str(raw).strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 MINS_OFFSEASON    = lambda: _env_int("ODDS_REFRESH_OFFSEASON_MINS",    360)
 MINS_GAMEWEEK     = lambda: _env_int("ODDS_REFRESH_GAMEWEEK_MINS",     120)
 MINS_GAMEDAY      = lambda: _env_int("ODDS_REFRESH_GAMEDAY_MINS",       30)
@@ -51,6 +63,7 @@ QUOTA_PAUSE       = lambda: _env_int("ODDS_QUOTA_PAUSE_THRESHOLD",      20)
 QUOTA_REDUCE      = lambda: _env_int("ODDS_QUOTA_REDUCE_THRESHOLD",     50)
 QUOTA_SLOW        = lambda: _env_int("ODDS_QUOTA_SLOW_THRESHOLD",      100)
 NEAR_KICKOFF_HRS  = lambda: _env_int("ODDS_NEARKICKOFF_HOURS",           3)
+PREGAME_AUTOMATION_ENABLED = lambda: _env_bool("PREGAME_AUTOMATION_ENABLED", False)
 
 
 def _determine_base_cadence_minutes() -> int:
@@ -104,6 +117,133 @@ def _quota_cap(base_minutes: int, quota: Optional[int]) -> Optional[int]:
     return base_minutes
 
 
+def _next_collection_time_from_schedule(*, schedule: Dict[str, Any], now_utc: datetime, next_state: Optional[str]) -> Optional[str]:
+    if not next_state:
+        return None
+
+    windows = (schedule.get("policy") or {}).get("windows") or {}
+    opening_hours = int(windows.get("openingHoursGreaterThan") or 24)
+    closing_hours = int(windows.get("closingHoursAtMost") or 2)
+
+    earliest: Optional[datetime] = None
+    for event in schedule.get("events") or []:
+        kickoff_raw = str(event.get("kickoff") or "").strip()
+        if not kickoff_raw:
+            continue
+        try:
+            kickoff = datetime.fromisoformat(kickoff_raw.replace("Z", "+00:00"))
+            if kickoff.tzinfo is None:
+                kickoff = kickoff.replace(tzinfo=timezone.utc)
+            else:
+                kickoff = kickoff.astimezone(timezone.utc)
+        except Exception:
+            continue
+
+        if next_state == "OPENING":
+            threshold = kickoff - timedelta(hours=opening_hours)
+        elif next_state == "GAME_DAY":
+            threshold = kickoff - timedelta(hours=opening_hours)
+        elif next_state == "CLOSING":
+            threshold = kickoff - timedelta(hours=closing_hours)
+        else:
+            continue
+
+        if threshold < now_utc:
+            continue
+        if earliest is None or threshold < earliest:
+            earliest = threshold
+
+    if earliest is None:
+        return None
+    return earliest.replace(microsecond=0).isoformat()
+
+
+def _run_pregame_automation_tick() -> Dict[str, Any]:
+    now_utc = datetime.now(timezone.utc)
+    attempt_at = now_utc.replace(microsecond=0).isoformat()
+    enabled = bool(PREGAME_AUTOMATION_ENABLED())
+
+    result: Dict[str, Any] = {
+        "enabled": enabled,
+        "attemptedAt": attempt_at,
+        "success": False,
+        "status": "DISABLED",
+        "skipReason": "PREGAME_AUTOMATION_DISABLED",
+        "providerRequests": 0,
+        "verifiedCredits": 0.0,
+        "lifecycleState": None,
+        "nextCollectionState": None,
+        "nextCollectionTime": None,
+    }
+
+    if not enabled:
+        return result
+
+    try:
+        from app.services.pregame_collection_manager import (  # local import keeps startup lightweight
+            build_pregame_collection_schedule_v1,
+            run_pregame_collection_manager,
+        )
+
+        schedule = build_pregame_collection_schedule_v1(now_utc=now_utc)
+        totals = schedule.get("totals") or {}
+        next_state = totals.get("nextCollectionWindow")
+        result["nextCollectionState"] = next_state
+        result["nextCollectionTime"] = _next_collection_time_from_schedule(
+            schedule=schedule,
+            now_utc=now_utc,
+            next_state=next_state,
+        )
+        result["lifecycleState"] = next_state
+
+        standard_due = int(totals.get("standardSnapshotsDue") or 0)
+        prop_due = int(totals.get("playerPropSnapshotsDue") or 0)
+        if standard_due + prop_due <= 0:
+            result.update(
+                {
+                    "success": True,
+                    "status": "NO_WORK_DUE",
+                    "skipReason": "NO_WORK_DUE",
+                    "providerRequests": 0,
+                    "verifiedCredits": 0.0,
+                }
+            )
+            return result
+
+        run_out = run_pregame_collection_manager(dry_run=False)
+        execution = run_out.get("execution") or {}
+        plan = run_out.get("plan") or {}
+
+        provider_requests = int(execution.get("providerRequests") or 0)
+        estimated_status = str(plan.get("estimatedCreditsStatus") or "UNKNOWN").upper()
+        estimated_credits = plan.get("estimatedCredits")
+        verified_credits = float(estimated_credits) if estimated_status == "VERIFIED" and estimated_credits is not None else None
+
+        run_status = str(run_out.get("status") or "UNKNOWN")
+        result.update(
+            {
+                "success": run_status in {"COMPLETED", "SKIPPED", "DRY_RUN"},
+                "status": run_status,
+                "skipReason": execution.get("skipReason"),
+                "providerRequests": provider_requests,
+                "verifiedCredits": verified_credits,
+            }
+        )
+        return result
+    except Exception as exc:
+        log.warning("Pregame automation tick failed (non-fatal): %s", exc)
+        result.update(
+            {
+                "success": False,
+                "status": "ERROR",
+                "skipReason": str(exc)[:300],
+                "providerRequests": 0,
+                "verifiedCredits": None,
+            }
+        )
+        return result
+
+
 # ── state persistence ───────────────────────────────────────────────────────
 _EMPTY_STATE: Dict[str, Any] = {
     "lastRefreshAt": None,
@@ -140,6 +280,17 @@ _EMPTY_STATE: Dict[str, Any] = {
     "weatherForecastsAvailable": 0,
     "lastWeatherError": None,
     "weatherDataStatus": "MOCK",
+    # Pregame automation telemetry
+    "pregameAutomationEnabled": False,
+    "pregameLastAttemptAt": None,
+    "pregameLastSuccessAt": None,
+    "pregameLastStatus": "DISABLED",
+    "pregameLastSkipReason": "PREGAME_AUTOMATION_DISABLED",
+    "pregameLastProviderRequests": 0,
+    "pregameLastVerifiedCredits": 0.0,
+    "pregameLastLifecycleState": None,
+    "pregameNextCollectionState": None,
+    "pregameNextCollectionTime": None,
 }
 
 
@@ -203,6 +354,18 @@ def _run_once() -> bool:
         if r2.returncode != 0:
             raise RuntimeError(f"build_line_movement.py failed: {r2.stderr[-500:]}")
         log.info("build_line_movement.py: done")
+
+        # Step 2b: run canonical pregame lifecycle automation (non-fatal).
+        pregame_tick = _run_pregame_automation_tick()
+        if pregame_tick.get("status") == "ERROR":
+            log.warning("Pregame automation status=ERROR reason=%s", pregame_tick.get("skipReason"))
+        else:
+            log.info(
+                "Pregame automation: status=%s provider_requests=%s lifecycle_state=%s",
+                pregame_tick.get("status"),
+                pregame_tick.get("providerRequests"),
+                pregame_tick.get("lifecycleState"),
+            )
 
         # Step 3: capture closing lines for PENDING recommendations post-kickoff.
         # Already-captured (AVAILABLE) records are never touched (idempotent).
@@ -348,6 +511,19 @@ def _run_once() -> bool:
         except Exception as exc:
             log.warning("Weather refresh step failed (non-fatal): %s", exc)
             state["lastWeatherError"] = str(exc)[:300]
+
+        # Persist pregame automation telemetry in the same scheduler status surface.
+        state["pregameAutomationEnabled"] = bool(pregame_tick.get("enabled"))
+        state["pregameLastAttemptAt"] = pregame_tick.get("attemptedAt")
+        if bool(pregame_tick.get("success")):
+            state["pregameLastSuccessAt"] = pregame_tick.get("attemptedAt")
+        state["pregameLastStatus"] = pregame_tick.get("status")
+        state["pregameLastSkipReason"] = pregame_tick.get("skipReason")
+        state["pregameLastProviderRequests"] = int(pregame_tick.get("providerRequests") or 0)
+        state["pregameLastVerifiedCredits"] = pregame_tick.get("verifiedCredits")
+        state["pregameLastLifecycleState"] = pregame_tick.get("lifecycleState")
+        state["pregameNextCollectionState"] = pregame_tick.get("nextCollectionState")
+        state["pregameNextCollectionTime"] = pregame_tick.get("nextCollectionTime")
 
         # Update quota from DuckDB
         try:
@@ -580,6 +756,16 @@ def trigger_now() -> Dict[str, Any]:
         "ledgerOutcomesAppended": state.get("ledgerOutcomesAppended", 0),
         "ledgerOutcomesStillPending": state.get("ledgerOutcomesStillPending", 0),
         "lastLedgerOutcomeError": state.get("lastLedgerOutcomeError"),
+        "pregameAutomationEnabled": bool(state.get("pregameAutomationEnabled")),
+        "pregameLastAttemptAt": state.get("pregameLastAttemptAt"),
+        "pregameLastSuccessAt": state.get("pregameLastSuccessAt"),
+        "pregameLastStatus": state.get("pregameLastStatus"),
+        "pregameLastSkipReason": state.get("pregameLastSkipReason"),
+        "pregameLastProviderRequests": int(state.get("pregameLastProviderRequests") or 0),
+        "pregameLastVerifiedCredits": state.get("pregameLastVerifiedCredits"),
+        "pregameLastLifecycleState": state.get("pregameLastLifecycleState"),
+        "pregameNextCollectionState": state.get("pregameNextCollectionState"),
+        "pregameNextCollectionTime": state.get("pregameNextCollectionTime"),
     }
 
 
@@ -619,4 +805,14 @@ def get_refresh_status() -> Dict[str, Any]:
         "weatherForecastsAvailable": int(state.get("weatherForecastsAvailable") or 0),
         "lastWeatherError":          state.get("lastWeatherError"),
         "weatherDataStatus":         state.get("weatherDataStatus", "MOCK"),
+        "pregameAutomationEnabled": bool(state.get("pregameAutomationEnabled")),
+        "pregameLastAttemptAt": state.get("pregameLastAttemptAt"),
+        "pregameLastSuccessAt": state.get("pregameLastSuccessAt"),
+        "pregameLastStatus": state.get("pregameLastStatus"),
+        "pregameLastSkipReason": state.get("pregameLastSkipReason"),
+        "pregameLastProviderRequests": int(state.get("pregameLastProviderRequests") or 0),
+        "pregameLastVerifiedCredits": state.get("pregameLastVerifiedCredits"),
+        "pregameLastLifecycleState": state.get("pregameLastLifecycleState"),
+        "pregameNextCollectionState": state.get("pregameNextCollectionState"),
+        "pregameNextCollectionTime": state.get("pregameNextCollectionTime"),
     }
