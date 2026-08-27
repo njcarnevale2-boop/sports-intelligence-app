@@ -34,6 +34,7 @@ from app.services.shadow_markets import (
     universal_candidate_contract_design,
 )
 from app.services.pregame_collection_manager import (
+    build_pregame_collection_schedule_v1,
     build_pregame_collection_plan,
     pregame_collection_status_report,
     run_pregame_collection_manager,
@@ -342,3 +343,12 @@ def pregame_collection_status(
 ):
     _require_admin_token(x_admin_token)
     return pregame_collection_status_report(week=week)
+
+
+@router.get("/capture/pregame-manager/schedule")
+def pregame_collection_schedule(
+    week: Optional[int] = Query(default=None),
+    x_admin_token: str | None = Header(default=None),
+):
+    _require_admin_token(x_admin_token)
+    return build_pregame_collection_schedule_v1(week=week)

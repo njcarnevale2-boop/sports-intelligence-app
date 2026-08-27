@@ -59,6 +59,32 @@ def _sixteen_games(now: datetime) -> list[dict]:
     return games
 
 
+def _n_games(now: datetime, count: int, hours_to_kickoff: float) -> list[dict]:
+    games: list[dict] = []
+    for idx in range(count):
+        games.append(
+            {
+                "eventId": f"evt-n-{idx:02d}",
+                "commenceTime": (now + timedelta(hours=hours_to_kickoff)).isoformat(),
+                "awayAbbreviation": f"A{idx:02d}",
+                "homeAbbreviation": f"H{idx:02d}",
+            }
+        )
+    return games
+
+
+def _full_standard_presence(games: list[dict]) -> dict[str, set[str]]:
+    return {str(g["eventId"]): {"SPREAD", "MONEYLINE", "TOTAL"} for g in games}
+
+
+def _build_schedule(monkeypatch, now: datetime, games: list[dict], *, market_exists=None, prop_exists=None, prop_allowlist=None):
+    monkeypatch.setattr(mgr, "_load_week_events", lambda week=None: (1, games))
+    monkeypatch.setattr(mgr, "_load_line_board_market_presence", lambda: _full_standard_presence(games))
+    monkeypatch.setattr(mgr, "_state_exists_for_market", market_exists or (lambda event_id, family, state: False))
+    monkeypatch.setattr(mgr, "_state_exists_for_player_prop_event", prop_exists or (lambda event_id, state: False))
+    return mgr.build_pregame_collection_schedule_v1(week=1, now_utc=now, prop_allowlist=prop_allowlist)
+
+
 def test_target_state_opening_current_closing_and_post_kickoff(shadow_db):
     cfg = mgr._resolve_config(dry_run=True)
     now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
@@ -519,6 +545,195 @@ def test_request_shape_telemetry_fields_present(shadow_db, monkeypatch):
     assert str(row["endpoint_type"]) == "EVENT_ODDS"
     assert str(row["region"]) == "us"
     assert int(row["market_count"]) >= 1
+
+
+def test_schedule_opening_due_when_absent(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    games = _n_games(now, count=1, hours_to_kickoff=30)
+    out = _build_schedule(monkeypatch, now, games)
+    event = out["events"][0]
+
+    assert event["currentLifecycleWindow"] == "OPENING"
+    assert event["spread"]["OPENING"] == "DUE"
+
+
+def test_schedule_opening_not_due_if_already_captured(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    games = _n_games(now, count=1, hours_to_kickoff=30)
+
+    def _market_exists(event_id: str, family: str, state: str) -> bool:
+        return state == "OPENING"
+
+    out = _build_schedule(monkeypatch, now, games, market_exists=_market_exists)
+    event = out["events"][0]
+    assert event["spread"]["OPENING"] == "CAPTURED"
+
+
+def test_schedule_game_day_due_when_absent(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    games = _n_games(now, count=1, hours_to_kickoff=10)
+    out = _build_schedule(monkeypatch, now, games)
+    event = out["events"][0]
+
+    assert event["currentLifecycleWindow"] == "GAME_DAY"
+    assert event["spread"]["GAME_DAY"] == "DUE"
+
+
+def test_schedule_game_day_not_due_if_already_captured(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    games = _n_games(now, count=1, hours_to_kickoff=10)
+
+    def _market_exists(event_id: str, family: str, state: str) -> bool:
+        return state == "CURRENT"
+
+    out = _build_schedule(monkeypatch, now, games, market_exists=_market_exists)
+    event = out["events"][0]
+    assert event["spread"]["GAME_DAY"] == "CAPTURED"
+
+
+def test_schedule_closing_due_when_absent(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    games = _n_games(now, count=1, hours_to_kickoff=1)
+    out = _build_schedule(monkeypatch, now, games)
+    event = out["events"][0]
+
+    assert event["currentLifecycleWindow"] == "CLOSING"
+    assert event["spread"]["CLOSING"] == "DUE"
+
+
+def test_schedule_closing_not_due_if_already_captured(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    games = _n_games(now, count=1, hours_to_kickoff=1)
+
+    def _market_exists(event_id: str, family: str, state: str) -> bool:
+        return state == "CLOSING"
+
+    out = _build_schedule(monkeypatch, now, games, market_exists=_market_exists)
+    event = out["events"][0]
+    assert event["spread"]["CLOSING"] == "CAPTURED"
+
+
+def test_schedule_post_kickoff_closes_all_pregame_states(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    games = _n_games(now, count=1, hours_to_kickoff=-1)
+    out = _build_schedule(monkeypatch, now, games)
+    event = out["events"][0]
+
+    assert event["currentLifecycleWindow"] == "CLOSED"
+    assert event["spread"]["OPENING"] == "CLOSED"
+    assert event["spread"]["GAME_DAY"] == "CLOSED"
+    assert event["spread"]["CLOSING"] == "CLOSED"
+    assert out["totals"]["standardSnapshotsDue"] == 0
+
+
+def test_schedule_missed_opening_marked_missed_not_backfilled(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    games = _n_games(now, count=1, hours_to_kickoff=10)
+    out = _build_schedule(monkeypatch, now, games)
+    event = out["events"][0]
+
+    assert event["spread"]["OPENING"] == "MISSED"
+    assert event["spread"]["GAME_DAY"] == "DUE"
+
+
+def test_schedule_missed_game_day_marked_missed_in_closing(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    games = _n_games(now, count=1, hours_to_kickoff=1)
+    out = _build_schedule(monkeypatch, now, games)
+    event = out["events"][0]
+
+    assert event["spread"]["GAME_DAY"] == "MISSED"
+    assert event["spread"]["CLOSING"] == "DUE"
+
+
+def test_schedule_player_props_due_only_during_game_day(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    games = _n_games(now, count=1, hours_to_kickoff=10)
+    out = _build_schedule(monkeypatch, now, games)
+    event = out["events"][0]
+
+    assert event["playerProps"]["GAME_DAY"] == "DUE"
+
+
+def test_schedule_player_props_not_due_during_opening(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    games = _n_games(now, count=1, hours_to_kickoff=30)
+    out = _build_schedule(monkeypatch, now, games)
+    event = out["events"][0]
+
+    assert event["playerProps"]["GAME_DAY"] == "FUTURE"
+
+
+def test_schedule_player_props_not_due_during_closing(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    games = _n_games(now, count=1, hours_to_kickoff=1)
+    out = _build_schedule(monkeypatch, now, games)
+    event = out["events"][0]
+
+    assert event["playerProps"]["GAME_DAY"] == "MISSED"
+
+
+def test_schedule_player_props_closed_post_kickoff(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    games = _n_games(now, count=1, hours_to_kickoff=-1)
+    out = _build_schedule(monkeypatch, now, games)
+    event = out["events"][0]
+
+    assert event["playerProps"]["GAME_DAY"] == "CLOSED"
+
+
+@pytest.mark.parametrize("game_count,expected_credits", [(16, 96.0), (17, 102.0), (14, 84.0)])
+def test_schedule_verified_player_prop_credits_by_slate_size(shadow_db, monkeypatch, game_count: int, expected_credits: float):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    games = _n_games(now, count=game_count, hours_to_kickoff=10)
+    out = _build_schedule(monkeypatch, now, games)
+
+    assert out["totals"]["playerPropSnapshotsDue"] == game_count
+    assert out["totals"]["verifiedPlayerPropCreditsDue"] == expected_credits
+
+
+def test_schedule_dry_run_provider_calls_remain_zero(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    games = _n_games(now, count=3, hours_to_kickoff=10)
+    out = _build_schedule(monkeypatch, now, games)
+
+    assert out["totals"]["providerRequestsMade"] == 0
+    assert out["totals"]["providerCreditsSpent"] == 0
+
+
+def test_schedule_duplicate_state_protection_marks_captured_once(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    games = _n_games(now, count=1, hours_to_kickoff=30)
+
+    def _market_exists(event_id: str, family: str, state: str) -> bool:
+        return state == "OPENING"
+
+    out = _build_schedule(monkeypatch, now, games, market_exists=_market_exists)
+    event = out["events"][0]
+
+    assert event["spread"]["OPENING"] == "CAPTURED"
+    assert event["spread"]["GAME_DAY"] == "FUTURE"
+
+
+def test_schedule_unknown_prop_request_shape_remains_fail_safe(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    games = _n_games(now, count=2, hours_to_kickoff=10)
+    out = _build_schedule(monkeypatch, now, games, prop_allowlist=["player_pass_yds"])
+
+    assert out["totals"]["playerPropVerifiedCreditCostStatus"] == "UNKNOWN"
+    assert out["totals"]["verifiedPlayerPropCreditsDue"] is None
+
+
+def test_schedule_production_firewalls_unchanged(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    games = _n_games(now, count=1, hours_to_kickoff=10)
+    out = _build_schedule(monkeypatch, now, games)
+
+    assert out["firewalls"]["officialProductionMarket"] == "SPREAD"
+    assert out["firewalls"]["moneylineProductionEligible"] is False
+    assert out["firewalls"]["totalProductionEligible"] is False
+    assert out["firewalls"]["playerPropProductionEligible"] is False
+    assert out["firewalls"]["livePolling"] == "NO"
 
 
 def test_production_firewall_invariants_unchanged(shadow_db):

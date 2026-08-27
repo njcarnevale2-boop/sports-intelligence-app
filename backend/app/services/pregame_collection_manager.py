@@ -35,6 +35,23 @@ VERIFIED_PLAYER_PROP_MARKET_SET = frozenset(
     }
 )
 VERIFIED_PLAYER_PROP_CREDITS_PER_REQUEST = 6.0
+LIFECYCLE_OPENING = "OPENING"
+LIFECYCLE_GAME_DAY = "GAME_DAY"
+LIFECYCLE_CLOSING = "CLOSING"
+LIFECYCLE_CLOSED = "CLOSED"
+STANDARD_LIFECYCLE_STATES = (LIFECYCLE_OPENING, LIFECYCLE_GAME_DAY, LIFECYCLE_CLOSING)
+PLAYER_PROP_LIFECYCLE_STATES = (LIFECYCLE_GAME_DAY,)
+LIFECYCLE_TO_STORAGE_STATE = {
+    LIFECYCLE_OPENING: "OPENING",
+    LIFECYCLE_GAME_DAY: "CURRENT",
+    LIFECYCLE_CLOSING: "CLOSING",
+}
+WINDOW_ORDER = {
+    LIFECYCLE_OPENING: 0,
+    LIFECYCLE_GAME_DAY: 1,
+    LIFECYCLE_CLOSING: 2,
+    LIFECYCLE_CLOSED: 3,
+}
 
 
 @dataclass(frozen=True)
@@ -261,19 +278,26 @@ def _estimate_credits_for_request_shape(*, endpoint_type: str, region: str, mark
     }
 
 
-def _target_state_for_event(commence_time: Optional[str], *, config: ManagerConfig, now: datetime) -> Optional[str]:
+def _lifecycle_window_for_event(commence_time: Optional[str], *, config: ManagerConfig, now: datetime) -> str:
     kickoff = _parse_commence(commence_time)
     if kickoff is None:
-        return "CURRENT"
+        return LIFECYCLE_GAME_DAY
     if kickoff <= now:
-        return None
+        return LIFECYCLE_CLOSED
 
     delta = kickoff - now
     if delta <= timedelta(hours=config.closing_window_hours):
-        return "CLOSING"
+        return LIFECYCLE_CLOSING
     if delta <= timedelta(hours=config.opening_window_hours):
-        return "CURRENT"
-    return "OPENING"
+        return LIFECYCLE_GAME_DAY
+    return LIFECYCLE_OPENING
+
+
+def _target_state_for_event(commence_time: Optional[str], *, config: ManagerConfig, now: datetime) -> Optional[str]:
+    window = _lifecycle_window_for_event(commence_time, config=config, now=now)
+    if window == LIFECYCLE_CLOSED:
+        return None
+    return LIFECYCLE_TO_STORAGE_STATE.get(window, "CURRENT")
 
 
 def _load_week_events(week: Optional[int] = None) -> tuple[int, list[dict[str, Any]]]:
@@ -338,6 +362,43 @@ def _state_exists_for_player_prop_event(event_id: str, state: str) -> bool:
     ).fetchone()
     con.close()
     return row is not None
+
+
+def _has_any_market_state(event_id: str, family: str) -> bool:
+    return any(_state_exists_for_market(event_id, family, LIFECYCLE_TO_STORAGE_STATE[state]) for state in STANDARD_LIFECYCLE_STATES)
+
+
+def _has_any_player_prop_state(event_id: str) -> bool:
+    return any(_state_exists_for_player_prop_event(event_id, LIFECYCLE_TO_STORAGE_STATE[state]) for state in STANDARD_LIFECYCLE_STATES)
+
+
+def _lifecycle_status(*, window: str, lifecycle_state: str, captured: bool) -> str:
+    if captured:
+        return "CAPTURED"
+    if window == LIFECYCLE_CLOSED:
+        return "CLOSED"
+
+    current_order = int(WINDOW_ORDER.get(window, WINDOW_ORDER[LIFECYCLE_GAME_DAY]))
+    state_order = int(WINDOW_ORDER.get(lifecycle_state, WINDOW_ORDER[LIFECYCLE_GAME_DAY]))
+    if state_order < current_order:
+        return "MISSED"
+    if state_order == current_order:
+        return "DUE"
+    return "FUTURE"
+
+
+def _player_prop_lifecycle_status(*, window: str, captured: bool) -> str:
+    if captured:
+        return "CAPTURED"
+    if window == LIFECYCLE_CLOSED:
+        return "CLOSED"
+    if window == LIFECYCLE_OPENING:
+        return "FUTURE"
+    if window == LIFECYCLE_GAME_DAY:
+        return "DUE"
+    if window == LIFECYCLE_CLOSING:
+        return "MISSED"
+    return "CLOSED"
 
 
 def build_pregame_collection_plan(
@@ -485,7 +546,8 @@ def build_pregame_collection_plan(
             "statePolicy": {
                 "openingWindowHours": config.opening_window_hours,
                 "closingWindowHours": config.closing_window_hours,
-                "labels": ["OPENING", "CURRENT", "CLOSING"],
+                "labels": [LIFECYCLE_OPENING, LIFECYCLE_GAME_DAY, LIFECYCLE_CLOSING],
+                "storageStateLabels": LIFECYCLE_TO_STORAGE_STATE,
                 "pregameOnly": True,
             },
             "dueEventIds": player_prop_due_event_ids,
@@ -852,5 +914,234 @@ def pregame_collection_status_report(*, week: Optional[int] = None) -> dict[str,
             "quotaUsed": api_today.get("quotaUsed"),
             "duplicateRequestsPrevented": api_today.get("duplicateRequestsPrevented"),
             "requestsSkippedByQuotaGuard": api_today.get("requestsSkippedByQuotaGuard"),
+        },
+    }
+
+
+def _grading_workflow_status(*, now_utc: datetime) -> dict[str, int]:
+    con = shadow_markets._connect()
+    rows = con.execute(
+        """
+        SELECT i.event_id, i.commence_time, o.candidate_id AS outcome_candidate_id
+        FROM shadow_publication_items i
+        LEFT JOIN shadow_outcomes o ON o.candidate_id = i.candidate_id
+        """
+    ).fetchall()
+    con.close()
+
+    by_event: dict[str, list[bool]] = {}
+    for row in rows:
+        event_id = str(row["event_id"] or "")
+        if not event_id:
+            continue
+        kickoff = _parse_commence(row["commence_time"])
+        if kickoff is None or kickoff > now_utc:
+            continue
+        by_event.setdefault(event_id, []).append(row["outcome_candidate_id"] is not None)
+
+    games_graded = 0
+    games_awaiting = 0
+    for settled_flags in by_event.values():
+        if settled_flags and all(settled_flags):
+            games_graded += 1
+        elif settled_flags:
+            games_awaiting += 1
+
+    return {
+        "gamesAwaitingGrading": games_awaiting,
+        "gamesGraded": games_graded,
+    }
+
+
+def _regular_season_player_prop_credit_projection() -> dict[str, Any]:
+    base = games_service.list_games()
+    available = sorted({int(w) for w in (base.get("availableWeeks") or []) if w is not None})
+    regular_season_weeks = list(range(1, 19))
+    available_regular = [w for w in available if w in regular_season_weeks]
+    missing_regular = [w for w in regular_season_weeks if w not in set(available_regular)]
+
+    eligible_games = 0
+    for week in available_regular:
+        payload = games_service.list_games(week=week)
+        eligible_games += len([g for g in (payload.get("games") or []) if str(g.get("eventId") or "")])
+
+    available_playoff = [w for w in available if w > 18]
+    playoff_games = 0
+    for week in available_playoff:
+        payload = games_service.list_games(week=week)
+        playoff_games += len([g for g in (payload.get("games") or []) if str(g.get("eventId") or "")])
+
+    return {
+        "regularSeason": {
+            "status": "FULL" if not missing_regular else "PARTIAL",
+            "weeksAvailable": available_regular,
+            "weeksMissing": missing_regular,
+            "eligibleGames": eligible_games,
+            "projectedCredits": float(eligible_games * VERIFIED_PLAYER_PROP_CREDITS_PER_REQUEST),
+        },
+        "playoffs": {
+            "weeksAvailable": available_playoff,
+            "eligibleGames": playoff_games,
+            "projectedCredits": float(playoff_games * VERIFIED_PLAYER_PROP_CREDITS_PER_REQUEST),
+        },
+    }
+
+
+def build_pregame_collection_schedule_v1(
+    *,
+    week: Optional[int] = None,
+    now_utc: Optional[datetime] = None,
+    prop_allowlist: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    """Deterministic pregame scheduling policy report with zero provider calls."""
+    _ensure_manager_schema()
+    config = _resolve_config(dry_run=True, prop_allowlist=prop_allowlist)
+    now = now_utc or _utc_now()
+    resolved_week, games = _load_week_events(week=week)
+    line_board_markets = _load_line_board_market_presence()
+
+    window_breakdown = {
+        LIFECYCLE_OPENING: 0,
+        LIFECYCLE_GAME_DAY: 0,
+        LIFECYCLE_CLOSING: 0,
+        LIFECYCLE_CLOSED: 0,
+    }
+    events_out: list[dict[str, Any]] = []
+
+    standard_captured = 0
+    standard_due = 0
+    standard_missed = 0
+    player_prop_captured = 0
+    player_prop_due = 0
+    player_prop_missed = 0
+
+    for game in games:
+        event_id = str(game.get("eventId") or "")
+        if not event_id:
+            continue
+
+        window = _lifecycle_window_for_event(game.get("commenceTime"), config=config, now=now)
+        window_breakdown[window] = int(window_breakdown.get(window, 0)) + 1
+        supported_families = line_board_markets.get(event_id, set())
+
+        market_blocks: dict[str, dict[str, str]] = {}
+        for family in TRACKED_MARKET_FAMILIES:
+            statuses: dict[str, str] = {}
+            has_captured = False
+            for lifecycle_state in STANDARD_LIFECYCLE_STATES:
+                storage_state = LIFECYCLE_TO_STORAGE_STATE[lifecycle_state]
+                captured = _state_exists_for_market(event_id, family, storage_state)
+                has_captured = has_captured or captured
+                statuses[lifecycle_state] = _lifecycle_status(window=window, lifecycle_state=lifecycle_state, captured=captured)
+
+            tracked = (family in supported_families) or has_captured
+            if not tracked:
+                statuses = {state: "CLOSED" for state in STANDARD_LIFECYCLE_STATES}
+
+            for status in statuses.values():
+                if status == "CAPTURED":
+                    standard_captured += 1
+                elif status == "DUE":
+                    standard_due += 1
+                elif status == "MISSED":
+                    standard_missed += 1
+
+            market_blocks[family] = statuses
+
+        prop_captured = _state_exists_for_player_prop_event(event_id, LIFECYCLE_TO_STORAGE_STATE[LIFECYCLE_GAME_DAY])
+        prop_has_any = _has_any_player_prop_state(event_id)
+        prop_status = _player_prop_lifecycle_status(window=window, captured=prop_captured)
+        prop_tracked = prop_has_any or bool(config.prop_allowlist)
+        if not prop_tracked:
+            prop_status = "CLOSED"
+
+        if prop_status == "CAPTURED":
+            player_prop_captured += 1
+        elif prop_status == "DUE":
+            player_prop_due += 1
+        elif prop_status == "MISSED":
+            player_prop_missed += 1
+
+        events_out.append(
+            {
+                "eventId": event_id,
+                "awayTeam": str(game.get("awayAbbreviation") or game.get("awayTeam") or ""),
+                "homeTeam": str(game.get("homeAbbreviation") or game.get("homeTeam") or ""),
+                "kickoff": str(game.get("commenceTime") or ""),
+                "currentLifecycleWindow": window,
+                "spread": market_blocks["SPREAD"],
+                "moneyline": market_blocks["MONEYLINE"],
+                "total": market_blocks["TOTAL"],
+                "playerProps": {LIFECYCLE_GAME_DAY: prop_status},
+            }
+        )
+
+    estimate_contract = _estimate_credits_for_request_shape(
+        endpoint_type=PLAYER_PROP_ENDPOINT_TYPE,
+        region=PLAYER_PROP_REGION,
+        markets=list(config.prop_allowlist),
+    )
+    verified_status = str(estimate_contract.get("status") or "UNKNOWN")
+    verified_per_request = _to_float(estimate_contract.get("creditsPerRequest"))
+    verified_credits_due = float(player_prop_due * verified_per_request) if verified_per_request is not None else None
+
+    grading = _grading_workflow_status(now_utc=now)
+    season_projection = _regular_season_player_prop_credit_projection()
+
+    return {
+        "manager": "SIA_PREGAME_COLLECTION_SCHEDULE_V1",
+        "week": resolved_week,
+        "policy": {
+            "windows": {
+                "openingHoursGreaterThan": config.opening_window_hours,
+                "gameDayHoursAtMost": config.opening_window_hours,
+                "gameDayHoursGreaterThan": config.closing_window_hours,
+                "closingHoursAtMost": config.closing_window_hours,
+            },
+            "standardMarketLifecycle": list(STANDARD_LIFECYCLE_STATES),
+            "playerPropLifecycle": list(PLAYER_PROP_LIFECYCLE_STATES),
+            "storageStateLabels": LIFECYCLE_TO_STORAGE_STATE,
+            "postgameState": "POSTGAME_WORKFLOW_ONLY",
+        },
+        "events": events_out,
+        "totals": {
+            "events": len(events_out),
+            "windowBreakdown": window_breakdown,
+            "standardSnapshotsCaptured": standard_captured,
+            "standardSnapshotsDue": standard_due,
+            "standardSnapshotsMissed": standard_missed,
+            "playerPropSnapshotsCaptured": player_prop_captured,
+            "playerPropSnapshotsDue": player_prop_due,
+            "playerPropSnapshotsMissed": player_prop_missed,
+            "plannedStandardProviderRequests": 0,
+            "plannedPlayerPropProviderRequests": player_prop_due,
+            "standardProviderVerifiedCreditCost": "ZERO",
+            "playerPropVerifiedCreditCostStatus": verified_status,
+            "verifiedPlayerPropCreditsDue": verified_credits_due,
+            "providerRequestsMade": 0,
+            "providerCreditsSpent": 0,
+            "gamesAwaitingGrading": int(grading.get("gamesAwaitingGrading") or 0),
+            "gamesGraded": int(grading.get("gamesGraded") or 0),
+            "postgameSportsbookRequests": 0,
+        },
+        "weeklyCostModel": {
+            "playerPropDueGames": player_prop_due,
+            "verifiedCreditsPerGameDayCapture": verified_per_request,
+            "projectedWeekCredits": verified_credits_due,
+        },
+        "seasonProjection": season_projection,
+        "firewalls": {
+            "officialProductionMarket": "SPREAD",
+            "moneylineProductionEligible": False,
+            "totalProductionEligible": False,
+            "playerPropProductionEligible": False,
+            "playerPropRecommendations": "DISABLED",
+            "teamTotalRecommendations": "DISABLED",
+            "firstHalfRecommendations": "DISABLED",
+            "crossMarketComparable": False,
+            "universalSIA3": "DISABLED",
+            "livePolling": "NO",
+            "productionSpreadEngineChanged": "NO",
+            "qualificationThresholdsChanged": "NO",
         },
     }
