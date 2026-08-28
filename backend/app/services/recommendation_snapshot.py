@@ -16,13 +16,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from app.runtime_paths import runtime_paths
 from app.services.closing_line import calculate_clv, get_closing_line
 
 
 log = logging.getLogger("recommendation_snapshot")
 
-_DB_PATH = Path.home() / "Downloads" / "NFL_Analytics_OS_v1_9" / "database" / "nfl_model.duckdb"
-_SCHEDULE_CSV = Path.home() / "Downloads" / "NFL_Analytics_OS_v1_9" / "outputs" / "current_game_projections.csv"
+_DB_PATH = runtime_paths.nfl_model_duckdb
+_SCHEDULE_CSV = runtime_paths.current_game_projections_csv
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS recommendation_snapshots (

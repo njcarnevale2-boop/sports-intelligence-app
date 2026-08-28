@@ -6,10 +6,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
+from app.runtime_paths import runtime_paths
+
 
 log = logging.getLogger("social_history")
 
-_DB_PATH = Path.home() / "Downloads" / "NFL_Analytics_OS_v1_9" / "database" / "nfl_model.duckdb"
+_DB_PATH = runtime_paths.nfl_model_duckdb
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS social_signal_history (

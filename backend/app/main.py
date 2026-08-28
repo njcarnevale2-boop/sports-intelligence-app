@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+from app.runtime_paths import runtime_readiness
 
 from app.routes.opportunities import router as opportunities_router
 from app.routes.context import router as context_router
@@ -94,6 +95,15 @@ def startup_event() -> None:
 
     logger = logging.getLogger("startup")
     logging.basicConfig(level=logging.INFO)
+
+    readiness = runtime_readiness()
+    logger.log(
+        logging.INFO if readiness.get("deploymentReadiness") == "READY" else logging.WARNING,
+        "Runtime readiness: status=%s root=%s missing=%s",
+        readiness.get("deploymentReadiness"),
+        readiness.get("runtimeRoot"),
+        ",".join(readiness.get("missingArtifacts") or []) or "NONE",
+    )
 
     logger.info("Market data warm-up: starting")
     t0 = time.perf_counter()

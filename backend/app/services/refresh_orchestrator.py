@@ -26,14 +26,16 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from app.runtime_paths import runtime_paths
+
 log = logging.getLogger("refresh_orchestrator")
 
 # ── paths ──────────────────────────────────────────────────────────────────
-_MODEL_ROOT = Path.home() / "Downloads" / "NFL_Analytics_OS_v1_9"
-_SCRIPTS_DIR = _MODEL_ROOT / "scripts"
-_NFL_PYTHON = _MODEL_ROOT / ".venv" / "bin" / "python3"
-_STATE_FILE = _MODEL_ROOT / "logs" / "refresh_state.json"
-_SCHEDULE_CSV = _MODEL_ROOT / "outputs" / "current_game_projections.csv"
+_MODEL_ROOT = runtime_paths.root
+_SCRIPTS_DIR = runtime_paths.scripts_dir
+_NFL_PYTHON = runtime_paths.nfl_python
+_STATE_FILE = runtime_paths.refresh_state_json
+_SCHEDULE_CSV = runtime_paths.current_game_projections_csv
 
 # ── cadence env vars (minutes) ─────────────────────────────────────────────
 def _env_int(name: str, default: int) -> int:

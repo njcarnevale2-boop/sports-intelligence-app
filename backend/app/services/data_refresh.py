@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 
 import pandas as pd
 
+from app.runtime_paths import runtime_paths
 from app.services.executive_analyst import generate_executive_analysis
 from app.services.injury_matchup import InjuryMatchupContext
 from app.services.market_intelligence import get_market_intelligence
@@ -13,8 +14,8 @@ from app.services.sports_intelligence_score import calculate_sports_intelligence
 from app.services.weather import WeatherAnalyzer
 
 
-MODEL_ROOT = Path.home() / "Downloads" / "NFL_Analytics_OS_v1_9"
-GAME_PROJECTIONS = MODEL_ROOT / "outputs" / "current_game_projections.csv"
+MODEL_ROOT = runtime_paths.root
+GAME_PROJECTIONS = runtime_paths.current_game_projections_csv
 
 
 class DataRefreshService:

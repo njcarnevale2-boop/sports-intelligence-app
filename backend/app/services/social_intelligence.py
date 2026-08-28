@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tupl
 
 import pandas as pd
 
+from app.runtime_paths import runtime_paths
 from app.services.social_history import get_social_summary, store_ingestion_run, store_signals
 from app.services.social_sources import (
     SOURCE_TYPE_NATIONAL_REPORTER,
@@ -20,8 +21,8 @@ from app.services.social_sources import (
 
 log = logging.getLogger("social_intelligence")
 
-MODEL_ROOT = Path.home() / "Downloads" / "NFL_Analytics_OS_v1_9"
-GAME_PROJECTIONS = MODEL_ROOT / "outputs" / "current_game_projections.csv"
+MODEL_ROOT = runtime_paths.root
+GAME_PROJECTIONS = runtime_paths.current_game_projections_csv
 
 PROVIDER_NAME = "MOCK"
 DATA_STATUS = "MOCK"

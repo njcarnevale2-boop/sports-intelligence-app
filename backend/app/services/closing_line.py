@@ -21,7 +21,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-_DB_PATH = Path.home() / "Downloads" / "NFL_Analytics_OS_v1_9" / "database" / "nfl_model.duckdb"
+from app.runtime_paths import runtime_paths
+
+_DB_PATH = runtime_paths.nfl_model_duckdb
 
 _CUTOFF_MINUTES = int(os.getenv("CLOSING_LINE_CUTOFF_MINUTES", "2"))
 

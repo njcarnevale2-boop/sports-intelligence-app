@@ -3,20 +3,22 @@ from pathlib import Path
 import pandas as pd
 from fastapi import APIRouter
 
+from app.runtime_paths import runtime_paths
+
 router = APIRouter(prefix="/api", tags=["schedule-context"])
 
-MODEL_ROOT = Path.home() / "Downloads" / "NFL_Analytics_OS_v1_9"
+MODEL_ROOT = runtime_paths.root
 
 SCHEDULE_CONTEXT = (
-    MODEL_ROOT / "outputs" / "schedule_context_latest.csv"
+    runtime_paths.schedule_context_latest_csv
 )
 
 RANKED_BET_BOARD = (
-    MODEL_ROOT / "outputs" / "ranked_bet_board.csv"
+    runtime_paths.ranked_bet_board_csv
 )
 
 GAME_PROJECTIONS = (
-    MODEL_ROOT / "outputs" / "current_game_projections.csv"
+    runtime_paths.current_game_projections_csv
 )
 
 # Reverse lookup: full team name → 2-3 letter abbreviation

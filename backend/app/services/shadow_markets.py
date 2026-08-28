@@ -18,6 +18,7 @@ from typing import Any, Callable, Optional
 import pandas as pd
 
 from app.config import settings
+from app.runtime_paths import runtime_paths
 from app.services.calibration import apply_guarded_isotonic
 from app.services.closing_line import calculate_clv, get_closing_line
 from app.services.cross_market_normalization import attach_shadow_global_scores
@@ -28,10 +29,10 @@ from app.services.probability_engine import (
 )
 
 
-MODEL_ROOT = Path.home() / "Downloads" / "NFL_Analytics_OS_v1_9"
-OUTPUTS_ROOT = MODEL_ROOT / "outputs"
-LINE_MOVEMENT_BOARD = OUTPUTS_ROOT / "line_movement_board.csv"
-GAME_PROJECTIONS = OUTPUTS_ROOT / "current_game_projections.csv"
+MODEL_ROOT = runtime_paths.root
+OUTPUTS_ROOT = runtime_paths.outputs_dir
+LINE_MOVEMENT_BOARD = runtime_paths.line_movement_board_csv
+GAME_PROJECTIONS = runtime_paths.current_game_projections_csv
 
 
 def _resolve_db_path() -> Path:

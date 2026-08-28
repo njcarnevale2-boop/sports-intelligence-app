@@ -19,12 +19,13 @@ from app.services.social_sources import get_social_source_coverage_report
 from app.services.weather_history import get_weather_summary
 from app.services.decision_ledger import get_admin_ledger_summary, get_official_publication_for_week
 from app.services.games import service as games_service
+from app.runtime_paths import runtime_paths, runtime_readiness
 from database.models import PerformanceRecord
 from database.session import SessionLocal
 
 
-MODEL_ROOT = Path.home() / "Downloads" / "NFL_Analytics_OS_v1_9"
-GAME_PROJECTIONS = MODEL_ROOT / "outputs" / "current_game_projections.csv"
+MODEL_ROOT = runtime_paths.root
+GAME_PROJECTIONS = runtime_paths.current_game_projections_csv
 
 
 class AdminStatusService:
@@ -51,6 +52,7 @@ class AdminStatusService:
         social_usage = get_query_usage_summary()
         wx_summary = get_weather_summary()
         ledger_summary = get_admin_ledger_summary(limit=100)
+        runtime_status = runtime_readiness()
         official_this_week = None
         official_published = False
         try:
@@ -152,6 +154,15 @@ class AdminStatusService:
             "officialSia3PublishedThisWeek": official_published,
             "officialSia3PublicationTime": None if official_this_week is None else official_this_week.get("publishedAtUTC"),
             "ledgerAuditRows": ledger_summary.get("auditRows", []),
+            "runtimeRootConfigured": runtime_status.get("runtimeRootConfigured"),
+            "runtimeRoot": runtime_status.get("runtimeRoot"),
+            "runtimeRootSource": runtime_status.get("runtimeRootSource"),
+            "persistentStorageReady": runtime_status.get("persistentStorageReady"),
+            "requiredArtifactsReady": runtime_status.get("requiredArtifactsReady"),
+            "missingArtifacts": runtime_status.get("missingArtifacts"),
+            "deploymentReadiness": runtime_status.get("deploymentReadiness"),
+            "backendReplicaRequirement": runtime_status.get("backendReplicaRequirement"),
+            "backendInstanceId": runtime_status.get("backendInstanceId"),
         }
 
     def _read_last_refresh(self) -> str:

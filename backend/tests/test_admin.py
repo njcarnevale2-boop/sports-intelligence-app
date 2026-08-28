@@ -32,6 +32,16 @@ def test_admin_status_endpoint_returns_metrics():
     assert "ledgerMissingOddsSnapshotLinkages" in payload
     assert "officialSia3PublishedThisWeek" in payload
     assert "officialSia3PublicationTime" in payload
+    assert "runtimeRootConfigured" in payload
+    assert "runtimeRoot" in payload
+    assert "runtimeRootSource" in payload
+    assert "persistentStorageReady" in payload
+    assert "requiredArtifactsReady" in payload
+    assert "missingArtifacts" in payload
+    assert "deploymentReadiness" in payload
+    assert "backendReplicaRequirement" in payload
+    assert payload["backendReplicaRequirement"] == 1
+    assert "backendInstanceId" in payload
     # Scheduler fields
     assert "scheduler" in payload
     sched = payload["scheduler"]

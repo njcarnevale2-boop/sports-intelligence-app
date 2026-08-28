@@ -7,6 +7,7 @@ import pandas as pd
 
 from app.config import settings
 from app.routes.opportunities import get_game_best_opportunity, get_opportunities
+from app.runtime_paths import runtime_paths
 from app.services.decision_ledger import get_latest_decision_by_snapshot_id
 from app.services.games import service as games_service
 from app.services.probability_engine import (
@@ -18,8 +19,8 @@ from app.services.probability_engine import (
 from app.services.sports_intelligence_score import calculate_sports_intelligence_score
 
 
-MODEL_ROOT = Path.home() / "Downloads" / "NFL_Analytics_OS_v1_9"
-GAME_PROJECTIONS = MODEL_ROOT / "outputs" / "current_game_projections.csv"
+MODEL_ROOT = runtime_paths.root
+GAME_PROJECTIONS = runtime_paths.current_game_projections_csv
 
 
 def _to_float(value: Any) -> Optional[float]:

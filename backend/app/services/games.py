@@ -7,15 +7,16 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 from app.providers.provider_manager import ProviderManager
+from app.runtime_paths import runtime_paths
 from app.services.market_data import market_data_service, select_best_line_row
 from app.services.market_intelligence import build_market_intelligence_lookup, normalize_market
 from app.services.sports_intelligence_score import calculate_sports_intelligence_score
 
 
-MODEL_ROOT = Path.home() / "Downloads" / "NFL_Analytics_OS_v1_9"
-GAME_PROJECTIONS = MODEL_ROOT / "outputs" / "current_game_projections.csv"
-SCHEDULE_CONTEXT = MODEL_ROOT / "outputs" / "schedule_context_latest.csv"
-RANKED_BET_BOARD = MODEL_ROOT / "outputs" / "ranked_bet_board.csv"
+MODEL_ROOT = runtime_paths.root
+GAME_PROJECTIONS = runtime_paths.current_game_projections_csv
+SCHEDULE_CONTEXT = runtime_paths.schedule_context_latest_csv
+RANKED_BET_BOARD = runtime_paths.ranked_bet_board_csv
 
 
 TEAM_META: Dict[str, Dict[str, str]] = {

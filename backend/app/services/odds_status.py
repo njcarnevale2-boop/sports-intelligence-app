@@ -4,7 +4,9 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-DB_PATH = Path.home() / "Downloads" / "NFL_Analytics_OS_v1_9" / "database" / "nfl_model.duckdb"
+from app.runtime_paths import runtime_paths
+
+DB_PATH = runtime_paths.nfl_model_duckdb
 
 _STALE_HOURS = 24  # flag data as STALE if no refresh within this window
 

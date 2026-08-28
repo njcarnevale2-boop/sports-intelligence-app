@@ -8,10 +8,12 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from app.runtime_paths import runtime_paths
 
-MODEL_ROOT = Path.home() / "Downloads" / "NFL_Analytics_OS_v1_9"
-OUTPUTS_ROOT = MODEL_ROOT / "outputs"
-WALKFORWARD_MULTI = OUTPUTS_ROOT / "walkforward_multiseason_predictions.csv"
+
+MODEL_ROOT = runtime_paths.root
+OUTPUTS_ROOT = runtime_paths.outputs_dir
+WALKFORWARD_MULTI = runtime_paths.walkforward_multiseason_predictions_csv
 
 
 @dataclass

@@ -3,18 +3,12 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 
+from app.runtime_paths import runtime_paths
 
-MODEL_ROOT = (
-    Path.home()
-    / "Downloads"
-    / "NFL_Analytics_OS_v1_9"
-)
 
-LINE_MOVEMENT_BOARD = (
-    MODEL_ROOT
-    / "outputs"
-    / "line_movement_board.csv"
-)
+MODEL_ROOT = runtime_paths.root
+
+LINE_MOVEMENT_BOARD = runtime_paths.line_movement_board_csv
 
 
 _cached_modified_time = None

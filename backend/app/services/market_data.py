@@ -8,12 +8,13 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from app.providers.provider_manager import ProviderManager
+from app.runtime_paths import runtime_paths
 
 
-MODEL_ROOT = Path.home() / "Downloads" / "NFL_Analytics_OS_v1_9"
-OUTPUTS_ROOT = MODEL_ROOT / "outputs"
-LINE_MOVEMENT_BOARD = OUTPUTS_ROOT / "line_movement_board.csv"
-RANKED_BET_BOARD = OUTPUTS_ROOT / "ranked_bet_board.csv"
+MODEL_ROOT = runtime_paths.root
+OUTPUTS_ROOT = runtime_paths.outputs_dir
+LINE_MOVEMENT_BOARD = runtime_paths.line_movement_board_csv
+RANKED_BET_BOARD = runtime_paths.ranked_bet_board_csv
 
 
 def _safe_float(value: Any) -> Optional[float]:

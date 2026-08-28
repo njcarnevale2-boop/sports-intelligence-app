@@ -29,6 +29,7 @@ from app.services.probability_engine import (
     total_outcome_probabilities,
 )
 from app.config import settings
+from app.runtime_paths import runtime_paths
 
 
 router = APIRouter(
@@ -68,39 +69,19 @@ def _decision_board_line_shopping(opp: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
 
-MODEL_ROOT = (
-    Path.home()
-    / "Downloads"
-    / "NFL_Analytics_OS_v1_9"
-)
+MODEL_ROOT = runtime_paths.root
 
 
-RANKED_BET_BOARD = (
-    MODEL_ROOT
-    / "outputs"
-    / "ranked_bet_board.csv"
-)
+RANKED_BET_BOARD = runtime_paths.ranked_bet_board_csv
 
 
-PORTFOLIO_RECOMMENDATIONS = (
-    MODEL_ROOT
-    / "outputs"
-    / "portfolio_recommendations.csv"
-)
+PORTFOLIO_RECOMMENDATIONS = runtime_paths.portfolio_recommendations_csv
 
 
-GAME_PROJECTIONS = (
-    MODEL_ROOT
-    / "outputs"
-    / "current_game_projections.csv"
-)
+GAME_PROJECTIONS = runtime_paths.current_game_projections_csv
 
 
-LINE_MOVEMENT_BOARD = (
-    MODEL_ROOT
-    / "outputs"
-    / "line_movement_board.csv"
-)
+LINE_MOVEMENT_BOARD = runtime_paths.line_movement_board_csv
 
 
 # ---------------------------------------------------------
