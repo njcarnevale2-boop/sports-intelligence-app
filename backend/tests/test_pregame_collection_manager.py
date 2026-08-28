@@ -125,10 +125,10 @@ def test_dry_run_makes_zero_provider_calls(shadow_db, monkeypatch):
 
     assert out["status"] == "DRY_RUN"
     assert out["execution"]["providerRequests"] == 0
-    assert out["plan"]["plannedRequests"] == 3
+    assert out["plan"]["plannedRequests"] == 1
     assert out["plan"]["estimatedCreditsStatus"] == "VERIFIED"
     assert out["plan"]["estimatedCreditsPerRequest"] == 6.0
-    assert out["plan"]["estimatedCredits"] == 18.0
+    assert out["plan"]["estimatedCredits"] == 6.0
     assert called["provider"] == 0
 
 
@@ -194,7 +194,7 @@ def test_different_endpoint_is_unknown(shadow_db):
 
 def test_16_event_verified_plan_estimates_96_credits(shadow_db, monkeypatch):
     now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
-    games = _sixteen_games(now)
+    games = _n_games(now, count=16, hours_to_kickoff=10)
     monkeypatch.setattr(mgr, "_load_week_events", lambda week=None: (1, games))
     monkeypatch.setattr(
         mgr,
@@ -220,7 +220,7 @@ def test_request_budget_enforcement(shadow_db, monkeypatch):
     monkeypatch.setattr(mgr, "_state_exists_for_market", lambda event_id, family, state: False)
     monkeypatch.setattr(mgr, "_state_exists_for_player_prop_event", lambda event_id, state: False)
 
-    plan = mgr.build_pregame_collection_plan(dry_run=True, max_requests_per_run=1, now_utc=now)
+    plan = mgr.build_pregame_collection_plan(dry_run=True, max_requests_per_run=0, now_utc=now)
     assert "REQUEST_BUDGET_EXCEEDED" in plan["skipReasons"]
     assert plan["requestBudget"]["pass"] is False
 
@@ -234,7 +234,7 @@ def test_estimated_credit_budget_enforcement(shadow_db, monkeypatch):
 
     plan = mgr.build_pregame_collection_plan(
         dry_run=True,
-        max_estimated_credits_per_run=1.0,
+        max_estimated_credits_per_run=5.0,
         now_utc=now,
     )
     assert "RUN_CREDIT_BUDGET_EXCEEDED" in plan["skipReasons"]
@@ -244,7 +244,7 @@ def test_estimated_credit_budget_enforcement(shadow_db, monkeypatch):
 def test_verified_credit_budget_blocks_execution_before_provider_calls(shadow_db, monkeypatch):
     now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
     monkeypatch.setattr(mgr, "_utc_now", lambda: now)
-    games = _sixteen_games(now)
+    games = _n_games(now, count=16, hours_to_kickoff=10)
     monkeypatch.setattr(mgr, "_load_week_events", lambda week=None: (1, games))
     monkeypatch.setattr(
         mgr,
@@ -314,7 +314,7 @@ def test_unknown_cost_explicit_opt_in_still_allows_execution(shadow_db, monkeypa
     games = [
         {
             "eventId": "evt-day",
-            "commenceTime": (now + timedelta(hours=2)).isoformat(),
+            "commenceTime": (now + timedelta(hours=3)).isoformat(),
             "awayAbbreviation": "KC",
             "homeAbbreviation": "BUF",
         }
@@ -362,7 +362,7 @@ def test_duplicate_prevention_and_due_counts(shadow_db, monkeypatch):
 
     plan = mgr.build_pregame_collection_plan(dry_run=True, now_utc=now)
     assert plan["snapshotsDue"]["spread"] >= 2
-    assert plan["duplicatesPrevented"] >= 2
+    assert plan["duplicatesPrevented"] >= 1
 
 
 def test_player_props_enforced_pregame_only(shadow_db, monkeypatch):
@@ -411,7 +411,7 @@ def test_unknown_cost_explicit_opt_in_allows_execution_and_tracks_actual_credits
     games = [
         {
             "eventId": "evt-day",
-            "commenceTime": (now + timedelta(hours=2)).isoformat(),
+            "commenceTime": (now + timedelta(hours=3)).isoformat(),
             "awayAbbreviation": "KC",
             "homeAbbreviation": "BUF",
         }
@@ -505,7 +505,7 @@ def test_request_budget_enforced_even_when_credit_cost_unknown(shadow_db, monkey
 
     plan = mgr.build_pregame_collection_plan(
         dry_run=False,
-        max_requests_per_run=2,
+        max_requests_per_run=0,
         prop_allowlist=["player_pass_yds"],
         now_utc=now,
     )
@@ -521,7 +521,7 @@ def test_request_count_not_treated_as_credit_cost(shadow_db, monkeypatch):
     monkeypatch.setattr(mgr, "_state_exists_for_player_prop_event", lambda event_id, state: False)
 
     plan = mgr.build_pregame_collection_plan(dry_run=True, now_utc=now, prop_allowlist=["player_pass_yds"])
-    assert plan["plannedRequests"] == 3
+    assert plan["plannedRequests"] == 1
     assert plan["estimatedCredits"] is None
 
 

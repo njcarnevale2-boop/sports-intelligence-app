@@ -549,7 +549,11 @@ def build_pregame_collection_plan(
             elif family == "TOTAL":
                 total_due += 1
 
-        # Player-prop capture is pregame-only and event/state scoped to avoid unnecessary polling.
+        # Player props remain a GAME_DAY-only lifecycle even when the standard
+        # pregame runner is evaluating other windows.
+        if target_state != LIFECYCLE_TO_STORAGE_STATE[LIFECYCLE_GAME_DAY]:
+            continue
+
         prop_exists = _state_exists_for_player_prop_event(event_id, target_state)
         if prop_exists:
             duplicates_prevented += 1
