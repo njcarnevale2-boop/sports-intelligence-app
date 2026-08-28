@@ -71,3 +71,10 @@ backend/research_outputs/*
 backend/logs/
 tmp/
 backend/tmp/
+
+# Render seed staging artifacts (local-only, large binary data)
+deployment/render_seed/payload/
+deployment/render_seed/*.tar
+deployment/render_seed/*.tar.gz
+deployment/render_seed/*.tgz
+deployment/render_seed/tmp/
