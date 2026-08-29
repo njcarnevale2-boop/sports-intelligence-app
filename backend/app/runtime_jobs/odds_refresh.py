@@ -227,7 +227,8 @@ def _ensure_schema(con: duckdb.DuckDBPyConnection) -> None:
             requests_used INTEGER,
             requests_last INTEGER,
             request_shape_id VARCHAR,
-            request_shape_signature VARCHAR
+            request_shape_signature VARCHAR,
+            request_provenance VARCHAR
         )
         """
     )
@@ -241,10 +242,13 @@ def _ensure_schema(con: duckdb.DuckDBPyConnection) -> None:
         con.execute("ALTER TABLE odds_api_usage ADD COLUMN request_shape_id VARCHAR")
     if "request_shape_signature" not in existing:
         con.execute("ALTER TABLE odds_api_usage ADD COLUMN request_shape_signature VARCHAR")
+    if "request_provenance" not in existing:
+        con.execute("ALTER TABLE odds_api_usage ADD COLUMN request_provenance VARCHAR")
 
 
 def _store_usage(con: duckdb.DuckDBPyConnection, resp: requests.Response, endpoint: str) -> None:
     signature = build_core_request_signature()
+    provenance = str(os.getenv("ODDS_REQUEST_PROVENANCE", "STANDARD_CORE_REFRESH") or "STANDARD_CORE_REFRESH").strip().upper()
     def as_int(header_name: str) -> int | None:
         raw = resp.headers.get(header_name)
         try:
@@ -253,7 +257,7 @@ def _store_usage(con: duckdb.DuckDBPyConnection, resp: requests.Response, endpoi
             return None
 
     con.execute(
-        "INSERT INTO odds_api_usage VALUES (CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO odds_api_usage VALUES (CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?)",
         [
             endpoint,
             as_int("x-requests-remaining"),
@@ -261,6 +265,7 @@ def _store_usage(con: duckdb.DuckDBPyConnection, resp: requests.Response, endpoi
             as_int("x-requests-last"),
             _shape_id(signature),
             _canonical_json(signature),
+            provenance,
         ],
     )
 

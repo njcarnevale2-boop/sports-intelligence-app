@@ -35,6 +35,10 @@ def test_admin_status_endpoint_returns_metrics():
     assert "coreOddsRequestShapeId" in payload
     assert "coreOddsVerifiedRequestCost" in payload
     assert "coreOddsCostVerificationStatus" in payload
+    assert "coreOddsCostBootstrapStatus" in payload
+    assert "coreOddsCostBootstrapAt" in payload
+    assert "coreOddsCostBootstrapShapeId" in payload
+    assert "coreOddsCostBootstrapActualCredits" in payload
     assert "quotaSafety" in payload
     assert "socialProvider" in payload
     assert "socialDataStatus" in payload
@@ -120,6 +124,14 @@ def test_admin_refresh_can_trigger_sportsbook_refresh_only_with_explicit_opt_in_
     assert payload["oddsRefresh"]["coreOddsVerifiedRequestCost"] == 3.0
     assert payload["oddsRefresh"]["coreOddsCostVerificationStatus"] == "VERIFIED"
     trigger_now.assert_called_once()
+
+
+def test_admin_refresh_bootstrap_requires_explicit_sportsbook_refresh_pairing():
+    response = client.post("/api/admin/refresh?bootstrapCoreCost=true")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["oddsRefresh"]["triggered"] is False
+    assert payload["oddsRefresh"]["reason"] == "BOOTSTRAP_REQUIRES_SPORTSBOOK_REFRESH"
 
 
 def test_admin_social_sources_coverage_endpoint():

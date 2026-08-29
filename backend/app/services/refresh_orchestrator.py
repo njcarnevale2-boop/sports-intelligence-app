@@ -398,14 +398,14 @@ def _scheduler_iteration(now: Optional[datetime] = None) -> float:
     _write_state(state)
 
     if now_utc >= next_dt:
-        _run_once()
+        _run_once("SCHEDULER_AUTOMATION")
         return 5
 
     sleep_secs = min((next_dt - now_utc).total_seconds(), 60)
     return float(max(sleep_secs, 5))
 
 
-def _run_once() -> bool:
+def _run_once(request_provenance: str = "SCHEDULER_AUTOMATION") -> bool:
     """Execute update_odds → build_line_movement.  Returns True on success."""
     if not _run_lock.acquire(blocking=False):
         log.info("Refresh already running – skipping overlap")
@@ -421,11 +421,16 @@ def _run_once() -> bool:
 
     try:
         python = sys.executable or "python3"
+        odds_env = {
+            **os.environ,
+            "ODDS_REQUEST_PROVENANCE": str(request_provenance or "SCHEDULER_AUTOMATION").strip().upper(),
+        }
 
         # Step 1: fetch odds (appends to DuckDB, never overwrites).
         r1 = subprocess.run(
             [python, "-m", "app.runtime_jobs.odds_refresh"],
             cwd=str(_BACKEND_ROOT),
+            env=odds_env,
             capture_output=True,
             text=True,
             timeout=120,
@@ -786,7 +791,7 @@ def start_scheduler() -> None:
 
 
 # ── public API ───────────────────────────────────────────────────────────────
-def trigger_now() -> Dict[str, Any]:
+def trigger_now(request_provenance: str = "MANUAL_REFRESH") -> Dict[str, Any]:
     """Trigger an immediate refresh (used by admin 'Refresh Now').
 
     Returns a summary dict.  Non-blocking overlap check: if a refresh is
@@ -796,7 +801,7 @@ def trigger_now() -> Dict[str, Any]:
         return {"triggered": False, "reason": "refresh already running"}
     _run_lock.release()  # release so _run_once can re-acquire
 
-    success = _run_once()
+    success = _run_once(request_provenance=request_provenance)
     state = _read_state()
     return {
         "triggered": True,
