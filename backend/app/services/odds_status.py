@@ -769,6 +769,7 @@ def get_odds_status() -> Dict[str, Any]:
         latest_requests_used = None
         latest_requests_last = None
         latest_requests_at = None
+        latest_refresh_telemetry = None
         has_usage = con.execute(
             "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'odds_api_usage'"
         ).fetchone()[0] > 0
@@ -782,6 +783,33 @@ def get_odds_status() -> Dict[str, Any]:
                 latest_requests_used = usage_row[2]
                 latest_requests_last = usage_row[3]
 
+        has_refresh_telemetry = con.execute(
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'odds_refresh_run_telemetry'"
+        ).fetchone()[0] > 0
+        if has_refresh_telemetry:
+            latest_refresh_telemetry = con.execute(
+                """
+                SELECT
+                    run_at,
+                    refresh_status,
+                    skip_reason,
+                    warning_code,
+                    target_regular_week,
+                    expected_in_scope_events,
+                    provider_request_skipped,
+                    provider_events_returned,
+                    events_rejected_by_window,
+                    events_rejected_by_schedule_match,
+                    events_rejected_by_team_match,
+                    events_rejected_by_date_match,
+                    events_accepted,
+                    snapshot_rows_inserted
+                FROM odds_refresh_run_telemetry
+                ORDER BY run_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+
         # Determine staleness
         if latest_ts is None:
             data_status = "UNAVAILABLE"
@@ -791,6 +819,22 @@ def get_odds_status() -> Dict[str, Any]:
             data_status = "LIVE" if age < timedelta(hours=_STALE_HOURS) else "STALE"
 
         quota = get_quota_safety_state()
+        refresh_run = {
+            "runAt": latest_refresh_telemetry[0].isoformat() if latest_refresh_telemetry and latest_refresh_telemetry[0] else None,
+            "status": latest_refresh_telemetry[1] if latest_refresh_telemetry else None,
+            "skipReason": latest_refresh_telemetry[2] if latest_refresh_telemetry else None,
+            "warningCode": latest_refresh_telemetry[3] if latest_refresh_telemetry else None,
+            "targetRegularWeek": int(latest_refresh_telemetry[4]) if latest_refresh_telemetry and latest_refresh_telemetry[4] is not None else None,
+            "expectedInScopeEvents": int(latest_refresh_telemetry[5]) if latest_refresh_telemetry and latest_refresh_telemetry[5] is not None else None,
+            "providerRequestSkipped": bool(latest_refresh_telemetry[6]) if latest_refresh_telemetry and latest_refresh_telemetry[6] is not None else None,
+            "providerEventsReturned": int(latest_refresh_telemetry[7]) if latest_refresh_telemetry and latest_refresh_telemetry[7] is not None else None,
+            "eventsRejectedByWindow": int(latest_refresh_telemetry[8]) if latest_refresh_telemetry and latest_refresh_telemetry[8] is not None else None,
+            "eventsRejectedByScheduleMatch": int(latest_refresh_telemetry[9]) if latest_refresh_telemetry and latest_refresh_telemetry[9] is not None else None,
+            "eventsRejectedByTeamMatch": int(latest_refresh_telemetry[10]) if latest_refresh_telemetry and latest_refresh_telemetry[10] is not None else None,
+            "eventsRejectedByDateMatch": int(latest_refresh_telemetry[11]) if latest_refresh_telemetry and latest_refresh_telemetry[11] is not None else None,
+            "eventsAccepted": int(latest_refresh_telemetry[12]) if latest_refresh_telemetry and latest_refresh_telemetry[12] is not None else None,
+            "snapshotRowsInserted": int(latest_refresh_telemetry[13]) if latest_refresh_telemetry and latest_refresh_telemetry[13] is not None else None,
+        }
         return {
             "oddsProvider": "The Odds API",
             "oddsDataStatus": data_status,
@@ -809,6 +853,7 @@ def get_odds_status() -> Dict[str, Any]:
             "coreOddsCostBootstrapAt": quota.get("coreOddsCostBootstrapAt"),
             "coreOddsCostBootstrapShapeId": quota.get("coreOddsCostBootstrapShapeId"),
             "coreOddsCostBootstrapActualCredits": quota.get("coreOddsCostBootstrapActualCredits"),
+            "coreRefreshRun": refresh_run,
             "quotaSafety": quota,
         }
     except Exception:
