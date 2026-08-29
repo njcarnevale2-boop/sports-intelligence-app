@@ -26,6 +26,7 @@ def test_run_once_uses_repo_runtime_jobs_not_persistent_scripts(tmp_path, monkey
     with (
         patch.object(orch, "_STATE_FILE", state_file),
         patch.object(orch.subprocess, "run", side_effect=_fake_run),
+        patch.object(orch, "_children_ru_maxrss_kb", side_effect=[1000, 1100, 1200, 1300, 1400, 1500]),
         patch("app.services.recommendation_snapshot.capture_closing_lines", return_value={"eligible": 0, "captured": 0, "pending": 0, "missing": 0, "errors": 0}),
         patch("app.services.decision_ledger.run_official_postgame_lifecycle", return_value={"checked": 0, "settled": 0, "pending": 0}),
         patch("app.services.shadow_markets.append_shadow_outcomes", return_value={"checked": 0, "appended": 0, "pending": 0}),
@@ -44,6 +45,15 @@ def test_run_once_uses_repo_runtime_jobs_not_persistent_scripts(tmp_path, monkey
         injury_analyzer.return_value.analyze.return_value = None
         injury_analyzer.return_value._data_status = "LIVE"
         assert orch._run_once() is True
+
+    status = json.loads(state_file.read_text())
+    assert status["lastRefreshCompleted"] is True
+    assert status["lastOddsRefreshExitCode"] == 0
+    assert status["lastLineMovementExitCode"] == 0
+    assert status["lastRefreshChildrenRuMaxRssKbBefore"] == 1000
+    assert status["lastRefreshChildrenRuMaxRssKbAfter"] == 1500
+    assert status["lastRefreshChildrenRuMaxRssKbDelta"] == 500
+    assert status["refreshMemoryTelemetryMode"] == "RUSAGE_CHILDREN_RU_MAXRSS_BEST_EFFORT"
 
     assert len(calls) >= 2
     first_cmd, first_kwargs = calls[0]
@@ -71,6 +81,7 @@ def test_run_once_failure_records_last_attempt_and_backoff_anchor(tmp_path, monk
     with (
         patch.object(orch, "_STATE_FILE", state_file),
         patch.object(orch.subprocess, "run", return_value=failed),
+        patch.object(orch, "_children_ru_maxrss_kb", side_effect=[1000, 1010, 1020, 1030]),
     ):
         assert orch._run_once() is False
 
@@ -80,6 +91,9 @@ def test_run_once_failure_records_last_attempt_and_backoff_anchor(tmp_path, monk
     assert status["consecutiveFailures"] == 1
     assert status["isRunning"] is False
     assert "odds_refresh failed" in str(status["lastError"])
+    assert status["lastRefreshCompleted"] is False
+    assert status["lastOddsRefreshExitCode"] == 1
+    assert status["lastLineMovementExitCode"] is None
 
     now = datetime.now(timezone.utc)
     next_dt = orch._next_refresh_dt(status, now, cadence_minutes=15)
@@ -259,3 +273,107 @@ def test_get_refresh_status_disables_running_and_retires_legacy_error_when_autom
     assert status["consecutiveFailures"] == 0
     assert "scripts/update_odds.py" in str(status["historicalLastError"])
     assert status["historicalConsecutiveFailures"] == 26329
+
+
+def test_run_once_memory_telemetry_unavailable_fails_safe(tmp_path, monkeypatch):
+    runtime_root = tmp_path / "runtime"
+    (runtime_root / "logs").mkdir(parents=True)
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+    monkeypatch.setenv("PREGAME_AUTOMATION_ENABLED", "0")
+
+    state_file = runtime_root / "logs" / "refresh_state.json"
+
+    with (
+        patch.object(orch, "_STATE_FILE", state_file),
+        patch.object(orch.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="ok", stderr="")),
+        patch.object(orch, "_children_ru_maxrss_kb", return_value=None),
+        patch("app.services.recommendation_snapshot.capture_closing_lines", return_value={"eligible": 0, "captured": 0, "pending": 0, "missing": 0, "errors": 0}),
+        patch("app.services.decision_ledger.run_official_postgame_lifecycle", return_value={"checked": 0, "settled": 0, "pending": 0}),
+        patch("app.services.shadow_markets.append_shadow_outcomes", return_value={"checked": 0, "appended": 0, "pending": 0}),
+        patch("app.services.performance.get_performance_service") as perf_factory,
+        patch("app.services.injuries.InjuryAnalyzer") as injury_analyzer,
+        patch("app.services.injury_history.get_injury_summary", return_value={"playersTracked": 0, "teamsUpdated": 0}),
+        patch("app.services.weather_history.get_weather_summary", return_value={"forecastsAvailable": 0}),
+        patch.object(orch, "_read_quota_from_db", return_value=None),
+    ):
+        perf_factory.return_value.get_performance_summary.return_value = {
+            "closingLinesCaptured": 0,
+            "pendingClosingLines": 0,
+            "missingClosingLines": 0,
+            "averageCLV": None,
+        }
+        injury_analyzer.return_value.analyze.return_value = None
+        injury_analyzer.return_value._data_status = "LIVE"
+        assert orch._run_once() is True
+
+    status = json.loads(state_file.read_text())
+    assert status["lastRefreshCompleted"] is True
+    assert status["lastRefreshChildrenRuMaxRssKbBefore"] is None
+    assert status["lastRefreshChildrenRuMaxRssKbAfter"] is None
+    assert status["lastRefreshChildrenRuMaxRssKbDelta"] is None
+
+
+def test_get_refresh_status_surfaces_instrumentation_fields(tmp_path, monkeypatch):
+    runtime_root = tmp_path / "runtime"
+    (runtime_root / "logs").mkdir(parents=True)
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+
+    state_file = runtime_root / "logs" / "refresh_state.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                "lastRefreshCompleted": True,
+                "lastRefreshOverallElapsedSeconds": 12.34,
+                "lastOddsRefreshExitCode": 0,
+                "lastOddsRefreshElapsedSeconds": 3.21,
+                "lastLineMovementExitCode": 0,
+                "lastLineMovementElapsedSeconds": 2.1,
+                "lastRefreshChildrenRuMaxRssKbBefore": 100,
+                "lastRefreshChildrenRuMaxRssKbAfter": 200,
+                "lastRefreshChildrenRuMaxRssKbDelta": 100,
+            }
+        )
+    )
+
+    with patch.object(orch, "_STATE_FILE", state_file):
+        status = orch.get_refresh_status()
+
+    assert status["lastRefreshCompleted"] is True
+    assert status["lastRefreshOverallElapsedSeconds"] == 12.34
+    assert status["lastOddsRefreshExitCode"] == 0
+    assert status["lastLineMovementExitCode"] == 0
+    assert status["lastRefreshChildrenRuMaxRssKbDelta"] == 100
+
+
+def test_instrumented_orchestrator_run_makes_no_direct_provider_request(tmp_path, monkeypatch):
+    runtime_root = tmp_path / "runtime"
+    (runtime_root / "logs").mkdir(parents=True)
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+    monkeypatch.setenv("PREGAME_AUTOMATION_ENABLED", "0")
+
+    state_file = runtime_root / "logs" / "refresh_state.json"
+
+    with (
+        patch.object(orch, "_STATE_FILE", state_file),
+        patch.object(orch.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="ok", stderr="")),
+        patch("app.runtime_jobs.odds_refresh.requests.get") as request_get,
+        patch("app.services.recommendation_snapshot.capture_closing_lines", return_value={"eligible": 0, "captured": 0, "pending": 0, "missing": 0, "errors": 0}),
+        patch("app.services.decision_ledger.run_official_postgame_lifecycle", return_value={"checked": 0, "settled": 0, "pending": 0}),
+        patch("app.services.shadow_markets.append_shadow_outcomes", return_value={"checked": 0, "appended": 0, "pending": 0}),
+        patch("app.services.performance.get_performance_service") as perf_factory,
+        patch("app.services.injuries.InjuryAnalyzer") as injury_analyzer,
+        patch("app.services.injury_history.get_injury_summary", return_value={"playersTracked": 0, "teamsUpdated": 0}),
+        patch("app.services.weather_history.get_weather_summary", return_value={"forecastsAvailable": 0}),
+        patch.object(orch, "_read_quota_from_db", return_value=None),
+    ):
+        perf_factory.return_value.get_performance_summary.return_value = {
+            "closingLinesCaptured": 0,
+            "pendingClosingLines": 0,
+            "missingClosingLines": 0,
+            "averageCLV": None,
+        }
+        injury_analyzer.return_value.analyze.return_value = None
+        injury_analyzer.return_value._data_status = "LIVE"
+
+        assert orch._run_once() is True
+        request_get.assert_not_called()

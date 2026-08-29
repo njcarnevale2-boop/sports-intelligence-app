@@ -20,9 +20,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import resource
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -299,6 +301,29 @@ _EMPTY_STATE: Dict[str, Any] = {
     "pregameLastLifecycleState": None,
     "pregameNextCollectionState": None,
     "pregameNextCollectionTime": None,
+    # Refresh instrumentation telemetry (best-effort, no behavior changes).
+    "lastRefreshCompleted": None,
+    "lastRefreshOverallElapsedSeconds": None,
+    "lastRefreshStartedAt": None,
+    "lastRefreshFinishedAt": None,
+    "lastRefreshQuotaBefore": None,
+    "lastRefreshQuotaAfter": None,
+    "lastRefreshChildrenRuMaxRssKbBefore": None,
+    "lastRefreshChildrenRuMaxRssKbAfter": None,
+    "lastRefreshChildrenRuMaxRssKbDelta": None,
+    "lastOddsRefreshExitCode": None,
+    "lastOddsRefreshElapsedSeconds": None,
+    "lastOddsRefreshChildrenRuMaxRssKbBefore": None,
+    "lastOddsRefreshChildrenRuMaxRssKbAfter": None,
+    "lastOddsRefreshChildrenRuMaxRssKbDelta": None,
+    "lastOddsRefreshTimedOut": None,
+    "lastLineMovementExitCode": None,
+    "lastLineMovementElapsedSeconds": None,
+    "lastLineMovementChildrenRuMaxRssKbBefore": None,
+    "lastLineMovementChildrenRuMaxRssKbAfter": None,
+    "lastLineMovementChildrenRuMaxRssKbDelta": None,
+    "lastLineMovementTimedOut": None,
+    "refreshMemoryTelemetryMode": "RUSAGE_CHILDREN_RU_MAXRSS_BEST_EFFORT",
 }
 
 
@@ -334,6 +359,73 @@ def _parse_state_dt(value: Any) -> Optional[datetime]:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+
+def _children_ru_maxrss_kb() -> Optional[int]:
+    if not hasattr(resource, "RUSAGE_CHILDREN"):
+        return None
+    try:
+        raw = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+    except Exception:
+        return None
+    if raw is None:
+        return None
+
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+
+    # Darwin reports bytes; Linux commonly reports kilobytes.
+    if sys.platform == "darwin":
+        return int(value / 1024.0)
+    return int(value)
+
+
+def _run_subprocess_with_metrics(
+    cmd: list[str],
+    *,
+    cwd: str,
+    env: Optional[dict[str, str]] = None,
+    timeout: Optional[float] = None,
+) -> tuple[subprocess.CompletedProcess[str], Dict[str, Any]]:
+    before = _children_ru_maxrss_kb()
+    started = datetime.now(timezone.utc)
+    started_mono = time.perf_counter()
+    timed_out = False
+    completed: subprocess.CompletedProcess[str]
+
+    try:
+        completed = subprocess.run(
+            cmd,
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        raise
+    finally:
+        after = _children_ru_maxrss_kb()
+        elapsed = round(time.perf_counter() - started_mono, 3)
+        delta = None
+        if before is not None and after is not None:
+            delta = max(int(after - before), 0)
+        metrics = {
+            "startedAt": started.isoformat(),
+            "finishedAt": datetime.now(timezone.utc).isoformat(),
+            "elapsedSeconds": elapsed,
+            "childrenRuMaxRssKbBefore": before,
+            "childrenRuMaxRssKbAfter": after,
+            "childrenRuMaxRssKbDelta": delta,
+            "timedOut": timed_out,
+            # This is not true container-wide concurrent peak RSS.
+            "memoryTelemetryMode": "RUSAGE_CHILDREN_RU_MAXRSS_BEST_EFFORT",
+        }
+
+    return completed, metrics
 
 
 def _last_run_anchor(state: Dict[str, Any]) -> Optional[datetime]:
@@ -415,6 +507,11 @@ def _run_once(request_provenance: str = "SCHEDULER_AUTOMATION") -> bool:
     state = _read_state()
     state["isRunning"] = True
     state["lastAttemptAt"] = started.isoformat()
+    state["lastRefreshStartedAt"] = started.isoformat()
+    state["lastRefreshCompleted"] = False
+    state["lastRefreshQuotaBefore"] = state.get("quotaRemaining")
+    state["lastRefreshChildrenRuMaxRssKbBefore"] = _children_ru_maxrss_kb()
+    state["refreshMemoryTelemetryMode"] = "RUSAGE_CHILDREN_RU_MAXRSS_BEST_EFFORT"
     _write_state(state)
 
     log.info("Odds refresh started at %s", started.isoformat())
@@ -425,28 +522,42 @@ def _run_once(request_provenance: str = "SCHEDULER_AUTOMATION") -> bool:
             **os.environ,
             "ODDS_REQUEST_PROVENANCE": str(request_provenance or "SCHEDULER_AUTOMATION").strip().upper(),
         }
+        odds_metrics: Dict[str, Any] = {}
+        line_metrics: Dict[str, Any] = {}
 
         # Step 1: fetch odds (appends to DuckDB, never overwrites).
-        r1 = subprocess.run(
+        r1, odds_metrics = _run_subprocess_with_metrics(
             [python, "-m", "app.runtime_jobs.odds_refresh"],
             cwd=str(_BACKEND_ROOT),
             env=odds_env,
-            capture_output=True,
-            text=True,
             timeout=120,
         )
+        state = _read_state()
+        state["lastOddsRefreshExitCode"] = r1.returncode
+        state["lastOddsRefreshElapsedSeconds"] = odds_metrics.get("elapsedSeconds")
+        state["lastOddsRefreshChildrenRuMaxRssKbBefore"] = odds_metrics.get("childrenRuMaxRssKbBefore")
+        state["lastOddsRefreshChildrenRuMaxRssKbAfter"] = odds_metrics.get("childrenRuMaxRssKbAfter")
+        state["lastOddsRefreshChildrenRuMaxRssKbDelta"] = odds_metrics.get("childrenRuMaxRssKbDelta")
+        state["lastOddsRefreshTimedOut"] = bool(odds_metrics.get("timedOut"))
+        _write_state(state)
         if r1.returncode != 0:
             raise RuntimeError(f"odds_refresh failed: {r1.stderr[-500:]}")
         log.info("odds_refresh: %s", r1.stdout.strip())
 
         # Step 2: rebuild line movement board from new snapshot.
-        r2 = subprocess.run(
+        r2, line_metrics = _run_subprocess_with_metrics(
             [python, "-m", "app.runtime_jobs.line_movement"],
             cwd=str(_BACKEND_ROOT),
-            capture_output=True,
-            text=True,
             timeout=60,
         )
+        state = _read_state()
+        state["lastLineMovementExitCode"] = r2.returncode
+        state["lastLineMovementElapsedSeconds"] = line_metrics.get("elapsedSeconds")
+        state["lastLineMovementChildrenRuMaxRssKbBefore"] = line_metrics.get("childrenRuMaxRssKbBefore")
+        state["lastLineMovementChildrenRuMaxRssKbAfter"] = line_metrics.get("childrenRuMaxRssKbAfter")
+        state["lastLineMovementChildrenRuMaxRssKbDelta"] = line_metrics.get("childrenRuMaxRssKbDelta")
+        state["lastLineMovementTimedOut"] = bool(line_metrics.get("timedOut"))
+        _write_state(state)
         if r2.returncode != 0:
             raise RuntimeError(f"line_movement failed: {r2.stderr[-500:]}")
         log.info("line_movement: %s", r2.stdout.strip())
@@ -628,6 +739,18 @@ def _run_once(request_provenance: str = "SCHEDULER_AUTOMATION") -> bool:
         except Exception:
             pass
 
+        state["lastRefreshCompleted"] = True
+        state["lastRefreshOverallElapsedSeconds"] = duration
+        state["lastRefreshFinishedAt"] = datetime.now(timezone.utc).isoformat()
+        state["lastRefreshQuotaAfter"] = state.get("quotaRemaining")
+        state["lastRefreshChildrenRuMaxRssKbAfter"] = _children_ru_maxrss_kb()
+        before_children = state.get("lastRefreshChildrenRuMaxRssKbBefore")
+        after_children = state.get("lastRefreshChildrenRuMaxRssKbAfter")
+        if isinstance(before_children, int) and isinstance(after_children, int):
+            state["lastRefreshChildrenRuMaxRssKbDelta"] = max(after_children - before_children, 0)
+        else:
+            state["lastRefreshChildrenRuMaxRssKbDelta"] = None
+
         state["isRunning"] = False
         _write_state(state)
         return True
@@ -638,6 +761,20 @@ def _run_once(request_provenance: str = "SCHEDULER_AUTOMATION") -> bool:
         state["lastAttemptAt"] = started.isoformat()
         state["lastError"] = str(exc)[:500]
         state["consecutiveFailures"] = int(state.get("consecutiveFailures") or 0) + 1
+        state["lastRefreshCompleted"] = False
+        state["lastRefreshOverallElapsedSeconds"] = round((datetime.now(timezone.utc) - started).total_seconds(), 3)
+        state["lastRefreshFinishedAt"] = datetime.now(timezone.utc).isoformat()
+        try:
+            state["lastRefreshQuotaAfter"] = _read_quota_from_db()
+        except Exception:
+            state["lastRefreshQuotaAfter"] = state.get("quotaRemaining")
+        state["lastRefreshChildrenRuMaxRssKbAfter"] = _children_ru_maxrss_kb()
+        before_children = state.get("lastRefreshChildrenRuMaxRssKbBefore")
+        after_children = state.get("lastRefreshChildrenRuMaxRssKbAfter")
+        if isinstance(before_children, int) and isinstance(after_children, int):
+            state["lastRefreshChildrenRuMaxRssKbDelta"] = max(after_children - before_children, 0)
+        else:
+            state["lastRefreshChildrenRuMaxRssKbDelta"] = None
         state["isRunning"] = False
         _write_state(state)
         return False
@@ -831,6 +968,28 @@ def trigger_now(request_provenance: str = "MANUAL_REFRESH") -> Dict[str, Any]:
         "pregameLastLifecycleState": state.get("pregameLastLifecycleState"),
         "pregameNextCollectionState": state.get("pregameNextCollectionState"),
         "pregameNextCollectionTime": state.get("pregameNextCollectionTime"),
+        "lastRefreshCompleted": state.get("lastRefreshCompleted"),
+        "lastRefreshOverallElapsedSeconds": state.get("lastRefreshOverallElapsedSeconds"),
+        "lastRefreshStartedAt": state.get("lastRefreshStartedAt"),
+        "lastRefreshFinishedAt": state.get("lastRefreshFinishedAt"),
+        "lastRefreshQuotaBefore": state.get("lastRefreshQuotaBefore"),
+        "lastRefreshQuotaAfter": state.get("lastRefreshQuotaAfter"),
+        "lastRefreshChildrenRuMaxRssKbBefore": state.get("lastRefreshChildrenRuMaxRssKbBefore"),
+        "lastRefreshChildrenRuMaxRssKbAfter": state.get("lastRefreshChildrenRuMaxRssKbAfter"),
+        "lastRefreshChildrenRuMaxRssKbDelta": state.get("lastRefreshChildrenRuMaxRssKbDelta"),
+        "lastOddsRefreshExitCode": state.get("lastOddsRefreshExitCode"),
+        "lastOddsRefreshElapsedSeconds": state.get("lastOddsRefreshElapsedSeconds"),
+        "lastOddsRefreshChildrenRuMaxRssKbBefore": state.get("lastOddsRefreshChildrenRuMaxRssKbBefore"),
+        "lastOddsRefreshChildrenRuMaxRssKbAfter": state.get("lastOddsRefreshChildrenRuMaxRssKbAfter"),
+        "lastOddsRefreshChildrenRuMaxRssKbDelta": state.get("lastOddsRefreshChildrenRuMaxRssKbDelta"),
+        "lastOddsRefreshTimedOut": state.get("lastOddsRefreshTimedOut"),
+        "lastLineMovementExitCode": state.get("lastLineMovementExitCode"),
+        "lastLineMovementElapsedSeconds": state.get("lastLineMovementElapsedSeconds"),
+        "lastLineMovementChildrenRuMaxRssKbBefore": state.get("lastLineMovementChildrenRuMaxRssKbBefore"),
+        "lastLineMovementChildrenRuMaxRssKbAfter": state.get("lastLineMovementChildrenRuMaxRssKbAfter"),
+        "lastLineMovementChildrenRuMaxRssKbDelta": state.get("lastLineMovementChildrenRuMaxRssKbDelta"),
+        "lastLineMovementTimedOut": state.get("lastLineMovementTimedOut"),
+        "refreshMemoryTelemetryMode": state.get("refreshMemoryTelemetryMode"),
     }
 
 
@@ -888,4 +1047,26 @@ def get_refresh_status() -> Dict[str, Any]:
         "pregameLastLifecycleState": state.get("pregameLastLifecycleState"),
         "pregameNextCollectionState": state.get("pregameNextCollectionState"),
         "pregameNextCollectionTime": state.get("pregameNextCollectionTime"),
+        "lastRefreshCompleted": state.get("lastRefreshCompleted"),
+        "lastRefreshOverallElapsedSeconds": state.get("lastRefreshOverallElapsedSeconds"),
+        "lastRefreshStartedAt": state.get("lastRefreshStartedAt"),
+        "lastRefreshFinishedAt": state.get("lastRefreshFinishedAt"),
+        "lastRefreshQuotaBefore": state.get("lastRefreshQuotaBefore"),
+        "lastRefreshQuotaAfter": state.get("lastRefreshQuotaAfter"),
+        "lastRefreshChildrenRuMaxRssKbBefore": state.get("lastRefreshChildrenRuMaxRssKbBefore"),
+        "lastRefreshChildrenRuMaxRssKbAfter": state.get("lastRefreshChildrenRuMaxRssKbAfter"),
+        "lastRefreshChildrenRuMaxRssKbDelta": state.get("lastRefreshChildrenRuMaxRssKbDelta"),
+        "lastOddsRefreshExitCode": state.get("lastOddsRefreshExitCode"),
+        "lastOddsRefreshElapsedSeconds": state.get("lastOddsRefreshElapsedSeconds"),
+        "lastOddsRefreshChildrenRuMaxRssKbBefore": state.get("lastOddsRefreshChildrenRuMaxRssKbBefore"),
+        "lastOddsRefreshChildrenRuMaxRssKbAfter": state.get("lastOddsRefreshChildrenRuMaxRssKbAfter"),
+        "lastOddsRefreshChildrenRuMaxRssKbDelta": state.get("lastOddsRefreshChildrenRuMaxRssKbDelta"),
+        "lastOddsRefreshTimedOut": state.get("lastOddsRefreshTimedOut"),
+        "lastLineMovementExitCode": state.get("lastLineMovementExitCode"),
+        "lastLineMovementElapsedSeconds": state.get("lastLineMovementElapsedSeconds"),
+        "lastLineMovementChildrenRuMaxRssKbBefore": state.get("lastLineMovementChildrenRuMaxRssKbBefore"),
+        "lastLineMovementChildrenRuMaxRssKbAfter": state.get("lastLineMovementChildrenRuMaxRssKbAfter"),
+        "lastLineMovementChildrenRuMaxRssKbDelta": state.get("lastLineMovementChildrenRuMaxRssKbDelta"),
+        "lastLineMovementTimedOut": state.get("lastLineMovementTimedOut"),
+        "refreshMemoryTelemetryMode": state.get("refreshMemoryTelemetryMode"),
     }
