@@ -10,6 +10,29 @@ import pandas as pd
 from app.runtime_paths import runtime_paths
 
 
+_OUTPUT_COLUMNS = [
+    "api_event_id",
+    "commence_time",
+    "home_team",
+    "away_team",
+    "sportsbook",
+    "market",
+    "side",
+    "first_seen",
+    "last_seen",
+    "opening_point_observed",
+    "latest_point",
+    "point_move",
+    "opening_price_observed",
+    "latest_price",
+    "price_move",
+    "steam_flag",
+    "snapshots",
+]
+
+_GROUP_KEYS = ["api_event_id", "bookmaker_key", "market_key", "outcome_code"]
+
+
 def _table_exists(con: duckdb.DuckDBPyConnection, table: str) -> bool:
     return (
         con.execute(
@@ -20,34 +43,47 @@ def _table_exists(con: duckdb.DuckDBPyConnection, table: str) -> bool:
     )
 
 
-def run_rebuild() -> dict[str, Any]:
-    spread_threshold = float(os.getenv("STEAM_SPREAD_MOVE_THRESHOLD", "1.0"))
-    price_threshold = float(os.getenv("STEAM_PRICE_MOVE_THRESHOLD", "15"))
-
-    db_path = runtime_paths.nfl_model_duckdb.resolve()
-    output_csv = runtime_paths.line_movement_board_csv.resolve()
-    output_csv.parent.mkdir(parents=True, exist_ok=True)
-
-    con = duckdb.connect(str(db_path))
+def _apply_duckdb_runtime_guardrails(con: duckdb.DuckDBPyConnection) -> None:
+    threads_raw = str(os.getenv("LINE_MOVEMENT_DUCKDB_THREADS", "1") or "1").strip()
     try:
-        if not _table_exists(con, "odds_snapshots"):
-            raise RuntimeError("odds_snapshots missing")
+        threads = int(threads_raw)
+    except (TypeError, ValueError):
+        threads = 1
+    if threads > 0:
+        con.execute(f"SET threads = {threads}")
 
-        df = con.execute(
-            """
-            SELECT fetched_at, api_event_id, commence_time, home_code, away_code,
-                   bookmaker_key, bookmaker_title, market_key, outcome_code, point, price
-            FROM odds_snapshots
-            ORDER BY api_event_id, bookmaker_key, market_key, outcome_code, fetched_at
-            """
-        ).df()
-    finally:
-        con.close()
+    memory_limit_raw = str(os.getenv("LINE_MOVEMENT_DUCKDB_MEMORY_LIMIT_MB", "") or "").strip()
+    if not memory_limit_raw:
+        return
 
-    keys = ["api_event_id", "bookmaker_key", "market_key", "outcome_code"]
+    try:
+        memory_limit_mb = int(float(memory_limit_raw))
+    except (TypeError, ValueError):
+        return
+    if memory_limit_mb > 0:
+        con.execute(f"SET memory_limit = '{memory_limit_mb}MB'")
+
+
+def _legacy_query_full_history(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
+    return con.execute(
+        """
+        SELECT fetched_at, api_event_id, commence_time, home_code, away_code,
+               bookmaker_key, bookmaker_title, market_key, outcome_code, point, price
+        FROM odds_snapshots
+        ORDER BY api_event_id, bookmaker_key, market_key, outcome_code, fetched_at
+        """
+    ).df()
+
+
+def _build_board_via_pandas_full_history(
+    df: pd.DataFrame,
+    *,
+    spread_threshold: float,
+    price_threshold: float,
+) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
 
-    for _, group in df.groupby(keys, dropna=False):
+    for _, group in df.groupby(_GROUP_KEYS, dropna=False):
         if len(group) < 2:
             continue
         ordered = group.sort_values("fetched_at")
@@ -92,6 +128,182 @@ def run_rebuild() -> dict[str, Any]:
     out = pd.DataFrame(rows)
     if len(out):
         out = out.sort_values(["steam_flag", "snapshots"], ascending=[False, False])
+    return out
+
+
+def _query_reduced_board_rows(
+    con: duckdb.DuckDBPyConnection,
+    *,
+    spread_threshold: float,
+    price_threshold: float,
+) -> list[tuple[Any, ...]]:
+    rows = con.execute(
+        """
+        WITH ranked AS (
+            SELECT
+                fetched_at,
+                api_event_id,
+                commence_time,
+                home_code,
+                away_code,
+                bookmaker_key,
+                bookmaker_title,
+                market_key,
+                outcome_code,
+                point,
+                price,
+                ROW_NUMBER() OVER (
+                    PARTITION BY api_event_id, bookmaker_key, market_key, outcome_code
+                    ORDER BY fetched_at ASC
+                ) AS rn_first,
+                ROW_NUMBER() OVER (
+                    PARTITION BY api_event_id, bookmaker_key, market_key, outcome_code
+                    ORDER BY fetched_at DESC
+                ) AS rn_last,
+                COUNT(*) OVER (
+                    PARTITION BY api_event_id, bookmaker_key, market_key, outcome_code
+                ) AS snapshots
+            FROM odds_snapshots
+        ),
+        first_rows AS (
+            SELECT
+                api_event_id,
+                bookmaker_key,
+                market_key,
+                outcome_code,
+                commence_time,
+                home_code,
+                away_code,
+                bookmaker_title,
+                fetched_at AS first_seen,
+                point AS opening_point_observed,
+                price AS opening_price_observed,
+                snapshots
+            FROM ranked
+            WHERE rn_first = 1
+              AND snapshots >= 2
+        ),
+        last_rows AS (
+            SELECT
+                api_event_id,
+                bookmaker_key,
+                market_key,
+                outcome_code,
+                fetched_at AS last_seen,
+                point AS latest_point,
+                price AS latest_price
+            FROM ranked
+            WHERE rn_last = 1
+              AND snapshots >= 2
+        )
+        SELECT
+            f.api_event_id,
+            f.commence_time,
+            f.home_code AS home_team,
+            f.away_code AS away_team,
+            f.bookmaker_title AS sportsbook,
+            f.market_key AS market,
+            f.outcome_code AS side,
+            f.first_seen,
+            l.last_seen,
+            f.opening_point_observed,
+            l.latest_point,
+            CASE
+                WHEN f.opening_point_observed IS NOT NULL AND l.latest_point IS NOT NULL
+                THEN l.latest_point - f.opening_point_observed
+                ELSE NULL
+            END AS point_move,
+            f.opening_price_observed,
+            l.latest_price,
+            CASE
+                WHEN f.opening_price_observed IS NOT NULL AND l.latest_price IS NOT NULL
+                THEN l.latest_price - f.opening_price_observed
+                ELSE NULL
+            END AS price_move,
+            CASE
+                WHEN (
+                    f.opening_point_observed IS NOT NULL
+                    AND l.latest_point IS NOT NULL
+                    AND ABS(l.latest_point - f.opening_point_observed) >= ?
+                )
+                OR (
+                    f.opening_price_observed IS NOT NULL
+                    AND l.latest_price IS NOT NULL
+                    AND ABS(l.latest_price - f.opening_price_observed) >= ?
+                )
+                THEN TRUE
+                ELSE FALSE
+            END AS steam_flag,
+            f.snapshots
+        FROM first_rows f
+        INNER JOIN last_rows l
+            ON f.api_event_id IS NOT DISTINCT FROM l.api_event_id
+           AND f.bookmaker_key IS NOT DISTINCT FROM l.bookmaker_key
+           AND f.market_key IS NOT DISTINCT FROM l.market_key
+           AND f.outcome_code IS NOT DISTINCT FROM l.outcome_code
+        ORDER BY steam_flag DESC, snapshots DESC
+        """,
+        [spread_threshold, price_threshold],
+    ).fetchall()
+    return list(rows)
+
+
+def _rows_to_frame(rows: list[tuple[Any, ...]]) -> pd.DataFrame:
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows, columns=_OUTPUT_COLUMNS)
+
+
+def run_rebuild_legacy() -> dict[str, Any]:
+    spread_threshold = float(os.getenv("STEAM_SPREAD_MOVE_THRESHOLD", "1.0"))
+    price_threshold = float(os.getenv("STEAM_PRICE_MOVE_THRESHOLD", "15"))
+
+    db_path = runtime_paths.nfl_model_duckdb.resolve()
+    output_csv = runtime_paths.line_movement_board_csv.resolve()
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    con = duckdb.connect(str(db_path))
+    try:
+        if not _table_exists(con, "odds_snapshots"):
+            raise RuntimeError("odds_snapshots missing")
+
+        _apply_duckdb_runtime_guardrails(con)
+        df = _legacy_query_full_history(con)
+    finally:
+        con.close()
+
+    out = _build_board_via_pandas_full_history(
+        df,
+        spread_threshold=spread_threshold,
+        price_threshold=price_threshold,
+    )
+    out.to_csv(output_csv, index=False)
+    return {"rows": int(len(out))}
+
+
+def run_rebuild() -> dict[str, Any]:
+    spread_threshold = float(os.getenv("STEAM_SPREAD_MOVE_THRESHOLD", "1.0"))
+    price_threshold = float(os.getenv("STEAM_PRICE_MOVE_THRESHOLD", "15"))
+
+    db_path = runtime_paths.nfl_model_duckdb.resolve()
+    output_csv = runtime_paths.line_movement_board_csv.resolve()
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    con = duckdb.connect(str(db_path))
+    try:
+        if not _table_exists(con, "odds_snapshots"):
+            raise RuntimeError("odds_snapshots missing")
+
+        _apply_duckdb_runtime_guardrails(con)
+        reduced_rows = _query_reduced_board_rows(
+            con,
+            spread_threshold=spread_threshold,
+            price_threshold=price_threshold,
+        )
+    finally:
+        con.close()
+
+    out = _rows_to_frame(reduced_rows)
     out.to_csv(output_csv, index=False)
     return {"rows": int(len(out))}
 
