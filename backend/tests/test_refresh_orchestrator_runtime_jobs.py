@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -171,6 +171,37 @@ def test_scheduler_iteration_enabled_can_trigger_run_once_with_mocked_provider(t
         sleep_secs = orch._scheduler_iteration(now=datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc))
 
     assert sleep_secs >= 5
+    run_once.assert_called_once()
+
+
+def test_scheduler_iteration_no_immediate_retry_after_completed_cycle(tmp_path, monkeypatch):
+    runtime_root = tmp_path / "runtime"
+    (runtime_root / "logs").mkdir(parents=True)
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+    monkeypatch.setenv("ODDS_REFRESH_AUTOMATION_ENABLED", "true")
+
+    state_file = runtime_root / "logs" / "refresh_state.json"
+    state_file.write_text(json.dumps({"lastRefreshAt": "2026-09-01T10:00:00+00:00", "quotaRemaining": 20000}))
+
+    first_now = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+
+    def _fake_run_once(_request_provenance: str = "SCHEDULER_AUTOMATION") -> bool:
+        state = json.loads(state_file.read_text())
+        state["lastRefreshAt"] = first_now.isoformat()
+        state["lastAttemptAt"] = first_now.isoformat()
+        state_file.write_text(json.dumps(state))
+        return True
+
+    with (
+        patch.object(orch, "_STATE_FILE", state_file),
+        patch.object(orch, "_determine_base_cadence_minutes", return_value=30),
+        patch.object(orch, "_run_once", side_effect=_fake_run_once) as run_once,
+    ):
+        first_sleep = orch._scheduler_iteration(now=first_now)
+        second_sleep = orch._scheduler_iteration(now=first_now + timedelta(seconds=1))
+
+    assert first_sleep >= 5
+    assert second_sleep >= 5
     run_once.assert_called_once()
 
 

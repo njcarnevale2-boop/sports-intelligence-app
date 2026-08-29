@@ -187,7 +187,15 @@ def test_run_refresh_filters_to_scoped_regular_season_events(monkeypatch, tmp_pa
     monkeypatch.setenv("ODDS_REFRESH_MAX_DAYS_AHEAD", "14")
     monkeypatch.setenv("ODDS_REFRESH_MAX_HOURS_PAST", "12")
 
-    with patch.object(odds_refresh.requests, "get", return_value=_FakeResp(payload)):
+    with (
+        patch("app.services.odds_status.get_core_request_cost_verification", return_value={
+            "coreOddsRequestShapeId": odds_refresh.core_request_shape_id(),
+            "coreOddsVerifiedRequestCost": 3.0,
+            "coreOddsCostVerificationStatus": "VERIFIED",
+        }),
+        patch("app.services.odds_status.get_quota_safety_state", return_value=_quota_state(weekly_usage=100.0, min_breach=False, pause_breach=False)),
+        patch.object(odds_refresh.requests, "get", return_value=_FakeResp(payload)),
+    ):
         out = odds_refresh.run_refresh()
 
     assert out["totalEvents"] == 3
@@ -230,7 +238,15 @@ def test_run_refresh_excludes_distant_future_without_schedule_context(monkeypatc
     monkeypatch.setenv("ODDS_REFRESH_MAX_DAYS_AHEAD", "14")
     monkeypatch.setenv("ODDS_REFRESH_MAX_HOURS_PAST", "12")
 
-    with patch.object(odds_refresh.requests, "get", return_value=_FakeResp(payload)):
+    with (
+        patch("app.services.odds_status.get_core_request_cost_verification", return_value={
+            "coreOddsRequestShapeId": odds_refresh.core_request_shape_id(),
+            "coreOddsVerifiedRequestCost": 3.0,
+            "coreOddsCostVerificationStatus": "VERIFIED",
+        }),
+        patch("app.services.odds_status.get_quota_safety_state", return_value=_quota_state(weekly_usage=100.0, min_breach=False, pause_breach=False)),
+        patch.object(odds_refresh.requests, "get", return_value=_FakeResp(payload)),
+    ):
         out = odds_refresh.run_refresh()
 
     assert out["totalEvents"] == 2
@@ -388,6 +404,12 @@ def test_run_refresh_aug29_week1_targeting_and_rollover_matching(monkeypatch, tm
     monkeypatch.setenv("ODDS_REFRESH_MAX_HOURS_PAST", "12")
 
     with (
+        patch("app.services.odds_status.get_core_request_cost_verification", return_value={
+            "coreOddsRequestShapeId": odds_refresh.core_request_shape_id(),
+            "coreOddsVerifiedRequestCost": 3.0,
+            "coreOddsCostVerificationStatus": "VERIFIED",
+        }),
+        patch("app.services.odds_status.get_quota_safety_state", return_value=_quota_state(weekly_usage=100.0, min_breach=False, pause_breach=False)),
         patch.object(odds_refresh.requests, "get", return_value=_FakeResp(payload)),
         patch.object(odds_refresh, "datetime", _FixedDatetime),
     ):
@@ -457,6 +479,12 @@ def test_run_refresh_marks_paid_zero_snapshot_warning(monkeypatch, tmp_path):
     monkeypatch.setenv("ODDS_API_KEY", "test-key")
 
     with (
+        patch("app.services.odds_status.get_core_request_cost_verification", return_value={
+            "coreOddsRequestShapeId": odds_refresh.core_request_shape_id(),
+            "coreOddsVerifiedRequestCost": 3.0,
+            "coreOddsCostVerificationStatus": "VERIFIED",
+        }),
+        patch("app.services.odds_status.get_quota_safety_state", return_value=_quota_state(weekly_usage=100.0, min_breach=False, pause_breach=False)),
         patch.object(odds_refresh.requests, "get", return_value=_FakeResp(payload)),
         patch.object(odds_refresh, "datetime", _FixedDatetime),
     ):
@@ -467,3 +495,159 @@ def test_run_refresh_marks_paid_zero_snapshot_warning(monkeypatch, tmp_path):
     assert out["eventsAccepted"] == 1
     assert out["rows"] == 0
     assert out["warningCode"] == "PAID_REQUEST_ZERO_SNAPSHOTS"
+
+
+def _fixed_now_datetime():
+    fixed_now = datetime(2026, 8, 29, 19, 42, 4, tzinfo=timezone.utc)
+
+    class _FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return fixed_now.replace(tzinfo=None)
+            return fixed_now.astimezone(tz)
+
+    return fixed_now, _FixedDatetime
+
+
+def _build_runtime_with_upcoming_week1_schedule(tmp_path):
+    runtime_root = tmp_path / "runtime"
+    outputs = runtime_root / "outputs"
+    outputs.mkdir(parents=True)
+    schedule = pd.DataFrame(
+        [
+            {
+                "season": 2026,
+                "week": 1,
+                "gameday": "2026-09-10",
+                "away_team": "KC",
+                "home_team": "BUF",
+            }
+        ]
+    )
+    schedule.to_csv(outputs / "schedule_context_latest.csv", index=False)
+    return runtime_root
+
+
+def _quota_state(*, weekly_usage: float | None, min_breach: bool, pause_breach: bool):
+    return {
+        "weeklySoftBudget": 700.0,
+        "weeklyHardBudget": 1100.0,
+        "minimumReserve": 12000.0,
+        "warningThresholdRemaining": 15000.0,
+        "pauseThresholdRemaining": 12000.0,
+        "weeklyUsageCredits": weekly_usage,
+        "weeklyUsageStatus": "KNOWN" if weekly_usage is not None else "UNKNOWN",
+        "coreOddsCostVerificationStatus": "VERIFIED",
+        "warningThresholdBreached": False,
+        "pauseThresholdBreached": pause_breach,
+        "minimumReserveBreached": min_breach,
+    }
+
+
+def test_run_refresh_quota_allowed_can_reach_mocked_provider(monkeypatch, tmp_path):
+    runtime_root = _build_runtime_with_upcoming_week1_schedule(tmp_path)
+    fixed_now, fixed_datetime = _fixed_now_datetime()
+
+    payload = [
+        {
+            "id": "2026_1_KC_BUF",
+            "commence_time": "2026-09-10T20:00:00+00:00",
+            "home_team": "Buffalo Bills",
+            "away_team": "Kansas City Chiefs",
+            "bookmakers": [
+                {
+                    "key": "draftkings",
+                    "title": "DraftKings",
+                    "markets": [
+                        {
+                            "key": "spreads",
+                            "outcomes": [
+                                {"name": "Buffalo Bills", "point": -2.5, "price": -110},
+                                {"name": "Kansas City Chiefs", "point": 2.5, "price": -110},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    ]
+
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+    monkeypatch.setenv("ODDS_API_KEY", "test-key")
+
+    with (
+        patch.object(odds_refresh, "datetime", fixed_datetime),
+        patch("app.services.odds_status.get_core_request_cost_verification", return_value={
+            "coreOddsRequestShapeId": odds_refresh.core_request_shape_id(),
+            "coreOddsVerifiedRequestCost": 3.0,
+            "coreOddsCostVerificationStatus": "VERIFIED",
+        }),
+        patch("app.services.odds_status.get_quota_safety_state", return_value=_quota_state(weekly_usage=100.0, min_breach=False, pause_breach=False)),
+        patch.object(odds_refresh.requests, "get", return_value=_FakeResp(payload)) as request_get,
+    ):
+        out = odds_refresh.run_refresh()
+
+    assert out["providerRequestSkipped"] is False
+    assert out["quotaGuardAllowed"] is True
+    assert out["quotaGuardReason"] is None
+    assert out["rows"] > 0
+    request_get.assert_called_once()
+    assert fixed_now is not None
+
+
+@pytest.mark.parametrize(
+    "quota_state,expected_reason",
+    [
+        (_quota_state(weekly_usage=1098.0, min_breach=False, pause_breach=False), "WEEKLY_HARD_BUDGET_EXCEEDED"),
+        (_quota_state(weekly_usage=100.0, min_breach=True, pause_breach=False), "QUOTA_MINIMUM_RESERVE_BREACHED"),
+        (_quota_state(weekly_usage=100.0, min_breach=False, pause_breach=True), "QUOTA_PAUSE_THRESHOLD_REMAINING"),
+        (_quota_state(weekly_usage=None, min_breach=False, pause_breach=False), "WEEKLY_USAGE_UNKNOWN"),
+    ],
+)
+def test_run_refresh_quota_denial_blocks_provider_call(monkeypatch, tmp_path, quota_state, expected_reason):
+    runtime_root = _build_runtime_with_upcoming_week1_schedule(tmp_path)
+    _, fixed_datetime = _fixed_now_datetime()
+
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+    monkeypatch.setenv("ODDS_API_KEY", "test-key")
+
+    with (
+        patch.object(odds_refresh, "datetime", fixed_datetime),
+        patch("app.services.odds_status.get_core_request_cost_verification", return_value={
+            "coreOddsRequestShapeId": odds_refresh.core_request_shape_id(),
+            "coreOddsVerifiedRequestCost": 3.0,
+            "coreOddsCostVerificationStatus": "VERIFIED",
+        }),
+        patch("app.services.odds_status.get_quota_safety_state", return_value=quota_state),
+        patch.object(odds_refresh.requests, "get") as request_get,
+    ):
+        out = odds_refresh.run_refresh()
+
+    assert out["providerRequestSkipped"] is True
+    assert out["providerRequestSkipReason"] == "QUOTA_GUARD_BLOCKED"
+    assert out["quotaGuardAllowed"] is False
+    assert out["quotaGuardReason"] == expected_reason
+    request_get.assert_not_called()
+
+    db_path = runtime_root / "database" / "nfl_model.duckdb"
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        usage_count = con.execute("SELECT COUNT(*) FROM odds_api_usage").fetchone()[0]
+        telemetry = con.execute(
+            """
+            SELECT refresh_status, skip_reason, provider_request_skipped, quota_guard_allowed, quota_guard_reason
+            FROM odds_refresh_run_telemetry
+            ORDER BY run_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    finally:
+        con.close()
+
+    assert usage_count == 0
+    assert telemetry[0] == "SKIPPED"
+    assert telemetry[1] == "QUOTA_GUARD_BLOCKED"
+    assert bool(telemetry[2]) is True
+    assert bool(telemetry[3]) is False
+    assert telemetry[4] == expected_reason

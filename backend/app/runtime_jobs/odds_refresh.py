@@ -416,6 +416,8 @@ def _ensure_schema(con: duckdb.DuckDBPyConnection) -> None:
             target_regular_week INTEGER,
             expected_in_scope_events INTEGER,
             provider_request_skipped BOOLEAN,
+            quota_guard_allowed BOOLEAN,
+            quota_guard_reason VARCHAR,
             provider_events_returned INTEGER,
             events_rejected_by_window INTEGER,
             events_rejected_by_schedule_match INTEGER,
@@ -426,6 +428,16 @@ def _ensure_schema(con: duckdb.DuckDBPyConnection) -> None:
         )
         """
     )
+    refresh_cols = {
+        str(row[0]).lower()
+        for row in con.execute(
+            f"SELECT column_name FROM information_schema.columns WHERE table_name = '{_REFRESH_TELEMETRY_TABLE}'"
+        ).fetchall()
+    }
+    if "quota_guard_allowed" not in refresh_cols:
+        con.execute(f"ALTER TABLE {_REFRESH_TELEMETRY_TABLE} ADD COLUMN quota_guard_allowed BOOLEAN")
+    if "quota_guard_reason" not in refresh_cols:
+        con.execute(f"ALTER TABLE {_REFRESH_TELEMETRY_TABLE} ADD COLUMN quota_guard_reason VARCHAR")
 
 
 def _store_refresh_telemetry(
@@ -438,6 +450,8 @@ def _store_refresh_telemetry(
     target_regular_week: int | None,
     expected_in_scope_events: int,
     provider_request_skipped: bool,
+    quota_guard_allowed: bool | None,
+    quota_guard_reason: str | None,
     provider_events_returned: int,
     events_rejected_by_window: int,
     events_rejected_by_schedule_match: int,
@@ -448,7 +462,24 @@ def _store_refresh_telemetry(
 ) -> None:
     con.execute(
         f"""
-        INSERT INTO {_REFRESH_TELEMETRY_TABLE} VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        INSERT INTO {_REFRESH_TELEMETRY_TABLE} (
+            run_at,
+            refresh_status,
+            skip_reason,
+            warning_code,
+            target_regular_week,
+            expected_in_scope_events,
+            provider_request_skipped,
+            quota_guard_allowed,
+            quota_guard_reason,
+            provider_events_returned,
+            events_rejected_by_window,
+            events_rejected_by_schedule_match,
+            events_rejected_by_team_match,
+            events_rejected_by_date_match,
+            events_accepted,
+            snapshot_rows_inserted
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         [
             run_at,
@@ -458,6 +489,8 @@ def _store_refresh_telemetry(
             target_regular_week,
             expected_in_scope_events,
             bool(provider_request_skipped),
+            quota_guard_allowed,
+            quota_guard_reason,
             provider_events_returned,
             events_rejected_by_window,
             events_rejected_by_schedule_match,
@@ -466,6 +499,21 @@ def _store_refresh_telemetry(
             events_accepted,
             snapshot_rows_inserted,
         ],
+    )
+
+
+def _evaluate_core_quota_guard() -> dict[str, Any]:
+    from app.services.odds_status import (
+        evaluate_optional_provider_request,
+        get_core_request_cost_verification,
+    )
+
+    core_cost = get_core_request_cost_verification()
+    return evaluate_optional_provider_request(
+        estimated_credits=core_cost.get("coreOddsVerifiedRequestCost"),
+        allow_unknown_credit_cost=False,
+        allow_unknown_weekly_usage=False,
+        override_quota_guards=False,
     )
 
 
@@ -598,6 +646,8 @@ def run_refresh() -> dict[str, Any]:
                 target_regular_week=target_regular_week,
                 expected_in_scope_events=expected_in_scope_events,
                 provider_request_skipped=True,
+                quota_guard_allowed=None,
+                quota_guard_reason=None,
                 provider_events_returned=0,
                 events_rejected_by_window=0,
                 events_rejected_by_schedule_match=0,
@@ -628,6 +678,59 @@ def run_refresh() -> dict[str, Any]:
             "eventsAccepted": 0,
             "snapshotRowsInserted": 0,
             "warningCode": None,
+            "quotaGuardAllowed": None,
+            "quotaGuardReason": None,
+        }
+
+    quota_guard = _evaluate_core_quota_guard()
+    if not bool(quota_guard.get("allowed")):
+        quota_reason = str(quota_guard.get("reason") or "UNKNOWN")
+        con = duckdb.connect(str(db_path))
+        try:
+            _ensure_schema(con)
+            _store_refresh_telemetry(
+                con,
+                run_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                refresh_status="SKIPPED",
+                skip_reason="QUOTA_GUARD_BLOCKED",
+                warning_code=None,
+                target_regular_week=target_regular_week,
+                expected_in_scope_events=expected_in_scope_events,
+                provider_request_skipped=True,
+                quota_guard_allowed=False,
+                quota_guard_reason=quota_reason,
+                provider_events_returned=0,
+                events_rejected_by_window=0,
+                events_rejected_by_schedule_match=0,
+                events_rejected_by_team_match=0,
+                events_rejected_by_date_match=0,
+                events_accepted=0,
+                snapshot_rows_inserted=0,
+            )
+            con.commit()
+        finally:
+            con.close()
+        return {
+            "rows": 0,
+            "games": 0,
+            "requestsRemaining": None,
+            "requestsUsed": None,
+            "scopedEvents": 0,
+            "totalEvents": 0,
+            "providerRequestSkipped": True,
+            "providerRequestSkipReason": "QUOTA_GUARD_BLOCKED",
+            "expectedInScopeEvents": expected_in_scope_events,
+            "targetRegularWeek": target_regular_week,
+            "providerEventsReturned": 0,
+            "eventsRejectedByWindow": 0,
+            "eventsRejectedByScheduleMatch": 0,
+            "eventsRejectedByTeamMatch": 0,
+            "eventsRejectedByDateMatch": 0,
+            "eventsAccepted": 0,
+            "snapshotRowsInserted": 0,
+            "warningCode": None,
+            "quotaGuardAllowed": False,
+            "quotaGuardReason": quota_reason,
         }
 
     resp = _execute_core_request(signature, api_key=api_key)
@@ -748,6 +851,8 @@ def run_refresh() -> dict[str, Any]:
             target_regular_week=target_regular_week,
             expected_in_scope_events=expected_in_scope_events,
             provider_request_skipped=False,
+            quota_guard_allowed=True,
+            quota_guard_reason=None,
             provider_events_returned=provider_events_returned,
             events_rejected_by_window=rejected_by_window,
             events_rejected_by_schedule_match=rejected_by_schedule_match,
@@ -791,6 +896,8 @@ def run_refresh() -> dict[str, Any]:
         "eventsAccepted": accepted_events,
         "snapshotRowsInserted": len(rows),
         "warningCode": "PAID_REQUEST_ZERO_SNAPSHOTS" if provider_events_returned > 0 and len(rows) == 0 else None,
+        "quotaGuardAllowed": True,
+        "quotaGuardReason": None,
     }
 
 
