@@ -32,6 +32,9 @@ def test_admin_status_endpoint_returns_metrics():
     assert "coreOddsRequestsUsed" in payload
     assert "coreOddsRequestsRemaining" in payload
     assert "coreOddsLastRequestAt" in payload
+    assert "coreOddsRequestShapeId" in payload
+    assert "coreOddsVerifiedRequestCost" in payload
+    assert "coreOddsCostVerificationStatus" in payload
     assert "quotaSafety" in payload
     assert "socialProvider" in payload
     assert "socialDataStatus" in payload
@@ -94,6 +97,11 @@ def test_admin_refresh_default_does_not_trigger_sportsbook_provider_calls():
 
 def test_admin_refresh_can_trigger_sportsbook_refresh_only_with_explicit_opt_in_and_overrides():
     with (
+        patch("app.routes.admin_status.get_core_request_cost_verification", return_value={
+            "coreOddsRequestShapeId": "shape-1",
+            "coreOddsVerifiedRequestCost": 3.0,
+            "coreOddsCostVerificationStatus": "VERIFIED",
+        }),
         patch("app.routes.admin_status.evaluate_optional_provider_request", return_value={
             "allowed": True,
             "reason": None,
@@ -109,6 +117,8 @@ def test_admin_refresh_can_trigger_sportsbook_refresh_only_with_explicit_opt_in_
     assert response.status_code == 200
     payload = response.json()
     assert payload["oddsRefresh"]["triggered"] is True
+    assert payload["oddsRefresh"]["coreOddsVerifiedRequestCost"] == 3.0
+    assert payload["oddsRefresh"]["coreOddsCostVerificationStatus"] == "VERIFIED"
     trigger_now.assert_called_once()
 
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import os
+import json
+import hashlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -17,6 +19,51 @@ log = logging.getLogger("runtime_jobs.odds_refresh")
 
 BASE = "https://api.the-odds-api.com/v4"
 SPORT = "americanfootball_nfl"
+
+
+def _canonical_json(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def _shape_id(payload: dict[str, Any]) -> str:
+    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def _normalize_csv_values(values: list[str], *, lower: bool = True) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        item = str(raw or "").strip()
+        if not item:
+            continue
+        item = item.lower() if lower else item
+        if item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return sorted(out)
+
+
+def build_core_request_signature() -> dict[str, Any]:
+    region = str(os.getenv("ODDS_REGION", "us") or "us").strip().lower() or "us"
+    markets = _normalize_csv_values(_csv_env("ODDS_MARKETS", "h2h,spreads,totals"))
+    bookmakers = _normalize_csv_values(_csv_env("ODDS_BOOKMAKERS", ""))
+    odds_format = str(os.getenv("ODDS_FORMAT", "american") or "american").strip().lower() or "american"
+
+    return {
+        "endpointType": "SPORT_ODDS",
+        "endpoint": "/sports/{sport}/odds",
+        "sport": SPORT,
+        "regions": [region],
+        "markets": markets,
+        "bookmakers": bookmakers,
+        "oddsFormat": odds_format,
+        "dateFormat": "iso",
+    }
+
+
+def core_request_shape_id() -> str:
+    return _shape_id(build_core_request_signature())
 
 
 def _parse_iso_utc(value: Any) -> datetime | None:
@@ -178,13 +225,26 @@ def _ensure_schema(con: duckdb.DuckDBPyConnection) -> None:
             endpoint VARCHAR,
             requests_remaining INTEGER,
             requests_used INTEGER,
-            requests_last INTEGER
+            requests_last INTEGER,
+            request_shape_id VARCHAR,
+            request_shape_signature VARCHAR
         )
         """
     )
+    existing = {
+        str(row[0]).lower()
+        for row in con.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'odds_api_usage'"
+        ).fetchall()
+    }
+    if "request_shape_id" not in existing:
+        con.execute("ALTER TABLE odds_api_usage ADD COLUMN request_shape_id VARCHAR")
+    if "request_shape_signature" not in existing:
+        con.execute("ALTER TABLE odds_api_usage ADD COLUMN request_shape_signature VARCHAR")
 
 
 def _store_usage(con: duckdb.DuckDBPyConnection, resp: requests.Response, endpoint: str) -> None:
+    signature = build_core_request_signature()
     def as_int(header_name: str) -> int | None:
         raw = resp.headers.get(header_name)
         try:
@@ -193,12 +253,14 @@ def _store_usage(con: duckdb.DuckDBPyConnection, resp: requests.Response, endpoi
             return None
 
     con.execute(
-        "INSERT INTO odds_api_usage VALUES (CURRENT_TIMESTAMP, ?, ?, ?, ?)",
+        "INSERT INTO odds_api_usage VALUES (CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?)",
         [
             endpoint,
             as_int("x-requests-remaining"),
             as_int("x-requests-used"),
             as_int("x-requests-last"),
+            _shape_id(signature),
+            _canonical_json(signature),
         ],
     )
 
@@ -208,16 +270,17 @@ def run_refresh() -> dict[str, Any]:
     if not api_key:
         raise RuntimeError("ODDS_API_KEY_MISSING")
 
-    region = str(os.getenv("ODDS_REGION", "us") or "us").strip() or "us"
-    markets = _csv_env("ODDS_MARKETS", "h2h,spreads,totals")
-    bookmakers = _csv_env("ODDS_BOOKMAKERS", "")
+    signature = build_core_request_signature()
+    region = str((signature.get("regions") or ["us"])[0] or "us")
+    markets = [str(item) for item in (signature.get("markets") or [])]
+    bookmakers = [str(item) for item in (signature.get("bookmakers") or [])]
 
     params: dict[str, str] = {
         "apiKey": api_key,
         "regions": region,
         "markets": ",".join(markets),
-        "oddsFormat": str(os.getenv("ODDS_FORMAT", "american") or "american"),
-        "dateFormat": "iso",
+        "oddsFormat": str(signature.get("oddsFormat") or "american"),
+        "dateFormat": str(signature.get("dateFormat") or "iso"),
     }
     if bookmakers:
         params["bookmakers"] = ",".join(bookmakers)

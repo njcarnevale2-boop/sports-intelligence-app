@@ -2,7 +2,7 @@ from fastapi import APIRouter, Query
 
 from app.services.admin_status import get_admin_status_service
 from app.services.data_refresh import refresh_all_data
-from app.services.odds_status import evaluate_optional_provider_request
+from app.services.odds_status import evaluate_optional_provider_request, get_core_request_cost_verification
 from app.services.refresh_orchestrator import trigger_now, get_refresh_status
 from app.services.social_sources import get_social_source_coverage_report
 
@@ -40,8 +40,9 @@ def trigger_refresh(
     }
 
     if sportsbook_refresh:
+        core_cost = get_core_request_cost_verification()
         guard = evaluate_optional_provider_request(
-            estimated_credits=None,
+            estimated_credits=core_cost.get("coreOddsVerifiedRequestCost"),
             allow_unknown_credit_cost=bool(allow_unknown_credit_cost),
             allow_unknown_weekly_usage=bool(allow_unknown_weekly_usage),
             override_quota_guards=bool(override_quota_guards),
@@ -52,11 +53,17 @@ def trigger_refresh(
                 "reason": guard.get("reason"),
                 "warnings": guard.get("warnings") or [],
                 "quotaSafety": guard.get("quotaSafety"),
+                "coreOddsRequestShapeId": core_cost.get("coreOddsRequestShapeId"),
+                "coreOddsVerifiedRequestCost": core_cost.get("coreOddsVerifiedRequestCost"),
+                "coreOddsCostVerificationStatus": core_cost.get("coreOddsCostVerificationStatus"),
             }
         else:
             odds_result = trigger_now()
             odds_result["warnings"] = guard.get("warnings") or []
             odds_result["quotaSafety"] = guard.get("quotaSafety")
+            odds_result["coreOddsRequestShapeId"] = core_cost.get("coreOddsRequestShapeId")
+            odds_result["coreOddsVerifiedRequestCost"] = core_cost.get("coreOddsVerifiedRequestCost")
+            odds_result["coreOddsCostVerificationStatus"] = core_cost.get("coreOddsCostVerificationStatus")
 
     model_result = refresh_all_data()
     return {

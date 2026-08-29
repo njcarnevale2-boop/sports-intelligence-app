@@ -106,6 +106,9 @@ class AdminStatusService:
             "coreOddsRequestsUsed": odds_status.get("coreOddsRequestsUsed"),
             "coreOddsRequestsRemaining": odds_status.get("coreOddsRequestsRemaining"),
             "coreOddsLastRequestAt": odds_status.get("coreOddsLastRequestAt"),
+            "coreOddsRequestShapeId": odds_status.get("coreOddsRequestShapeId"),
+            "coreOddsVerifiedRequestCost": odds_status.get("coreOddsVerifiedRequestCost"),
+            "coreOddsCostVerificationStatus": odds_status.get("coreOddsCostVerificationStatus"),
             "quotaSafety": odds_status.get("quotaSafety"),
             # Scheduler fields
             "scheduler": refresh_status,

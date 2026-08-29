@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+import json
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from app.runtime_paths import runtime_paths
+from app.runtime_jobs.odds_refresh import build_core_request_signature, core_request_shape_id
 
 DB_PATH = runtime_paths.nfl_model_duckdb
 
@@ -40,8 +42,102 @@ def _try_duckdb() -> Optional[Any]:
         return None
 
 
+def _usage_table_columns(con: Any) -> set[str]:
+    try:
+        rows = con.execute(
+            "SELECT lower(column_name) FROM information_schema.columns WHERE table_name = 'odds_api_usage'"
+        ).fetchall()
+    except Exception:
+        return set()
+    return {str(row[0]) for row in rows}
+
+
+def get_core_request_cost_verification() -> Dict[str, Any]:
+    signature = build_core_request_signature()
+    shape_id = core_request_shape_id()
+    out: Dict[str, Any] = {
+        "coreOddsRequestShapeId": shape_id,
+        "coreOddsRequestShape": signature,
+        "coreOddsVerifiedRequestCost": None,
+        "coreOddsCostVerificationStatus": "UNKNOWN",
+    }
+
+    con = _try_duckdb()
+    if con is None:
+        return out
+
+    try:
+        has_usage = con.execute(
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'odds_api_usage'"
+        ).fetchone()[0] > 0
+        if not has_usage:
+            return out
+
+        cols = _usage_table_columns(con)
+        has_shape_cols = {"request_shape_id", "request_shape_signature"}.issubset(cols)
+
+        if has_shape_cols:
+            match_row = con.execute(
+                """
+                SELECT requests_last, request_shape_signature
+                FROM odds_api_usage
+                WHERE endpoint = '/sports/{sport}/odds'
+                  AND request_shape_id = ?
+                  AND requests_last IS NOT NULL
+                ORDER BY fetched_at DESC
+                LIMIT 1
+                """,
+                [shape_id],
+            ).fetchone()
+            if match_row:
+                stored_sig = str(match_row[1] or "").strip()
+                if stored_sig:
+                    try:
+                        parsed = json.loads(stored_sig)
+                    except json.JSONDecodeError:
+                        parsed = None
+                    if parsed == signature:
+                        out["coreOddsVerifiedRequestCost"] = float(match_row[0])
+                        out["coreOddsCostVerificationStatus"] = "VERIFIED"
+                        return out
+
+            other_shape_row = con.execute(
+                """
+                SELECT request_shape_id
+                FROM odds_api_usage
+                WHERE endpoint = '/sports/{sport}/odds'
+                  AND request_shape_id IS NOT NULL
+                  AND requests_last IS NOT NULL
+                ORDER BY fetched_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            if other_shape_row and str(other_shape_row[0] or "") != shape_id:
+                out["coreOddsCostVerificationStatus"] = "SHAPE_CHANGED"
+                return out
+
+        legacy_row = con.execute(
+            """
+            SELECT requests_last
+            FROM odds_api_usage
+            WHERE endpoint = '/sports/{sport}/odds'
+              AND requests_last IS NOT NULL
+            ORDER BY fetched_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if legacy_row:
+            out["coreOddsCostVerificationStatus"] = "UNKNOWN"
+        return out
+    except Exception:
+        return out
+    finally:
+        con.close()
+
+
 def get_quota_safety_state() -> Dict[str, Any]:
     policy = _quota_policy()
+    core_cost = get_core_request_cost_verification()
     out: Dict[str, Any] = {
         **policy,
         "weeklyUsageCredits": None,
@@ -50,6 +146,9 @@ def get_quota_safety_state() -> Dict[str, Any]:
         "coreOddsRequestsUsed": None,
         "coreOddsRequestsRemaining": None,
         "coreOddsLastRequestAt": None,
+        "coreOddsRequestShapeId": core_cost.get("coreOddsRequestShapeId"),
+        "coreOddsVerifiedRequestCost": core_cost.get("coreOddsVerifiedRequestCost"),
+        "coreOddsCostVerificationStatus": core_cost.get("coreOddsCostVerificationStatus"),
         "weeklySoftBudgetExceeded": None,
         "weeklyHardBudgetExceeded": None,
         "minimumReserveBreached": None,
@@ -127,6 +226,7 @@ def evaluate_optional_provider_request(
     quota = get_quota_safety_state()
     warnings: list[str] = []
     estimated = None if estimated_credits is None else float(estimated_credits)
+    verification_status = str(quota.get("coreOddsCostVerificationStatus") or "UNKNOWN").upper()
 
     if estimated is not None and estimated <= 0:
         return {
@@ -140,6 +240,14 @@ def evaluate_optional_provider_request(
         warnings.append("WARNING_THRESHOLD_REMAINING_BREACHED")
 
     if not override_quota_guards:
+        if estimated is None and verification_status in {"UNKNOWN", "SHAPE_CHANGED"} and not allow_unknown_credit_cost:
+            return {
+                "allowed": False,
+                "reason": "UNKNOWN_PROVIDER_CREDIT_COST",
+                "warnings": warnings,
+                "quotaSafety": quota,
+            }
+
         if estimated is None and not allow_unknown_credit_cost:
             return {
                 "allowed": False,
@@ -209,6 +317,9 @@ def get_odds_status() -> Dict[str, Any]:
             "coreOddsRequestsUsed": quota.get("coreOddsRequestsUsed"),
             "coreOddsRequestsRemaining": quota.get("coreOddsRequestsRemaining"),
             "coreOddsLastRequestAt": quota.get("coreOddsLastRequestAt"),
+            "coreOddsRequestShapeId": quota.get("coreOddsRequestShapeId"),
+            "coreOddsVerifiedRequestCost": quota.get("coreOddsVerifiedRequestCost"),
+            "coreOddsCostVerificationStatus": quota.get("coreOddsCostVerificationStatus"),
             "quotaSafety": quota,
         }
 
@@ -230,6 +341,9 @@ def get_odds_status() -> Dict[str, Any]:
                 "coreOddsRequestsUsed": quota.get("coreOddsRequestsUsed"),
                 "coreOddsRequestsRemaining": quota.get("coreOddsRequestsRemaining"),
                 "coreOddsLastRequestAt": quota.get("coreOddsLastRequestAt"),
+                "coreOddsRequestShapeId": quota.get("coreOddsRequestShapeId"),
+                "coreOddsVerifiedRequestCost": quota.get("coreOddsVerifiedRequestCost"),
+                "coreOddsCostVerificationStatus": quota.get("coreOddsCostVerificationStatus"),
                 "quotaSafety": quota,
             }
 
@@ -281,6 +395,9 @@ def get_odds_status() -> Dict[str, Any]:
             "coreOddsRequestsUsed": int(latest_requests_used) if latest_requests_used is not None else None,
             "coreOddsRequestsRemaining": int(api_remaining) if api_remaining is not None else None,
             "coreOddsLastRequestAt": latest_requests_at.isoformat() if latest_requests_at else None,
+            "coreOddsRequestShapeId": quota.get("coreOddsRequestShapeId"),
+            "coreOddsVerifiedRequestCost": quota.get("coreOddsVerifiedRequestCost"),
+            "coreOddsCostVerificationStatus": quota.get("coreOddsCostVerificationStatus"),
             "quotaSafety": quota,
         }
     except Exception:
@@ -296,6 +413,9 @@ def get_odds_status() -> Dict[str, Any]:
             "coreOddsRequestsUsed": quota.get("coreOddsRequestsUsed"),
             "coreOddsRequestsRemaining": quota.get("coreOddsRequestsRemaining"),
             "coreOddsLastRequestAt": quota.get("coreOddsLastRequestAt"),
+            "coreOddsRequestShapeId": quota.get("coreOddsRequestShapeId"),
+            "coreOddsVerifiedRequestCost": quota.get("coreOddsVerifiedRequestCost"),
+            "coreOddsCostVerificationStatus": quota.get("coreOddsCostVerificationStatus"),
             "quotaSafety": quota,
         }
     finally:
