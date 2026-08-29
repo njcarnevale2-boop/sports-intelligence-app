@@ -246,9 +246,18 @@ def _ensure_schema(con: duckdb.DuckDBPyConnection) -> None:
         con.execute("ALTER TABLE odds_api_usage ADD COLUMN request_provenance VARCHAR")
 
 
-def _store_usage(con: duckdb.DuckDBPyConnection, resp: requests.Response, endpoint: str) -> None:
-    signature = build_core_request_signature()
-    provenance = str(os.getenv("ODDS_REQUEST_PROVENANCE", "STANDARD_CORE_REFRESH") or "STANDARD_CORE_REFRESH").strip().upper()
+def _store_usage(
+    con: duckdb.DuckDBPyConnection,
+    resp: requests.Response,
+    endpoint: str,
+    *,
+    signature: dict[str, Any] | None = None,
+    provenance: str | None = None,
+    fetched_at: datetime | None = None,
+) -> None:
+    signature = signature or build_core_request_signature()
+    provenance = str(provenance or os.getenv("ODDS_REQUEST_PROVENANCE", "STANDARD_CORE_REFRESH") or "STANDARD_CORE_REFRESH").strip().upper()
+    fetched_at = fetched_at or datetime.now(timezone.utc).replace(tzinfo=None)
     def as_int(header_name: str) -> int | None:
         raw = resp.headers.get(header_name)
         try:
@@ -257,8 +266,9 @@ def _store_usage(con: duckdb.DuckDBPyConnection, resp: requests.Response, endpoi
             return None
 
     con.execute(
-        "INSERT INTO odds_api_usage VALUES (CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO odds_api_usage VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         [
+            fetched_at,
             endpoint,
             as_int("x-requests-remaining"),
             as_int("x-requests-used"),
@@ -270,12 +280,7 @@ def _store_usage(con: duckdb.DuckDBPyConnection, resp: requests.Response, endpoi
     )
 
 
-def run_refresh() -> dict[str, Any]:
-    api_key = str(os.getenv("ODDS_API_KEY", "") or "").strip()
-    if not api_key:
-        raise RuntimeError("ODDS_API_KEY_MISSING")
-
-    signature = build_core_request_signature()
+def _core_request_params(signature: dict[str, Any], *, api_key: str) -> dict[str, str]:
     region = str((signature.get("regions") or ["us"])[0] or "us")
     markets = [str(item) for item in (signature.get("markets") or [])]
     bookmakers = [str(item) for item in (signature.get("bookmakers") or [])]
@@ -289,7 +294,11 @@ def run_refresh() -> dict[str, Any]:
     }
     if bookmakers:
         params["bookmakers"] = ",".join(bookmakers)
+    return params
 
+
+def _execute_core_request(signature: dict[str, Any], *, api_key: str) -> requests.Response:
+    params = _core_request_params(signature, api_key=api_key)
     url = f"{BASE}/sports/{SPORT}/odds"
     resp = requests.get(url, params=params, timeout=45)
     if resp.status_code != 200:
@@ -299,6 +308,50 @@ def run_refresh() -> dict[str, Any]:
         except Exception:
             detail = resp.text[:500]
         raise RuntimeError(f"ODDS_API_HTTP_{resp.status_code}: {detail}")
+    return resp
+
+
+def run_core_request_usage_only(*, request_provenance: str = "BOOTSTRAP_CORE_COST") -> dict[str, Any]:
+    api_key = str(os.getenv("ODDS_API_KEY", "") or "").strip()
+    if not api_key:
+        raise RuntimeError("ODDS_API_KEY_MISSING")
+
+    signature = build_core_request_signature()
+    resp = _execute_core_request(signature, api_key=api_key)
+
+    db_path = runtime_paths.nfl_model_duckdb.resolve()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    con = duckdb.connect(str(db_path))
+    try:
+        _ensure_schema(con)
+        _store_usage(
+            con,
+            resp,
+            "/sports/{sport}/odds",
+            signature=signature,
+            provenance=request_provenance,
+            fetched_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    return {
+        "requestsRemaining": resp.headers.get("x-requests-remaining"),
+        "requestsUsed": resp.headers.get("x-requests-used"),
+        "requestsLast": resp.headers.get("x-requests-last"),
+        "requestShapeId": _shape_id(signature),
+        "requestProvenance": str(request_provenance or "BOOTSTRAP_CORE_COST").strip().upper(),
+    }
+
+
+def run_refresh() -> dict[str, Any]:
+    api_key = str(os.getenv("ODDS_API_KEY", "") or "").strip()
+    if not api_key:
+        raise RuntimeError("ODDS_API_KEY_MISSING")
+
+    signature = build_core_request_signature()
+    resp = _execute_core_request(signature, api_key=api_key)
 
     payload = resp.json()
     now_utc = datetime.now(timezone.utc)
@@ -325,7 +378,13 @@ def run_refresh() -> dict[str, Any]:
     con = duckdb.connect(str(db_path))
     try:
         _ensure_schema(con)
-        _store_usage(con, resp, "/sports/{sport}/odds")
+        _store_usage(
+            con,
+            resp,
+            "/sports/{sport}/odds",
+            signature=signature,
+            fetched_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        )
 
         fetched_at = datetime.now(timezone.utc).replace(tzinfo=None)
         rows: list[list[Any]] = []
@@ -386,6 +445,7 @@ def run_refresh() -> dict[str, Any]:
                 "INSERT INTO odds_snapshots VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 rows,
             )
+        con.commit()
 
     finally:
         con.close()

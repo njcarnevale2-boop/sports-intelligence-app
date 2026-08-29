@@ -8,13 +8,14 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from app.runtime_paths import runtime_paths
-from app.runtime_jobs.odds_refresh import build_core_request_signature, core_request_shape_id
+from app.runtime_jobs.odds_refresh import build_core_request_signature, core_request_shape_id, run_core_request_usage_only
 
 DB_PATH = runtime_paths.nfl_model_duckdb
 
 _STALE_HOURS = 24  # flag data as STALE if no refresh within this window
 _CORE_BOOTSTRAP_LOCK = threading.Lock()
 _CORE_BOOTSTRAP_PROVENANCE = "BOOTSTRAP_CORE_COST"
+_CORE_BOOTSTRAP_STALE_MINUTES = 10
 
 
 def _env_float(name: str, default: float) -> float:
@@ -97,9 +98,110 @@ def _bootstrap_row_for_shape(con: Any, shape_id: str) -> Optional[Any]:
         return None
 
 
+def _reconcile_bootstrap_row_for_shape(
+    con: Any,
+    *,
+    shape_id: str,
+    signature: dict[str, Any],
+    bootstrap_cap: float,
+    now_utc: Optional[datetime] = None,
+) -> Optional[Any]:
+    row = _bootstrap_row_for_shape(con, shape_id)
+    if row is None:
+        return None
+
+    status = str(row[2] or "").upper()
+    if status != "IN_PROGRESS":
+        return row
+
+    requested_at = row[3]
+    if requested_at is None:
+        return row
+
+    signature_json = json.dumps(signature, sort_keys=True, separators=(",", ":"))
+    row_signature_json = str(row[1] or "").strip()
+    if not row_signature_json or row_signature_json != signature_json:
+        return row
+
+    usage_row = None
+    try:
+        usage_row = con.execute(
+            """
+            SELECT fetched_at, requests_last, requests_used, requests_remaining
+            FROM odds_api_usage
+            WHERE endpoint = '/sports/{sport}/odds'
+              AND request_shape_id = ?
+              AND request_shape_signature = ?
+              AND request_provenance = ?
+              AND fetched_at >= ?
+              AND requests_last IS NOT NULL
+            ORDER BY fetched_at DESC
+            LIMIT 1
+            """,
+            [shape_id, row_signature_json, _CORE_BOOTSTRAP_PROVENANCE, requested_at],
+        ).fetchone()
+    except Exception:
+        usage_row = None
+
+    if usage_row is not None:
+        actual_credits = float(usage_row[1])
+        status_out = "COMPLETED" if actual_credits <= bootstrap_cap else "REVIEW_REQUIRED"
+        failure_reason = None if status_out == "COMPLETED" else "BOOTSTRAP_COST_ABOVE_CAP"
+        con.execute(
+            """
+            UPDATE core_odds_cost_bootstrap
+            SET status = ?, completed_at = ?, actual_credits = ?, requests_used = ?, requests_remaining = ?, failure_reason = ?
+            WHERE request_shape_id = ?
+            """,
+            [status_out, usage_row[0], actual_credits, usage_row[2], usage_row[3], failure_reason, shape_id],
+        )
+        con.commit()
+        return _bootstrap_row_for_shape(con, shape_id)
+
+    current = now_utc or datetime.now(timezone.utc)
+    requested_at_utc = requested_at.replace(tzinfo=timezone.utc) if getattr(requested_at, "tzinfo", None) is None else requested_at.astimezone(timezone.utc)
+    if current - requested_at_utc > timedelta(minutes=_CORE_BOOTSTRAP_STALE_MINUTES):
+        con.execute(
+            """
+            UPDATE core_odds_cost_bootstrap
+            SET status = 'FAILED', completed_at = ?, failure_reason = ?
+            WHERE request_shape_id = ?
+            """,
+            [current.replace(tzinfo=None), "STALE_IN_PROGRESS_NO_MATCHING_TELEMETRY", shape_id],
+        )
+        con.commit()
+        return _bootstrap_row_for_shape(con, shape_id)
+
+    return row
+
+
+def _reconcile_bootstrap_state_for_active_shape() -> None:
+    if not DB_PATH.exists():
+        return
+    con = _connect_duckdb(read_only=False)
+    if con is None:
+        return
+    try:
+        has_bootstrap = con.execute(
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'core_odds_cost_bootstrap'"
+        ).fetchone()[0] > 0
+        if not has_bootstrap:
+            return
+        _reconcile_bootstrap_row_for_shape(
+            con,
+            shape_id=core_request_shape_id(),
+            signature=build_core_request_signature(),
+            bootstrap_cap=_bootstrap_cost_cap(),
+        )
+    except Exception:
+        return
+    finally:
+        con.close()
+
+
 def get_core_cost_bootstrap_status() -> Dict[str, Any]:
     shape_id = core_request_shape_id()
-    signature = build_core_request_signature()
+    _reconcile_bootstrap_state_for_active_shape()
     out: Dict[str, Any] = {
         "coreOddsCostBootstrapStatus": "AVAILABLE",
         "coreOddsCostBootstrapAt": None,
@@ -151,6 +253,7 @@ def _usage_table_columns(con: Any) -> set[str]:
 def get_core_request_cost_verification() -> Dict[str, Any]:
     signature = build_core_request_signature()
     shape_id = core_request_shape_id()
+    _reconcile_bootstrap_state_for_active_shape()
     out: Dict[str, Any] = {
         "coreOddsRequestShapeId": shape_id,
         "coreOddsRequestShape": signature,
@@ -513,6 +616,7 @@ def perform_core_cost_bootstrap(*, requested_shape_id: str) -> Dict[str, Any]:
                     """,
                     [json.dumps(signature, sort_keys=True, separators=(",", ":")), attempt_at, _CORE_BOOTSTRAP_PROVENANCE, active_shape_id],
                 )
+            con.commit()
             con.close()
         except Exception:
             con.close()
@@ -525,9 +629,23 @@ def perform_core_cost_bootstrap(*, requested_shape_id: str) -> Dict[str, Any]:
                 **bootstrap,
             }
 
-        from app.services.refresh_orchestrator import trigger_now
-
-        refresh_out = trigger_now(request_provenance=_CORE_BOOTSTRAP_PROVENANCE)
+        try:
+            usage_out = run_core_request_usage_only(request_provenance=_CORE_BOOTSTRAP_PROVENANCE)
+            refresh_out = {
+                "triggered": True,
+                "success": True,
+                "providerRequests": 1,
+                "requestsRemaining": usage_out.get("requestsRemaining"),
+                "requestsUsed": usage_out.get("requestsUsed"),
+                "requestsLast": usage_out.get("requestsLast"),
+            }
+        except Exception as exc:
+            refresh_out = {
+                "triggered": True,
+                "success": False,
+                "lastError": str(exc)[:500],
+                "providerRequests": 1,
+            }
         con = _connect_duckdb(read_only=False)
         if con is None:
             return {
@@ -539,24 +657,6 @@ def perform_core_cost_bootstrap(*, requested_shape_id: str) -> Dict[str, Any]:
 
         try:
             _ensure_bootstrap_schema(con)
-            usage_row = None
-            try:
-                usage_row = con.execute(
-                    """
-                    SELECT fetched_at, requests_last, requests_used, requests_remaining
-                    FROM odds_api_usage
-                    WHERE endpoint = '/sports/{sport}/odds'
-                      AND request_shape_id = ?
-                      AND request_provenance = ?
-                      AND fetched_at >= ?
-                    ORDER BY fetched_at DESC
-                    LIMIT 1
-                    """,
-                    [active_shape_id, _CORE_BOOTSTRAP_PROVENANCE, attempt_at],
-                ).fetchone()
-            except Exception:
-                usage_row = None
-
             if not bool(refresh_out.get("triggered")) or not bool(refresh_out.get("success")):
                 con.execute(
                     """
@@ -566,36 +666,25 @@ def perform_core_cost_bootstrap(*, requested_shape_id: str) -> Dict[str, Any]:
                     """,
                     [datetime.now(timezone.utc).replace(tzinfo=None), str(refresh_out.get("reason") or refresh_out.get("lastError") or "BOOTSTRAP_REFRESH_FAILED")[:500], active_shape_id],
                 )
-            elif usage_row is None:
-                con.execute(
-                    """
-                    UPDATE core_odds_cost_bootstrap
-                    SET status = 'FAILED', completed_at = ?, failure_reason = ?
-                    WHERE request_shape_id = ?
-                    """,
-                    [datetime.now(timezone.utc).replace(tzinfo=None), 'BOOTSTRAP_USAGE_TELEMETRY_MISSING', active_shape_id],
-                )
-            elif usage_row[1] is None:
-                con.execute(
-                    """
-                    UPDATE core_odds_cost_bootstrap
-                    SET status = 'FAILED', completed_at = ?, requests_used = ?, requests_remaining = ?, failure_reason = ?
-                    WHERE request_shape_id = ?
-                    """,
-                    [datetime.now(timezone.utc).replace(tzinfo=None), usage_row[2], usage_row[3], 'BOOTSTRAP_REQUEST_COST_MISSING', active_shape_id],
-                )
+                con.commit()
             else:
-                actual_credits = float(usage_row[1])
-                status_out = 'COMPLETED' if actual_credits <= bootstrap_cap else 'REVIEW_REQUIRED'
-                failure_reason = None if status_out == 'COMPLETED' else 'BOOTSTRAP_COST_ABOVE_CAP'
-                con.execute(
-                    """
-                    UPDATE core_odds_cost_bootstrap
-                    SET status = ?, completed_at = ?, actual_credits = ?, requests_used = ?, requests_remaining = ?, failure_reason = ?
-                    WHERE request_shape_id = ?
-                    """,
-                    [status_out, usage_row[0], actual_credits, usage_row[2], usage_row[3], failure_reason, active_shape_id],
+                reconciled = _reconcile_bootstrap_row_for_shape(
+                    con,
+                    shape_id=active_shape_id,
+                    signature=signature,
+                    bootstrap_cap=bootstrap_cap,
+                    now_utc=datetime.now(timezone.utc),
                 )
+                if reconciled is not None and str(reconciled[2] or "").upper() == "IN_PROGRESS":
+                    con.execute(
+                        """
+                        UPDATE core_odds_cost_bootstrap
+                        SET status = 'FAILED', completed_at = ?, failure_reason = ?
+                        WHERE request_shape_id = ?
+                        """,
+                        [datetime.now(timezone.utc).replace(tzinfo=None), 'BOOTSTRAP_USAGE_TELEMETRY_MISSING', active_shape_id],
+                    )
+                    con.commit()
         finally:
             con.close()
 
