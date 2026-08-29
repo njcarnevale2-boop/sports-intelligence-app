@@ -10,6 +10,7 @@ from typing import Any, Optional
 
 from app.services import shadow_markets
 from app.services.games import service as games_service
+from app.services.odds_status import evaluate_optional_provider_request
 
 
 TRACKED_MARKET_FAMILIES = ("SPREAD", "MONEYLINE", "TOTAL")
@@ -307,6 +308,20 @@ def _load_week_events(week: Optional[int] = None) -> tuple[int, list[dict[str, A
     return resolved_week, list(payload.get("games") or [])
 
 
+def _resolve_season_for_week_games(games: list[dict[str, Any]]) -> Optional[int]:
+    counts: dict[int, int] = {}
+    for game in games:
+        try:
+            season = int(game.get("season"))
+        except (TypeError, ValueError):
+            continue
+        counts[season] = int(counts.get(season, 0)) + 1
+
+    if not counts:
+        return None
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+
+
 def _load_line_board_market_presence() -> dict[str, set[str]]:
     board = shadow_markets._load_line_board()
     if board.empty:
@@ -494,6 +509,8 @@ def build_pregame_collection_plan(
     estimated_credits_per_request: Optional[float] = None,
     deterministic_credit_rule_verified: Optional[bool] = None,
     allow_unknown_credit_cost: bool = False,
+    allow_unknown_weekly_usage: bool = False,
+    override_quota_guards: bool = False,
     prop_allowlist: Optional[list[str]] = None,
     now_utc: Optional[datetime] = None,
 ) -> dict[str, Any]:
@@ -586,6 +603,15 @@ def build_pregame_collection_plan(
         if daily_after > float(config.daily_estimated_credit_budget):
             skip_reasons.append("DAILY_CREDIT_BUDGET_EXCEEDED")
 
+    quota_guard = evaluate_optional_provider_request(
+        estimated_credits=_to_float(estimated_credits),
+        allow_unknown_credit_cost=bool(config.allow_unknown_credit_cost),
+        allow_unknown_weekly_usage=bool(allow_unknown_weekly_usage),
+        override_quota_guards=bool(override_quota_guards),
+    )
+    if (not bool(config.dry_run)) and (not bool(quota_guard.get("allowed"))):
+        skip_reasons.append(str(quota_guard.get("reason") or "QUOTA_GUARD_BLOCKED"))
+
     return {
         "manager": "SIA_PREGAME_DATA_COLLECTION_MANAGER_V1",
         "week": resolved_week,
@@ -606,7 +632,11 @@ def build_pregame_collection_plan(
         "duplicatesPrevented": duplicates_prevented,
         "requestsSkipped": len(skip_reasons),
         "skipReasons": skip_reasons,
+        "quotaSafety": quota_guard.get("quotaSafety"),
+        "quotaWarnings": quota_guard.get("warnings") or [],
         "allowUnknownCreditCost": config.allow_unknown_credit_cost,
+        "allowUnknownWeeklyUsage": bool(allow_unknown_weekly_usage),
+        "overrideQuotaGuards": bool(override_quota_guards),
         "requestBudget": {
             "maxRequestsPerRun": config.max_requests_per_run,
             "pass": planned_requests <= config.max_requests_per_run,
@@ -687,6 +717,8 @@ def run_pregame_collection_manager(
     estimated_credits_per_request: Optional[float] = None,
     deterministic_credit_rule_verified: Optional[bool] = None,
     allow_unknown_credit_cost: bool = False,
+    allow_unknown_weekly_usage: bool = False,
+    override_quota_guards: bool = False,
     prop_allowlist: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     _ensure_manager_schema()
@@ -700,6 +732,8 @@ def run_pregame_collection_manager(
         estimated_credits_per_request=estimated_credits_per_request,
         deterministic_credit_rule_verified=deterministic_credit_rule_verified,
         allow_unknown_credit_cost=allow_unknown_credit_cost,
+        allow_unknown_weekly_usage=allow_unknown_weekly_usage,
+        override_quota_guards=override_quota_guards,
         prop_allowlist=prop_allowlist,
     )
     run_id = f"pregame-collect-{uuid.uuid4()}"
@@ -813,9 +847,6 @@ def run_pregame_collection_manager(
             },
         }
 
-    # Core spread/moneyline/total capture uses local canonical line board snapshots.
-    core_capture = shadow_markets.capture_prospective_from_line_board(week=plan.get("week"))
-
     event_samples: list[dict[str, Any]] = []
     payload_by_event: dict[str, Any] = {}
     requests_made = 0
@@ -826,6 +857,14 @@ def run_pregame_collection_manager(
     last_quota_used: Optional[float] = None
 
     _, games = _load_week_events(week=plan.get("week"))
+    season_for_week = _resolve_season_for_week_games(games)
+
+    # Core spread/moneyline/total capture uses local canonical line board snapshots.
+    core_capture = shadow_markets.capture_prospective_from_line_board(
+        week=plan.get("week"),
+        season=season_for_week,
+    )
+
     games_by_id = {str(g.get("eventId") or ""): g for g in games if str(g.get("eventId") or "")}
     per_request_estimated = _to_float(plan.get("estimatedCreditsPerRequest"))
 

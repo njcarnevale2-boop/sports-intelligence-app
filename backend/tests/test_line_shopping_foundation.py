@@ -328,6 +328,32 @@ def test_sportsbook_coverage_audit_from_local_snapshots(shadow_db):
     assert audit["markets"]["SPREAD"]["eventsSampled"] >= 1
 
 
+def test_sportsbook_coverage_audit_provider_fallback_requires_opt_in(shadow_db, monkeypatch):
+    monkeypatch.setenv("ODDS_API_KEY", "present")
+
+    called = {"sport": 0, "events": 0, "eventOdds": 0}
+
+    def _sport(*args, **kwargs):
+        called["sport"] += 1
+        raise AssertionError("sport-wide provider call must not run without explicit opt-in")
+
+    def _events(*args, **kwargs):
+        called["events"] += 1
+        raise AssertionError("events provider call must not run without explicit opt-in")
+
+    def _event_odds(*args, **kwargs):
+        called["eventOdds"] += 1
+        raise AssertionError("event odds provider call must not run without explicit opt-in")
+
+    monkeypatch.setattr(shadow_markets, "_call_odds_api", _sport)
+    monkeypatch.setattr(shadow_markets, "_call_odds_api_events", _events)
+    monkeypatch.setattr(shadow_markets, "_call_odds_api_event_odds", _event_odds)
+
+    out = shadow_markets.sportsbook_coverage_audit(provider_opt_in=False)
+    assert out["status"] in {"PASS", "FAIL"}
+    assert called == {"sport": 0, "events": 0, "eventOdds": 0}
+
+
 def test_canonical_quote_contract_and_live_future_compatibility():
     contract = shadow_markets.canonical_quote_contract()
     assert "eventId" in contract["fields"]

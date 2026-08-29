@@ -2359,7 +2359,7 @@ def line_shopping_market_view(
     }
 
 
-def sportsbook_coverage_audit(*, max_events: int = 6) -> dict[str, Any]:
+def sportsbook_coverage_audit(*, max_events: int = 6, provider_opt_in: bool = False) -> dict[str, Any]:
     _ensure_schema()
     con = _connect()
     rows = con.execute(
@@ -2401,8 +2401,9 @@ def sportsbook_coverage_audit(*, max_events: int = 6) -> dict[str, Any]:
 
     unique_books = set()
 
-    # Controlled fallback only when local snapshots are insufficient.
-    if (not rows or any(len(coverage[f]["events"]) == 0 for f in families)) and _odds_api_key():
+    # Controlled fallback only when local snapshots are insufficient and provider
+    # access is explicitly opted in by the caller.
+    if (not rows or any(len(coverage[f]["events"]) == 0 for f in families)) and _odds_api_key() and bool(provider_opt_in):
         status, _, payload = _call_odds_api(["spreads", "h2h", "totals"])
         if status == 200 and isinstance(payload, list):
             for event in payload[:max_events]:
@@ -4178,7 +4179,7 @@ def _summarize_provider_market_response(market_key: str, payload: Any) -> dict[s
     }
 
 
-def discover_expanded_markets() -> dict[str, Any]:
+def discover_expanded_markets(*, provider_opt_in: bool = False) -> dict[str, Any]:
     target_labels = {
         "TEAM_TOTAL": "TEAM_TOTAL",
         "FIRST_HALF_SPREAD": "1H_SPREAD",
@@ -4220,6 +4221,24 @@ def discover_expanded_markets() -> dict[str, Any]:
             "saw200": False,
             "invalid": False,
             "request_failed": False,
+        }
+
+    if not bool(provider_opt_in):
+        for label in per_target:
+            per_target[label]["status"] = "PROVIDER_OPT_IN_REQUIRED"
+            per_target[label]["errors"].append({"detail": {"message": "Provider fallback disabled by default"}})
+        return {
+            "targets": per_target,
+            "estimatedRequestCost": 0,
+            "quota": {},
+            "eventSamples": [],
+            "eventPayloadById": {},
+            "quotaAccounting": {
+                "creditsUsed": None,
+                "creditsRemaining": None,
+                "lastRequestCost": None,
+                "expandedMarketRequestCount": 0,
+            },
         }
 
     event_status, event_headers, events_payload = _call_odds_api_events()
@@ -4942,7 +4961,7 @@ def ingest_expanded_market_snapshots(discovery: Optional[dict[str, Any]] = None)
     }
 
 
-def discover_player_props() -> dict[str, Any]:
+def discover_player_props(*, provider_opt_in: bool = False) -> dict[str, Any]:
     sample_size = max(1, int(os.getenv("PLAYER_PROP_EVENT_SAMPLE_SIZE", "2")))
     requested_keys = list(PLAYER_PROP_TARGET_MARKETS.keys())
     request_count = 0
@@ -4969,6 +4988,45 @@ def discover_player_props() -> dict[str, Any]:
             "quotaBlocked": False,
             "requestFailed": False,
             "unknown": False,
+        }
+
+    if not bool(provider_opt_in):
+        markets_out = [
+            {
+                "providerKey": key,
+                "propType": PLAYER_PROP_TARGET_MARKETS[key],
+                "classification": "PROVIDER_OPT_IN_REQUIRED",
+                "availability": False,
+                "bookCount": 0,
+                "outcomeCount": 0,
+                "lineSupplied": False,
+                "priceSupplied": False,
+                "playerNameSupplied": False,
+                "timestampSupplied": False,
+                "eventsSampled": 0,
+            }
+            for key in requested_keys
+        ]
+        return {
+            "status": "FAIL",
+            "markets": markets_out,
+            "otherPropMarkets": [],
+            "sampledPlayers": [],
+            "eventSamples": [],
+            "eventPayloadById": {},
+            "quota": {},
+            "quotaTelemetry": {
+                "requestsRemaining": None,
+                "requestsUsed": None,
+                "lastRequestCost": None,
+                "eventsQueried": 0,
+                "marketsRequested": len(requested_keys),
+                "requestsMade": 0,
+                "fallbackKeyRequests": 0,
+                "estimatedCreditsPerEvent": 0.0,
+                "estimatedFullSlateCost": 0.0,
+            },
+            "recommendedCollectionCadence": "Provider opt-in required.",
         }
 
     extra_markets: set[str] = set()
@@ -5445,14 +5503,43 @@ def _persist_player_prop_state_row(
     return con.total_changes > before
 
 
-def ingest_player_prop_market_snapshots(discovery: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+def ingest_player_prop_market_snapshots(
+    discovery: Optional[dict[str, Any]] = None,
+    *,
+    provider_opt_in: bool = False,
+    allow_discovery_fallback: bool = False,
+) -> dict[str, Any]:
     _ensure_schema()
     if discovery is None:
-        discovery = discover_player_props()
+        if not bool(provider_opt_in and allow_discovery_fallback):
+            return {
+                "rowsReceived": 0,
+                "currentInserted": 0,
+                "openingInserted": 0,
+                "closingInserted": 0,
+                "duplicateRejectionCount": 0,
+                "staleSnapshotCount": 0,
+                "postKickoffRejectedCount": 0,
+                "skipped": True,
+                "skipReason": "DISCOVERY_PAYLOAD_REQUIRED",
+            }
+        discovery = discover_player_props(provider_opt_in=True)
 
     payload_by_event = dict(discovery.get("eventPayloadById") or {})
     event_samples = list(discovery.get("eventSamples") or [])
     if not payload_by_event and event_samples:
+        if not bool(provider_opt_in and allow_discovery_fallback):
+            return {
+                "rowsReceived": 0,
+                "currentInserted": 0,
+                "openingInserted": 0,
+                "closingInserted": 0,
+                "duplicateRejectionCount": 0,
+                "staleSnapshotCount": 0,
+                "postKickoffRejectedCount": 0,
+                "skipped": True,
+                "skipReason": "DISCOVERY_EVENT_PAYLOAD_MISSING",
+            }
         requested = list(PLAYER_PROP_TARGET_MARKETS.keys())
         for e in event_samples:
             event_id = str(e.get("eventId") or "")

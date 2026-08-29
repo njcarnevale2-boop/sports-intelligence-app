@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import duckdb
+import pandas as pd
 import requests
 
 from app.runtime_paths import runtime_paths
@@ -15,6 +17,85 @@ log = logging.getLogger("runtime_jobs.odds_refresh")
 
 BASE = "https://api.the-odds-api.com/v4"
 SPORT = "americanfootball_nfl"
+
+
+def _parse_iso_utc(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    text = text.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _team_code(name: Any) -> str:
+    raw = str(name or "").strip()
+    if not raw:
+        return ""
+    return TEAM_MAP.get(raw, raw.upper())
+
+
+def _load_regular_season_event_keys() -> set[tuple[str, str, str]]:
+    schedule_path: Path = runtime_paths.schedule_context_latest_csv.resolve()
+    if not schedule_path.exists():
+        return set()
+
+    try:
+        df = pd.read_csv(schedule_path)
+    except Exception:
+        return set()
+
+    required_cols = {"season", "week", "gameday", "away_team", "home_team"}
+    if df.empty or not required_cols.issubset(set(df.columns)):
+        return set()
+
+    out: set[tuple[str, str, str]] = set()
+    for _, row in df.iterrows():
+        try:
+            week = int(row.get("week"))
+        except (TypeError, ValueError):
+            continue
+        if week < 1 or week > 18:
+            continue
+
+        game_day = str(row.get("gameday") or "").strip()
+        away = str(row.get("away_team") or "").strip().upper()
+        home = str(row.get("home_team") or "").strip().upper()
+        if not game_day or not away or not home:
+            continue
+        out.add((game_day, away, home))
+    return out
+
+
+def _event_in_scope(
+    event: dict[str, Any],
+    *,
+    now_utc: datetime,
+    regular_keys: set[tuple[str, str, str]],
+    max_days_ahead: int,
+    max_hours_past: int,
+) -> bool:
+    kickoff = _parse_iso_utc(event.get("commence_time"))
+    if kickoff is None:
+        return False
+
+    if kickoff < now_utc - timedelta(hours=max_hours_past):
+        return False
+    if kickoff > now_utc + timedelta(days=max_days_ahead):
+        return False
+
+    if not regular_keys:
+        return True
+
+    game_day = kickoff.date().isoformat()
+    away = _team_code(event.get("away_team"))
+    home = _team_code(event.get("home_team"))
+    return (game_day, away, home) in regular_keys
 
 TEAM_MAP = {
     "Arizona Cardinals": "ARI",
@@ -152,6 +233,24 @@ def run_refresh() -> dict[str, Any]:
         raise RuntimeError(f"ODDS_API_HTTP_{resp.status_code}: {detail}")
 
     payload = resp.json()
+    now_utc = datetime.now(timezone.utc)
+    regular_keys = _load_regular_season_event_keys()
+    max_days_ahead = int(str(os.getenv("ODDS_REFRESH_MAX_DAYS_AHEAD", "14") or "14"))
+    max_hours_past = int(str(os.getenv("ODDS_REFRESH_MAX_HOURS_PAST", "12") or "12"))
+
+    scoped_payload = [
+        event
+        for event in payload
+        if isinstance(event, dict)
+        and _event_in_scope(
+            event,
+            now_utc=now_utc,
+            regular_keys=regular_keys,
+            max_days_ahead=max_days_ahead,
+            max_hours_past=max_hours_past,
+        )
+    ]
+
     db_path = runtime_paths.nfl_model_duckdb.resolve()
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -164,7 +263,7 @@ def run_refresh() -> dict[str, Any]:
         rows: list[list[Any]] = []
         games_seen: set[str] = set()
 
-        for event in payload:
+        for event in scoped_payload:
             event_id = event.get("id")
             home = event.get("home_team")
             away = event.get("away_team")
@@ -226,17 +325,21 @@ def run_refresh() -> dict[str, Any]:
     remaining = resp.headers.get("x-requests-remaining")
     used = resp.headers.get("x-requests-used")
     log.info(
-        "Runtime odds refresh wrote outcomes=%d games=%d remaining=%s used=%s",
+        "Runtime odds refresh wrote outcomes=%d games=%d remaining=%s used=%s scoped_events=%d total_events=%d",
         len(rows),
         len(games_seen),
         remaining,
         used,
+        len(scoped_payload),
+        len(payload) if isinstance(payload, list) else 0,
     )
     return {
         "rows": len(rows),
         "games": len(games_seen),
         "requestsRemaining": remaining,
         "requestsUsed": used,
+        "scopedEvents": len(scoped_payload),
+        "totalEvents": len(payload) if isinstance(payload, list) else 0,
     }
 
 

@@ -350,10 +350,25 @@ def test_quota_accounting(monkeypatch):
         ),
     )
 
-    out = shadow_markets.discover_player_props()
+    out = shadow_markets.discover_player_props(provider_opt_in=True)
     assert out["status"] == "PASS"
     assert out["quotaTelemetry"]["eventsQueried"] == 1
     assert out["quotaTelemetry"]["marketsRequested"] == len(shadow_markets.PLAYER_PROP_TARGET_MARKETS)
+
+
+def test_discover_player_props_requires_explicit_provider_opt_in():
+    out = shadow_markets.discover_player_props(provider_opt_in=False)
+    assert out["status"] == "FAIL"
+    assert out["quotaTelemetry"]["requestsMade"] == 0
+    assert all(str(m.get("classification")) == "PROVIDER_OPT_IN_REQUIRED" for m in out["markets"])
+
+
+def test_ingest_player_props_without_discovery_payload_fails_closed_without_provider_fallback(shadow_db):
+    out = shadow_markets.ingest_player_prop_market_snapshots(discovery=None, provider_opt_in=False, allow_discovery_fallback=False)
+    assert out["rowsReceived"] == 0
+    assert out["currentInserted"] == 0
+    assert out.get("skipped") is True
+    assert out.get("skipReason") == "DISCOVERY_PAYLOAD_REQUIRED"
 
 
 def test_player_prop_coverage_report_ready(shadow_db, monkeypatch):

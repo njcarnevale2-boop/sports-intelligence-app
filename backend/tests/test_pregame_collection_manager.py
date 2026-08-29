@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pandas as pd
 import pytest
 
 from app.services import pregame_collection_manager as mgr
@@ -261,7 +262,7 @@ def test_verified_credit_budget_blocks_execution_before_provider_calls(shadow_db
         raise AssertionError("provider should not be called when verified credit budget fails")
 
     monkeypatch.setattr(shadow_markets, "_call_odds_api_event_odds", _provider)
-    out = mgr.run_pregame_collection_manager(dry_run=False, max_estimated_credits_per_run=95.0)
+    out = mgr.run_pregame_collection_manager(dry_run=False, max_estimated_credits_per_run=95.0, allow_unknown_weekly_usage=True)
     assert out["status"] == "SKIPPED"
     assert out["execution"]["providerRequests"] == 0
     assert out["execution"]["skipReason"] == "RUN_CREDIT_BUDGET_EXCEEDED"
@@ -300,7 +301,7 @@ def test_unknown_cost_real_execution_blocked_by_default(shadow_db, monkeypatch):
         raise AssertionError("provider should not be called when unknown cost is not explicitly allowed")
 
     monkeypatch.setattr(shadow_markets, "_call_odds_api_event_odds", _provider)
-    out = mgr.run_pregame_collection_manager(dry_run=False, prop_allowlist=["player_pass_yds"])
+    out = mgr.run_pregame_collection_manager(dry_run=False, prop_allowlist=["player_pass_yds"], allow_unknown_weekly_usage=True)
 
     assert out["status"] == "SKIPPED"
     assert out["execution"]["providerRequests"] == 0
@@ -332,6 +333,7 @@ def test_unknown_cost_explicit_opt_in_still_allows_execution(shadow_db, monkeypa
     out = mgr.run_pregame_collection_manager(
         dry_run=False,
         allow_unknown_credit_cost=True,
+        allow_unknown_weekly_usage=True,
         prop_allowlist=["player_pass_yds"],
     )
 
@@ -393,7 +395,7 @@ def test_skipped_request_reason_persists_in_telemetry(shadow_db, monkeypatch):
     monkeypatch.setattr(mgr, "_state_exists_for_market", lambda event_id, family, state: False)
     monkeypatch.setattr(mgr, "_state_exists_for_player_prop_event", lambda event_id, state: False)
 
-    out = mgr.run_pregame_collection_manager(dry_run=False, max_requests_per_run=0)
+    out = mgr.run_pregame_collection_manager(dry_run=False, max_requests_per_run=0, allow_unknown_weekly_usage=True)
     assert out["status"] == "SKIPPED"
 
     con = shadow_markets._connect()
@@ -449,6 +451,7 @@ def test_unknown_cost_explicit_opt_in_allows_execution_and_tracks_actual_credits
 
     out = mgr.run_pregame_collection_manager(
         dry_run=False,
+        allow_unknown_weekly_usage=True,
         prop_allowlist=list(mgr.DEFAULT_PROP_ALLOWLIST),
     )
     assert out["status"] == "COMPLETED"
@@ -488,6 +491,7 @@ def test_missing_actual_credit_telemetry_remains_unknown(shadow_db, monkeypatch)
 
     out = mgr.run_pregame_collection_manager(
         dry_run=False,
+        allow_unknown_weekly_usage=True,
         prop_allowlist=list(mgr.DEFAULT_PROP_ALLOWLIST),
     )
     assert out["status"] == "COMPLETED"
@@ -533,7 +537,7 @@ def test_request_shape_telemetry_fields_present(shadow_db, monkeypatch):
     monkeypatch.setattr(mgr, "_state_exists_for_market", lambda event_id, family, state: False)
     monkeypatch.setattr(mgr, "_state_exists_for_player_prop_event", lambda event_id, state: False)
 
-    out = mgr.run_pregame_collection_manager(dry_run=False, max_requests_per_run=0)
+    out = mgr.run_pregame_collection_manager(dry_run=False, max_requests_per_run=0, allow_unknown_weekly_usage=True)
     assert out["status"] == "SKIPPED"
 
     con = shadow_markets._connect()
@@ -545,6 +549,182 @@ def test_request_shape_telemetry_fields_present(shadow_db, monkeypatch):
     assert str(row["endpoint_type"]) == "EVENT_ODDS"
     assert str(row["region"]) == "us"
     assert int(row["market_count"]) >= 1
+
+
+def test_weekly_hard_budget_blocks_provider_requests_before_execution(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(mgr, "_utc_now", lambda: now)
+    monkeypatch.setattr(mgr, "_load_week_events", lambda week=None: (1, _games(now)))
+    monkeypatch.setattr(mgr, "_load_line_board_market_presence", lambda: {"evt-open": {"SPREAD", "MONEYLINE", "TOTAL"}, "evt-day": {"SPREAD", "MONEYLINE", "TOTAL"}, "evt-close": {"SPREAD", "MONEYLINE", "TOTAL"}})
+    monkeypatch.setattr(mgr, "_state_exists_for_market", lambda event_id, family, state: False)
+    monkeypatch.setattr(mgr, "_state_exists_for_player_prop_event", lambda event_id, state: False)
+    monkeypatch.setattr(
+        mgr,
+        "evaluate_optional_provider_request",
+        lambda **kwargs: {
+            "allowed": False,
+            "reason": "WEEKLY_HARD_BUDGET_EXCEEDED",
+            "warnings": [],
+            "quotaSafety": {"weeklyUsageStatus": "KNOWN"},
+        },
+    )
+
+    called = {"provider": 0}
+
+    def _provider(*args, **kwargs):
+        called["provider"] += 1
+        raise AssertionError("provider should not be called when weekly hard budget blocks run")
+
+    monkeypatch.setattr(shadow_markets, "_call_odds_api_event_odds", _provider)
+    out = mgr.run_pregame_collection_manager(dry_run=False)
+    assert out["status"] == "SKIPPED"
+    assert out["execution"]["providerRequests"] == 0
+    assert out["execution"]["skipReason"] == "WEEKLY_HARD_BUDGET_EXCEEDED"
+    assert called["provider"] == 0
+
+
+def test_minimum_reserve_blocks_provider_requests_before_execution(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(mgr, "_utc_now", lambda: now)
+    monkeypatch.setattr(mgr, "_load_week_events", lambda week=None: (1, _games(now)))
+    monkeypatch.setattr(mgr, "_load_line_board_market_presence", lambda: {"evt-open": {"SPREAD", "MONEYLINE", "TOTAL"}, "evt-day": {"SPREAD", "MONEYLINE", "TOTAL"}, "evt-close": {"SPREAD", "MONEYLINE", "TOTAL"}})
+    monkeypatch.setattr(mgr, "_state_exists_for_market", lambda event_id, family, state: False)
+    monkeypatch.setattr(mgr, "_state_exists_for_player_prop_event", lambda event_id, state: False)
+    monkeypatch.setattr(
+        mgr,
+        "evaluate_optional_provider_request",
+        lambda **kwargs: {
+            "allowed": False,
+            "reason": "QUOTA_MINIMUM_RESERVE_BREACHED",
+            "warnings": [],
+            "quotaSafety": {"weeklyUsageStatus": "KNOWN"},
+        },
+    )
+
+    called = {"provider": 0}
+
+    def _provider(*args, **kwargs):
+        called["provider"] += 1
+        raise AssertionError("provider should not be called when minimum reserve blocks run")
+
+    monkeypatch.setattr(shadow_markets, "_call_odds_api_event_odds", _provider)
+    out = mgr.run_pregame_collection_manager(dry_run=False)
+    assert out["status"] == "SKIPPED"
+    assert out["execution"]["providerRequests"] == 0
+    assert out["execution"]["skipReason"] == "QUOTA_MINIMUM_RESERVE_BREACHED"
+    assert called["provider"] == 0
+
+
+def test_core_capture_passes_both_week_and_season_without_provider_request(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    games = [
+        {
+            "eventId": "evt-open",
+            "season": 2026,
+            "week": 1,
+            "commenceTime": (now + timedelta(hours=30)).isoformat(),
+            "awayAbbreviation": "KC",
+            "homeAbbreviation": "BUF",
+        }
+    ]
+    monkeypatch.setattr(mgr, "_utc_now", lambda: now)
+    monkeypatch.setattr(mgr, "_load_week_events", lambda week=None: (1, games))
+    monkeypatch.setattr(mgr, "_load_line_board_market_presence", lambda: {"evt-open": {"SPREAD", "MONEYLINE", "TOTAL"}})
+    monkeypatch.setattr(mgr, "_state_exists_for_market", lambda event_id, family, state: False)
+    monkeypatch.setattr(mgr, "_state_exists_for_player_prop_event", lambda event_id, state: False)
+
+    capture_args = {}
+
+    def _capture(week=None, season=None):
+        capture_args["week"] = week
+        capture_args["season"] = season
+        return {"rowsReceived": 0}
+
+    monkeypatch.setattr(shadow_markets, "capture_prospective_from_line_board", _capture)
+
+    called = {"provider": 0}
+
+    def _provider(*args, **kwargs):
+        called["provider"] += 1
+        raise AssertionError("provider should not be called for opening-only run")
+
+    monkeypatch.setattr(shadow_markets, "_call_odds_api_event_odds", _provider)
+
+    out = mgr.run_pregame_collection_manager(dry_run=False, allow_unknown_weekly_usage=True)
+    assert out["status"] == "COMPLETED"
+    assert out["execution"]["providerRequests"] == 0
+    assert capture_args["week"] == 1
+    assert capture_args["season"] == 2026
+    assert called["provider"] == 0
+
+
+def test_week1_capture_excludes_other_weeks_and_preseason_rows_without_provider_requests(shadow_db, monkeypatch):
+    rows = [
+        {
+            "api_event_id": "2026_1_KC_BUF",
+            "commence_time": "2026-09-10T20:20:00Z",
+            "away_team": "KC",
+            "home_team": "BUF",
+            "sportsbook": "DraftKings",
+            "market": "spread",
+            "side": "home",
+            "latest_point": -3.0,
+            "opening_point_observed": -2.5,
+            "latest_price": -110,
+            "opening_price_observed": -110,
+            "snapshots": 2,
+            "first_seen": "2026-09-10T18:00:00Z",
+            "last_seen": "2026-09-10T19:00:00Z",
+            "steam_flag": False,
+        },
+        {
+            "api_event_id": "2026_2_DAL_PHI",
+            "commence_time": "2026-09-17T20:20:00Z",
+            "away_team": "DAL",
+            "home_team": "PHI",
+            "sportsbook": "DraftKings",
+            "market": "spread",
+            "side": "home",
+            "latest_point": -1.5,
+            "opening_point_observed": -1.0,
+            "latest_price": -108,
+            "opening_price_observed": -110,
+            "snapshots": 2,
+            "first_seen": "2026-09-17T18:00:00Z",
+            "last_seen": "2026-09-17T19:00:00Z",
+            "steam_flag": False,
+        },
+        {
+            "api_event_id": "2026_0_LV_LAR",
+            "commence_time": "2026-08-20T20:20:00Z",
+            "away_team": "LV",
+            "home_team": "LAR",
+            "sportsbook": "DraftKings",
+            "market": "spread",
+            "side": "home",
+            "latest_point": -2.0,
+            "opening_point_observed": -2.0,
+            "latest_price": -110,
+            "opening_price_observed": -110,
+            "snapshots": 2,
+            "first_seen": "2026-08-20T18:00:00Z",
+            "last_seen": "2026-08-20T19:00:00Z",
+            "steam_flag": False,
+        },
+    ]
+
+    monkeypatch.setattr(shadow_markets, "_load_line_board", lambda: pd.DataFrame(rows))
+    monkeypatch.setattr(shadow_markets, "_load_projection_lookup", lambda: {})
+
+    out = shadow_markets.capture_prospective_from_line_board(week=1, season=2026)
+    assert out["rowsReceived"] == 1
+
+    con = shadow_markets._connect()
+    captured = con.execute(
+        "SELECT DISTINCT event_id FROM prospective_market_snapshots ORDER BY event_id"
+    ).fetchall()
+    con.close()
+    assert [str(r[0]) for r in captured] == ["2026_1_KC_BUF"]
 
 
 def test_schedule_opening_due_when_absent(shadow_db, monkeypatch):

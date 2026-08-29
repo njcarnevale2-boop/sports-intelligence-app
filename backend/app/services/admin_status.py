@@ -102,6 +102,11 @@ class AdminStatusService:
             "oddsGamesUpdated": odds_status["gamesUpdated"],
             "snapshotCount": odds_status["snapshotCount"],
             "apiUsageRemaining": odds_status["apiUsageRemaining"],
+            "coreOddsLastRequestCredits": odds_status.get("coreOddsLastRequestCredits"),
+            "coreOddsRequestsUsed": odds_status.get("coreOddsRequestsUsed"),
+            "coreOddsRequestsRemaining": odds_status.get("coreOddsRequestsRemaining"),
+            "coreOddsLastRequestAt": odds_status.get("coreOddsLastRequestAt"),
+            "quotaSafety": odds_status.get("quotaSafety"),
             # Scheduler fields
             "scheduler": refresh_status,
             # CLV / closing line fields

@@ -28,6 +28,11 @@ def test_admin_status_endpoint_returns_metrics():
     assert "oddsProvider" in payload
     assert "oddsDataStatus" in payload
     assert "snapshotCount" in payload
+    assert "coreOddsLastRequestCredits" in payload
+    assert "coreOddsRequestsUsed" in payload
+    assert "coreOddsRequestsRemaining" in payload
+    assert "coreOddsLastRequestAt" in payload
+    assert "quotaSafety" in payload
     assert "socialProvider" in payload
     assert "socialDataStatus" in payload
     assert "socialSourcesActive" in payload
@@ -75,7 +80,36 @@ def test_admin_refresh_endpoint_returns_summary():
     assert payload["success"] is True
     assert "timestamp" in payload
     assert "oddsRefresh" in payload
-    assert "triggered" in payload["oddsRefresh"]
+    assert payload["oddsRefresh"]["triggered"] is False
+    assert payload["oddsRefresh"]["reason"] == "SPORTSBOOK_REFRESH_NOT_REQUESTED"
+
+
+def test_admin_refresh_default_does_not_trigger_sportsbook_provider_calls():
+    with patch("app.routes.admin_status.trigger_now") as trigger_now:
+        response = client.post("/api/admin/refresh")
+
+    assert response.status_code == 200
+    trigger_now.assert_not_called()
+
+
+def test_admin_refresh_can_trigger_sportsbook_refresh_only_with_explicit_opt_in_and_overrides():
+    with (
+        patch("app.routes.admin_status.evaluate_optional_provider_request", return_value={
+            "allowed": True,
+            "reason": None,
+            "warnings": [],
+            "quotaSafety": {"weeklyUsageStatus": "UNKNOWN"},
+        }),
+        patch("app.routes.admin_status.trigger_now", return_value={"triggered": True, "success": True}) as trigger_now,
+    ):
+        response = client.post(
+            "/api/admin/refresh?sportsbookRefresh=true&allowUnknownCreditCost=true&allowUnknownWeeklyUsage=true"
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["oddsRefresh"]["triggered"] is True
+    trigger_now.assert_called_once()
 
 
 def test_admin_social_sources_coverage_endpoint():

@@ -1331,13 +1331,20 @@ def test_discover_expanded_markets_uses_event_odds_and_provider_keys(monkeypatch
     monkeypatch.setattr(shadow_markets, "_call_odds_api_event_odds", _event_odds)
     monkeypatch.setenv("EXPANDED_MARKET_EVENT_SAMPLE_SIZE", "1")
 
-    out = shadow_markets.discover_expanded_markets()
+    out = shadow_markets.discover_expanded_markets(provider_opt_in=True)
     assert set(called["markets"]) == {"team_totals", "spreads_h1", "h2h_h1", "totals_h1"}
     assert out["targets"]["TEAM_TOTAL"]["status"] == "AVAILABLE"
     assert out["targets"]["1H_SPREAD"]["status"] == "AVAILABLE"
     assert out["targets"]["1H_MONEYLINE"]["status"] == "AVAILABLE"
     assert out["targets"]["1H_TOTAL"]["status"] == "AVAILABLE"
     assert out["quotaAccounting"]["expandedMarketRequestCount"] == 1
+
+
+def test_discover_expanded_markets_requires_provider_opt_in_by_default():
+    out = shadow_markets.discover_expanded_markets(provider_opt_in=False)
+    assert out["estimatedRequestCost"] == 0
+    assert out["quotaAccounting"]["expandedMarketRequestCount"] == 0
+    assert all(str(v.get("status") or "") == "PROVIDER_OPT_IN_REQUIRED" for v in (out.get("targets") or {}).values())
 
 
 def test_ingest_expanded_market_snapshots_persists_raw_rows_and_depth(monkeypatch, shadow_db):

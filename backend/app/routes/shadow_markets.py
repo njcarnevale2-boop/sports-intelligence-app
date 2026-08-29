@@ -70,12 +70,14 @@ class SettlementRequest(BaseModel):
 
 class SnapshotIngestionRequest(BaseModel):
     runDiscovery: bool = True
+    providerOptIn: bool = False
 
 
 class ProspectiveCaptureRequest(BaseModel):
     season: Optional[int] = None
     week: Optional[int] = None
     includeExpanded: bool = True
+    providerOptIn: bool = False
 
 
 class LineShoppingMarketViewRequest(BaseModel):
@@ -92,6 +94,8 @@ class LineShoppingMarketViewRequest(BaseModel):
 
 class PlayerPropIngestionRequest(BaseModel):
     runDiscovery: bool = True
+    providerOptIn: bool = False
+    allowDiscoveryFallback: bool = False
 
 
 class PregameCollectionRunRequest(BaseModel):
@@ -103,6 +107,8 @@ class PregameCollectionRunRequest(BaseModel):
     estimatedCreditsPerRequest: Optional[float] = None
     deterministicCreditRuleVerified: bool = False
     allowUnknownCreditCost: bool = False
+    allowUnknownWeeklyUsage: bool = False
+    overrideQuotaGuards: bool = False
     propAllowlist: Optional[list[str]] = None
 
 
@@ -163,15 +169,18 @@ def promotion_gates(x_admin_token: str | None = Header(default=None)):
 
 
 @router.get("/discovery/expanded-markets")
-def expanded_market_discovery(x_admin_token: str | None = Header(default=None)):
+def expanded_market_discovery(
+    provider_opt_in: bool = Query(default=False, alias="providerOptIn"),
+    x_admin_token: str | None = Header(default=None),
+):
     _require_admin_token(x_admin_token)
-    return discover_expanded_markets()
+    return discover_expanded_markets(provider_opt_in=bool(provider_opt_in))
 
 
 @router.post("/discovery/expanded-markets/ingest")
 def expanded_market_ingest(request: SnapshotIngestionRequest, x_admin_token: str | None = Header(default=None)):
     _require_admin_token(x_admin_token)
-    discovery = discover_expanded_markets() if request.runDiscovery else None
+    discovery = discover_expanded_markets(provider_opt_in=bool(request.providerOptIn)) if request.runDiscovery else None
     result = ingest_expanded_market_snapshots(discovery=discovery)
     return {
         "ingested": result,
@@ -191,7 +200,13 @@ def expanded_market_status(x_admin_token: str | None = Header(default=None)):
 def capture_prospective(request: ProspectiveCaptureRequest, x_admin_token: str | None = Header(default=None)):
     _require_admin_token(x_admin_token)
     core = capture_prospective_from_line_board(week=request.week, season=request.season)
-    expanded = ingest_expanded_market_snapshots(discovery=discover_expanded_markets()) if request.includeExpanded else None
+    expanded = (
+        ingest_expanded_market_snapshots(
+            discovery=discover_expanded_markets(provider_opt_in=bool(request.providerOptIn))
+        )
+        if request.includeExpanded
+        else None
+    )
     return {
         "core": core,
         "expanded": expanded,
@@ -228,10 +243,11 @@ def prospective_live_compatibility(x_admin_token: str | None = Header(default=No
 @router.get("/line-shopping/coverage-audit")
 def line_shopping_coverage_audit(
     max_events: int = Query(default=6, ge=1, le=16),
+    provider_opt_in: bool = Query(default=False, alias="providerOptIn"),
     x_admin_token: str | None = Header(default=None),
 ):
     _require_admin_token(x_admin_token)
-    return sportsbook_coverage_audit(max_events=max_events)
+    return sportsbook_coverage_audit(max_events=max_events, provider_opt_in=bool(provider_opt_in))
 
 
 @router.get("/line-shopping/contract")
@@ -257,9 +273,12 @@ def line_shopping_market(request: LineShoppingMarketViewRequest, x_admin_token: 
 
 
 @router.get("/discovery/player-props")
-def player_prop_discovery(x_admin_token: str | None = Header(default=None)):
+def player_prop_discovery(
+    provider_opt_in: bool = Query(default=False, alias="providerOptIn"),
+    x_admin_token: str | None = Header(default=None),
+):
     _require_admin_token(x_admin_token)
-    discovery = discover_player_props()
+    discovery = discover_player_props(provider_opt_in=bool(provider_opt_in))
     mapping = player_identity_mapping_plan(discovery.get("sampledPlayers") or [])
     return {
         "discovery": discovery,
@@ -270,8 +289,12 @@ def player_prop_discovery(x_admin_token: str | None = Header(default=None)):
 @router.post("/discovery/player-props/ingest")
 def player_prop_ingest(request: PlayerPropIngestionRequest, x_admin_token: str | None = Header(default=None)):
     _require_admin_token(x_admin_token)
-    discovery = discover_player_props() if request.runDiscovery else None
-    ingested = ingest_player_prop_market_snapshots(discovery=discovery)
+    discovery = discover_player_props(provider_opt_in=bool(request.providerOptIn)) if request.runDiscovery else None
+    ingested = ingest_player_prop_market_snapshots(
+        discovery=discovery,
+        provider_opt_in=bool(request.providerOptIn),
+        allow_discovery_fallback=bool(request.allowDiscoveryFallback),
+    )
     return {
         "discovery": discovery,
         "ingested": ingested,
@@ -316,6 +339,8 @@ def pregame_collection_plan(request: PregameCollectionRunRequest, x_admin_token:
         estimated_credits_per_request=request.estimatedCreditsPerRequest,
         deterministic_credit_rule_verified=request.deterministicCreditRuleVerified,
         allow_unknown_credit_cost=request.allowUnknownCreditCost,
+        allow_unknown_weekly_usage=request.allowUnknownWeeklyUsage,
+        override_quota_guards=request.overrideQuotaGuards,
         prop_allowlist=request.propAllowlist,
     )
 
@@ -332,6 +357,8 @@ def pregame_collection_run(request: PregameCollectionRunRequest, x_admin_token: 
         estimated_credits_per_request=request.estimatedCreditsPerRequest,
         deterministic_credit_rule_verified=request.deterministicCreditRuleVerified,
         allow_unknown_credit_cost=request.allowUnknownCreditCost,
+        allow_unknown_weekly_usage=request.allowUnknownWeeklyUsage,
+        override_quota_guards=request.overrideQuotaGuards,
         prop_allowlist=request.propAllowlist,
     )
 
