@@ -819,6 +819,55 @@ def test_status_read_recovery_makes_zero_provider_requests(monkeypatch, tmp_path
     request_get.assert_not_called()
 
 
+def test_exact_production_fixture_status_path_recovers_to_completed_verified(monkeypatch, tmp_path):
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+
+    signature_json = odds_status.json.dumps(build_core_request_signature(), sort_keys=True, separators=(",", ":"))
+    requested_at = datetime(2026, 8, 29, 18, 21, 54, 429326, tzinfo=timezone.utc)
+    fetched_at = datetime(2026, 8, 29, 18, 21, 55, 954030, tzinfo=timezone.utc)
+
+    _insert_in_progress_bootstrap(runtime_root, requested_at=requested_at, signature_json=signature_json)
+
+    db_path = runtime_root / "database" / "nfl_model.duckdb"
+    con = duckdb.connect(str(db_path))
+    try:
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS odds_api_usage (
+                fetched_at TIMESTAMP,
+                endpoint VARCHAR,
+                requests_remaining INTEGER,
+                requests_used INTEGER,
+                requests_last INTEGER,
+                request_shape_id VARCHAR,
+                request_shape_signature VARCHAR,
+                request_provenance VARCHAR
+            )
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO odds_api_usage VALUES (?, '/sports/{sport}/odds', 19586, 414, 3, ?, ?, 'BOOTSTRAP_CORE_COST')
+            """,
+            [fetched_at.replace(tzinfo=None), core_request_shape_id(), signature_json],
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    with patch("app.runtime_jobs.odds_refresh.requests.get") as request_get:
+        status = odds_status.get_odds_status()
+
+    assert status["coreOddsCostBootstrapStatus"] == "COMPLETED"
+    assert status["coreOddsCostBootstrapActualCredits"] == 3.0
+    assert status["coreOddsVerifiedRequestCost"] == 3.0
+    assert status["coreOddsCostVerificationStatus"] == "VERIFIED"
+    assert status["coreOddsRequestsUsed"] == 414
+    assert status["coreOddsRequestsRemaining"] == 19586
+    request_get.assert_not_called()
+
+
 def test_bootstrap_core_only_path_makes_exactly_one_mocked_provider_request_and_no_full_refresh(monkeypatch, tmp_path):
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))

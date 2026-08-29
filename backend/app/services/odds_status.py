@@ -345,6 +345,7 @@ def get_core_request_cost_verification() -> Dict[str, Any]:
 
 
 def get_quota_safety_state() -> Dict[str, Any]:
+    _reconcile_bootstrap_state_for_active_shape()
     policy = _quota_policy()
     core_cost = get_core_request_cost_verification()
     bootstrap = get_core_cost_bootstrap_status()
@@ -700,6 +701,7 @@ def perform_core_cost_bootstrap(*, requested_shape_id: str) -> Dict[str, Any]:
 
 def get_odds_status() -> Dict[str, Any]:
     """Read live odds metrics from DuckDB without exposing credentials."""
+    _reconcile_bootstrap_state_for_active_shape()
     con = _try_duckdb()
     if con is None:
         quota = get_quota_safety_state()
