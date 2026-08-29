@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pandas as pd
+
 from app.services import refresh_orchestrator as orch
 
 def test_run_once_uses_repo_runtime_jobs_not_persistent_scripts(tmp_path, monkeypatch):
@@ -92,3 +94,138 @@ def test_next_refresh_uses_last_attempt_when_last_refresh_missing():
     }
     next_dt = orch._next_refresh_dt(state, now, cadence_minutes=15)
     assert next_dt == datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+
+
+def test_scheduler_iteration_default_disabled_even_with_odds_api_key(tmp_path, monkeypatch):
+    runtime_root = tmp_path / "runtime"
+    (runtime_root / "logs").mkdir(parents=True)
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+    monkeypatch.setenv("ODDS_API_KEY", "present-but-not-opted-in")
+    monkeypatch.delenv("ODDS_REFRESH_AUTOMATION_ENABLED", raising=False)
+
+    state_file = runtime_root / "logs" / "refresh_state.json"
+    with (
+        patch.object(orch, "_STATE_FILE", state_file),
+        patch.object(orch, "_run_once") as run_once,
+    ):
+        sleep_secs = orch._scheduler_iteration(now=datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc))
+
+    status = json.loads(state_file.read_text())
+    assert status["oddsRefreshAutomationEnabled"] is False
+    assert status["nextRefreshAt"] is None
+    assert sleep_secs >= 300
+    run_once.assert_not_called()
+
+
+def test_scheduler_iteration_disabled_on_explicit_false_and_restart_state(tmp_path, monkeypatch):
+    runtime_root = tmp_path / "runtime"
+    (runtime_root / "logs").mkdir(parents=True)
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+    monkeypatch.setenv("ODDS_API_KEY", "present")
+    monkeypatch.setenv("ODDS_REFRESH_AUTOMATION_ENABLED", "false")
+
+    state_file = runtime_root / "logs" / "refresh_state.json"
+    state_file.write_text(json.dumps({"lastRefreshAt": "2026-09-01T11:00:00+00:00"}))
+
+    with (
+        patch.object(orch, "_STATE_FILE", state_file),
+        patch.object(orch, "_run_once") as run_once,
+    ):
+        sleep_secs = orch._scheduler_iteration(now=datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc))
+
+    status = json.loads(state_file.read_text())
+    assert status["oddsRefreshAutomationEnabled"] is False
+    assert status["nextRefreshAt"] is None
+    assert sleep_secs >= 300
+    run_once.assert_not_called()
+
+
+def test_scheduler_iteration_enabled_can_trigger_run_once_with_mocked_provider(tmp_path, monkeypatch):
+    runtime_root = tmp_path / "runtime"
+    (runtime_root / "logs").mkdir(parents=True)
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+    monkeypatch.setenv("ODDS_REFRESH_AUTOMATION_ENABLED", "true")
+
+    state_file = runtime_root / "logs" / "refresh_state.json"
+    state_file.write_text(json.dumps({"lastRefreshAt": "2026-09-01T10:00:00+00:00", "quotaRemaining": 9999}))
+
+    with (
+        patch.object(orch, "_STATE_FILE", state_file),
+        patch.object(orch, "_determine_base_cadence_minutes", return_value=30),
+        patch.object(orch, "_run_once", return_value=True) as run_once,
+    ):
+        sleep_secs = orch._scheduler_iteration(now=datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc))
+
+    assert sleep_secs >= 5
+    run_once.assert_called_once()
+
+
+def test_cached_week_data_still_usable_when_odds_refresh_automation_disabled(tmp_path, monkeypatch):
+    runtime_root = tmp_path / "runtime"
+    outputs = runtime_root / "outputs"
+    database = runtime_root / "database"
+    logs = runtime_root / "logs"
+    outputs.mkdir(parents=True)
+    database.mkdir(parents=True)
+    logs.mkdir(parents=True)
+
+    # Presence-only file for data status.
+    (database / "nfl_model.duckdb").write_text("")
+
+    pd.DataFrame(
+        [
+            {
+                "api_event_id": "evt-1",
+                "commence_time": "2026-09-10T00:00:00+00:00",
+                "away_team": "BUF",
+                "home_team": "KC",
+                "market_home_spread": -2.5,
+                "market_total": 47.5,
+            }
+        ]
+    ).to_csv(outputs / "current_game_projections.csv", index=False)
+
+    pd.DataFrame(
+        [
+            {
+                "season": 2026,
+                "week": 1,
+                "gameday": "2026-09-10",
+                "away_team": "BUF",
+                "home_team": "KC",
+            }
+        ]
+    ).to_csv(outputs / "schedule_context_latest.csv", index=False)
+
+    pd.DataFrame(
+        columns=[
+            "api_event_id",
+            "sportsbook",
+            "market",
+            "side",
+            "latest_point",
+            "opening_point_observed",
+            "latest_price",
+            "opening_price_observed",
+            "snapshots",
+            "first_seen",
+            "last_seen",
+            "steam_flag",
+            "commence_time",
+            "away_team",
+            "home_team",
+        ]
+    ).to_csv(outputs / "line_movement_board.csv", index=False)
+
+    pd.DataFrame(columns=["api_event_id", "market", "side", "rank", "point", "price", "edge_pp", "ev_per_dollar", "confidence_score", "data_completeness"]).to_csv(
+        outputs / "ranked_bet_board.csv", index=False
+    )
+
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+    monkeypatch.setenv("ODDS_REFRESH_AUTOMATION_ENABLED", "false")
+
+    from app.services.games import service as games_service
+
+    out = games_service.list_games(week=1)
+    assert out["count"] == 1
+    assert (out.get("dataStatus") or {}).get("schedule") == "CACHED"

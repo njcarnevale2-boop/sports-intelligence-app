@@ -93,7 +93,7 @@ def test_runtime_readiness_scripts_dir_optional(tmp_path, monkeypatch):
 
     out = runtime_readiness()
     assert out["requiredArtifactsReady"] is True
-    assert "scriptsDir" in out["missingArtifacts"]
+    assert "scriptsDir" not in out["missingArtifacts"]
     assert out["deploymentReadiness"] == "DEGRADED"
 
 

@@ -65,6 +65,7 @@ QUOTA_PAUSE       = lambda: _env_int("ODDS_QUOTA_PAUSE_THRESHOLD",      20)
 QUOTA_REDUCE      = lambda: _env_int("ODDS_QUOTA_REDUCE_THRESHOLD",     50)
 QUOTA_SLOW        = lambda: _env_int("ODDS_QUOTA_SLOW_THRESHOLD",      100)
 NEAR_KICKOFF_HRS  = lambda: _env_int("ODDS_NEARKICKOFF_HOURS",           3)
+ODDS_REFRESH_AUTOMATION_ENABLED = lambda: _env_bool("ODDS_REFRESH_AUTOMATION_ENABLED", False)
 PREGAME_AUTOMATION_ENABLED = lambda: _env_bool("PREGAME_AUTOMATION_ENABLED", False)
 
 
@@ -256,6 +257,7 @@ _EMPTY_STATE: Dict[str, Any] = {
     "cadenceMinutes": None,
     "consecutiveFailures": 0,
     "quotaRemaining": None,
+    "oddsRefreshAutomationEnabled": False,
     # CLV closing-capture stats (updated each run)
     "closingCaptureLastRun": None,
     "closingCaptureEligible": 0,
@@ -340,6 +342,42 @@ def _next_refresh_dt(state: Dict[str, Any], now: datetime, cadence_minutes: int)
     if anchor is None:
         return now
     return anchor + timedelta(minutes=cadence_minutes)
+
+
+def _scheduler_iteration(now: Optional[datetime] = None) -> float:
+    state = _read_state()
+    automation_enabled = bool(ODDS_REFRESH_AUTOMATION_ENABLED())
+    state["oddsRefreshAutomationEnabled"] = automation_enabled
+
+    if not automation_enabled:
+        state["cadenceMinutes"] = None
+        state["nextRefreshAt"] = None
+        _write_state(state)
+        return 300
+
+    quota = state.get("quotaRemaining")
+    base = _determine_base_cadence_minutes()
+    effective = _quota_cap(base, quota)
+    state["cadenceMinutes"] = effective
+
+    if effective is None:
+        log.warning("Odds quota at or below pause threshold – refresh suspended")
+        state["nextRefreshAt"] = None
+        _write_state(state)
+        return 300
+
+    now_utc = now or datetime.now(timezone.utc)
+    next_dt = _next_refresh_dt(state, now_utc, effective)
+
+    state["nextRefreshAt"] = next_dt.isoformat()
+    _write_state(state)
+
+    if now_utc >= next_dt:
+        _run_once()
+        return 5
+
+    sleep_secs = min((next_dt - now_utc).total_seconds(), 60)
+    return float(max(sleep_secs, 5))
 
 
 def _run_once() -> bool:
@@ -700,32 +738,8 @@ def _scheduler_loop() -> None:
 
     while True:
         try:
-            state = _read_state()
-            quota = state.get("quotaRemaining")
-
-            base = _determine_base_cadence_minutes()
-            effective = _quota_cap(base, quota)
-
-            state["cadenceMinutes"] = effective
-
-            if effective is None:
-                log.warning("Odds quota at or below pause threshold – refresh suspended")
-                state["nextRefreshAt"] = None
-                _write_state(state)
-                time.sleep(300)
-                continue
-
-            now = datetime.now(timezone.utc)
-            next_dt = _next_refresh_dt(state, now, effective)
-
-            state["nextRefreshAt"] = next_dt.isoformat()
-            _write_state(state)
-
-            if now >= next_dt:
-                _run_once()
-            else:
-                sleep_secs = min((next_dt - now).total_seconds(), 60)
-                time.sleep(max(sleep_secs, 5))
+            sleep_secs = _scheduler_iteration()
+            time.sleep(max(float(sleep_secs), 1.0))
 
         except Exception as exc:
             log.error("Scheduler loop error: %s", exc)
@@ -762,6 +776,7 @@ def trigger_now() -> Dict[str, Any]:
     return {
         "triggered": True,
         "success": success,
+        "oddsRefreshAutomationEnabled": bool(state.get("oddsRefreshAutomationEnabled", ODDS_REFRESH_AUTOMATION_ENABLED())),
         "lastRefreshAt": state.get("lastRefreshAt"),
         "lastError": state.get("lastError"),
         "quotaRemaining": state.get("quotaRemaining"),
@@ -792,9 +807,10 @@ def trigger_now() -> Dict[str, Any]:
 def get_refresh_status() -> Dict[str, Any]:
     """Return current scheduler status for the admin dashboard."""
     state = _read_state()
+    automation_enabled = bool(state.get("oddsRefreshAutomationEnabled", ODDS_REFRESH_AUTOMATION_ENABLED()))
     quota = state.get("quotaRemaining")
-    base = _determine_base_cadence_minutes()
-    effective = _quota_cap(base, quota)
+    base = _determine_base_cadence_minutes() if automation_enabled else None
+    effective = _quota_cap(base, quota) if base is not None else None
 
     return {
         "lastRefreshAt": state.get("lastRefreshAt"),
@@ -804,8 +820,10 @@ def get_refresh_status() -> Dict[str, Any]:
         "lastError": state.get("lastError"),
         "consecutiveFailures": int(state.get("consecutiveFailures") or 0),
         "quotaRemaining": quota,
-        "quotaPaused": effective is None,
+        "quotaPaused": automation_enabled and effective is None,
         "provider": "The Odds API",
+        "oddsRefreshAutomationEnabled": automation_enabled,
+        "oddsRefreshAutomationState": "ENABLED" if automation_enabled else "DISABLED",
         "closingCaptureLastRun": state.get("closingCaptureLastRun"),
         "closingCaptureEligible": int(state.get("closingCaptureEligible") or 0),
         "closingLinesCapturedThisRun": int(state.get("closingLinesCapturedThisRun") or 0),
