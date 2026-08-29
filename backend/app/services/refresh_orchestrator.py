@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -32,8 +33,7 @@ log = logging.getLogger("refresh_orchestrator")
 
 # ── paths ──────────────────────────────────────────────────────────────────
 _MODEL_ROOT = runtime_paths.root
-_SCRIPTS_DIR = runtime_paths.scripts_dir
-_NFL_PYTHON = runtime_paths.nfl_python
+_BACKEND_ROOT = Path(__file__).resolve().parents[2]
 _STATE_FILE = runtime_paths.refresh_state_json
 _SCHEDULE_CSV = runtime_paths.current_game_projections_csv
 
@@ -249,6 +249,7 @@ def _run_pregame_automation_tick() -> Dict[str, Any]:
 # ── state persistence ───────────────────────────────────────────────────────
 _EMPTY_STATE: Dict[str, Any] = {
     "lastRefreshAt": None,
+    "lastAttemptAt": None,
     "nextRefreshAt": None,
     "lastError": None,
     "isRunning": False,
@@ -317,45 +318,70 @@ def _write_state(state: Dict[str, Any]) -> None:
 _run_lock = threading.Lock()
 
 
+def _parse_state_dt(value: Any) -> Optional[datetime]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _last_run_anchor(state: Dict[str, Any]) -> Optional[datetime]:
+    return _parse_state_dt(state.get("lastRefreshAt")) or _parse_state_dt(state.get("lastAttemptAt"))
+
+
+def _next_refresh_dt(state: Dict[str, Any], now: datetime, cadence_minutes: int) -> datetime:
+    anchor = _last_run_anchor(state)
+    if anchor is None:
+        return now
+    return anchor + timedelta(minutes=cadence_minutes)
+
+
 def _run_once() -> bool:
     """Execute update_odds → build_line_movement.  Returns True on success."""
     if not _run_lock.acquire(blocking=False):
         log.info("Refresh already running – skipping overlap")
         return False
 
+    started = datetime.now(timezone.utc)
     state = _read_state()
     state["isRunning"] = True
+    state["lastAttemptAt"] = started.isoformat()
     _write_state(state)
 
-    started = datetime.now(timezone.utc)
     log.info("Odds refresh started at %s", started.isoformat())
 
     try:
-        python = str(_NFL_PYTHON) if _NFL_PYTHON.exists() else "python3"
+        python = sys.executable or "python3"
 
-        # Step 1: fetch odds (appends to DuckDB – never overwrites)
+        # Step 1: fetch odds (appends to DuckDB, never overwrites).
         r1 = subprocess.run(
-            [python, "scripts/update_odds.py"],
-            cwd=str(_MODEL_ROOT),
+            [python, "-m", "app.runtime_jobs.odds_refresh"],
+            cwd=str(_BACKEND_ROOT),
             capture_output=True,
             text=True,
             timeout=120,
         )
         if r1.returncode != 0:
-            raise RuntimeError(f"update_odds.py failed: {r1.stderr[-500:]}")
-        log.info("update_odds.py: %s", r1.stdout.strip())
+            raise RuntimeError(f"odds_refresh failed: {r1.stderr[-500:]}")
+        log.info("odds_refresh: %s", r1.stdout.strip())
 
-        # Step 2: rebuild line movement board from new snapshot
+        # Step 2: rebuild line movement board from new snapshot.
         r2 = subprocess.run(
-            [python, "scripts/build_line_movement.py"],
-            cwd=str(_MODEL_ROOT),
+            [python, "-m", "app.runtime_jobs.line_movement"],
+            cwd=str(_BACKEND_ROOT),
             capture_output=True,
             text=True,
             timeout=60,
         )
         if r2.returncode != 0:
-            raise RuntimeError(f"build_line_movement.py failed: {r2.stderr[-500:]}")
-        log.info("build_line_movement.py: done")
+            raise RuntimeError(f"line_movement failed: {r2.stderr[-500:]}")
+        log.info("line_movement: %s", r2.stdout.strip())
 
         # Step 2b: run canonical pregame lifecycle automation (non-fatal).
         pregame_tick = _run_pregame_automation_tick()
@@ -450,6 +476,7 @@ def _run_once() -> bool:
 
         state = _read_state()
         state["lastRefreshAt"] = started.isoformat()
+        state["lastAttemptAt"] = started.isoformat()
         state["lastError"] = None
         state["consecutiveFailures"] = 0
         state["closingCaptureLastRun"] = datetime.now(timezone.utc).isoformat()
@@ -540,6 +567,7 @@ def _run_once() -> bool:
     except Exception as exc:
         log.error("Odds refresh error: %s", exc)
         state = _read_state()
+        state["lastAttemptAt"] = started.isoformat()
         state["lastError"] = str(exc)[:500]
         state["consecutiveFailures"] = int(state.get("consecutiveFailures") or 0) + 1
         state["isRunning"] = False
@@ -687,18 +715,8 @@ def _scheduler_loop() -> None:
                 time.sleep(300)
                 continue
 
-            last_str = state.get("lastRefreshAt")
-            last_dt = None
-            if last_str:
-                try:
-                    last_dt = datetime.fromisoformat(last_str)
-                    if last_dt.tzinfo is None:
-                        last_dt = last_dt.replace(tzinfo=timezone.utc)
-                except ValueError:
-                    pass
-
             now = datetime.now(timezone.utc)
-            next_dt = (last_dt + timedelta(minutes=effective)) if last_dt else now
+            next_dt = _next_refresh_dt(state, now, effective)
 
             state["nextRefreshAt"] = next_dt.isoformat()
             _write_state(state)

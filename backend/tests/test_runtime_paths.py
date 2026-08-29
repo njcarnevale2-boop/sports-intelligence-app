@@ -79,6 +79,24 @@ def test_runtime_readiness_not_ready_when_required_artifact_missing(tmp_path, mo
     assert "lineMovementBoard" in out["missingArtifacts"]
 
 
+def test_runtime_readiness_scripts_dir_optional(tmp_path, monkeypatch):
+    root = tmp_path / "runtime-no-scripts"
+    (root / "database").mkdir(parents=True)
+    (root / "outputs").mkdir()
+    (root / "logs").mkdir()
+    (root / "database" / "nfl_model.duckdb").write_text("")
+    (root / "outputs" / "current_game_projections.csv").write_text("api_event_id\n")
+    (root / "outputs" / "line_movement_board.csv").write_text("api_event_id\n")
+
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(root))
+    monkeypatch.setattr(settings, "DATABASE_URL", f"sqlite:///{(tmp_path / 'sports_intelligence.db').name}")
+
+    out = runtime_readiness()
+    assert out["requiredArtifactsReady"] is True
+    assert "scriptsDir" in out["missingArtifacts"]
+    assert out["deploymentReadiness"] == "DEGRADED"
+
+
 def test_startup_event_logs_readiness_and_starts_scheduler(monkeypatch):
     with (
         patch("app.main.init_db") as init_db,

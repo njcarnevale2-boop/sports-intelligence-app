@@ -145,7 +145,7 @@ def runtime_readiness() -> dict[str, Any]:
         RuntimeReadinessCheck("databaseDir", str(runtime_paths.database_dir), True, runtime_paths.database_dir.exists(), "dir"),
         RuntimeReadinessCheck("outputsDir", str(runtime_paths.outputs_dir), True, runtime_paths.outputs_dir.exists(), "dir"),
         RuntimeReadinessCheck("logsDir", str(runtime_paths.logs_dir), True, runtime_paths.logs_dir.exists(), "dir"),
-        RuntimeReadinessCheck("scriptsDir", str(runtime_paths.scripts_dir), True, runtime_paths.scripts_dir.exists(), "dir"),
+        RuntimeReadinessCheck("scriptsDir", str(runtime_paths.scripts_dir), False, runtime_paths.scripts_dir.exists(), "dir"),
         RuntimeReadinessCheck("nflModelDuckDB", str(runtime_paths.nfl_model_duckdb), True, runtime_paths.nfl_model_duckdb.exists(), "file"),
         RuntimeReadinessCheck("currentGameProjections", str(runtime_paths.current_game_projections_csv), True, runtime_paths.current_game_projections_csv.exists(), "file"),
         RuntimeReadinessCheck("lineMovementBoard", str(runtime_paths.line_movement_board_csv), True, runtime_paths.line_movement_board_csv.exists(), "file"),
