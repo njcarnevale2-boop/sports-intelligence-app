@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import pandas as pd
+from sqlalchemy import text
 
 from app.providers.provider_manager import ProviderManager
 from app.services.data_refresh import refresh_all_data
@@ -53,6 +54,11 @@ class AdminStatusService:
         wx_summary = get_weather_summary()
         ledger_summary = get_admin_ledger_summary(limit=100)
         runtime_status = runtime_readiness()
+        api_health = self._api_health(
+            database_status=database_status,
+            runtime_status=runtime_status,
+            refresh_status=refresh_status,
+        )
         official_this_week = None
         official_published = False
         try:
@@ -70,7 +76,7 @@ class AdminStatusService:
         wx_provider_meta  = provider_metadata.get("weather", {})
 
         return {
-            "apiHealth": "healthy" if database_status == "connected" else "degraded",
+            "apiHealth": api_health,
             "lastRefresh": last_refresh,
             "refreshDuration": self._latest_refresh_duration(),
             "gamesLoaded": games_loaded,
@@ -213,10 +219,23 @@ class AdminStatusService:
 
     def _database_status(self) -> str:
         try:
-            self.session.execute("SELECT 1")
+            self.session.execute(text("SELECT 1"))
             return "connected"
         except Exception:
             return "disconnected"
+
+    def _api_health(self, *, database_status: str, runtime_status: Dict[str, Any], refresh_status: Dict[str, Any]) -> str:
+        if str(runtime_status.get("deploymentReadiness") or "").upper() == "NOT_READY":
+            return "degraded"
+
+        if database_status != "connected":
+            return "degraded"
+
+        automation_enabled = bool(refresh_status.get("oddsRefreshAutomationEnabled"))
+        if automation_enabled and bool(refresh_status.get("lastError")):
+            return "degraded"
+
+        return "healthy"
 
     def _error_log(self) -> List[Dict[str, Any]]:
         return [

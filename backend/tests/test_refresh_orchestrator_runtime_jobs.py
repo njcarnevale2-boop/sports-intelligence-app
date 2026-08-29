@@ -229,3 +229,33 @@ def test_cached_week_data_still_usable_when_odds_refresh_automation_disabled(tmp
     out = games_service.list_games(week=1)
     assert out["count"] == 1
     assert (out.get("dataStatus") or {}).get("schedule") == "CACHED"
+
+
+def test_get_refresh_status_disables_running_and_retires_legacy_error_when_automation_off(tmp_path, monkeypatch):
+    runtime_root = tmp_path / "runtime"
+    (runtime_root / "logs").mkdir(parents=True)
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+    monkeypatch.setenv("ODDS_REFRESH_AUTOMATION_ENABLED", "false")
+
+    state_file = runtime_root / "logs" / "refresh_state.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                "isRunning": True,
+                "lastError": "update_odds.py failed: python3: can't open file '/data/NFL_Analytics_OS_v1_9/scripts/update_odds.py'",
+                "consecutiveFailures": 26329,
+            }
+        )
+    )
+
+    with patch.object(orch, "_STATE_FILE", state_file):
+        status = orch.get_refresh_status()
+
+    assert status["oddsRefreshAutomationEnabled"] is False
+    assert status["oddsRefreshAutomationState"] == "DISABLED"
+    assert status["isRunning"] is False
+    assert status["nextRefreshAt"] is None
+    assert status["lastError"] is None
+    assert status["consecutiveFailures"] == 0
+    assert "scripts/update_odds.py" in str(status["historicalLastError"])
+    assert status["historicalConsecutiveFailures"] == 26329

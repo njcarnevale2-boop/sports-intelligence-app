@@ -258,6 +258,9 @@ _EMPTY_STATE: Dict[str, Any] = {
     "consecutiveFailures": 0,
     "quotaRemaining": None,
     "oddsRefreshAutomationEnabled": False,
+    "historicalLastError": None,
+    "historicalConsecutiveFailures": 0,
+    "historicalErrorRetiredAt": None,
     # CLV closing-capture stats (updated each run)
     "closingCaptureLastRun": None,
     "closingCaptureEligible": 0,
@@ -344,14 +347,36 @@ def _next_refresh_dt(state: Dict[str, Any], now: datetime, cadence_minutes: int)
     return anchor + timedelta(minutes=cadence_minutes)
 
 
+def _is_legacy_scripts_error(msg: Any) -> bool:
+    text = str(msg or "")
+    if not text:
+        return False
+    return "scripts/update_odds.py" in text or "can't open file" in text and "update_odds.py" in text
+
+
+def _normalize_disabled_scheduler_state(state: Dict[str, Any]) -> None:
+    # When automation is intentionally disabled, current run-state should be idle.
+    state["isRunning"] = False
+    state["cadenceMinutes"] = None
+    state["nextRefreshAt"] = None
+
+    # Preserve legacy/pre-migration failures as historical audit data, but do not
+    # surface them as current scheduler failures.
+    if _is_legacy_scripts_error(state.get("lastError")):
+        state["historicalLastError"] = state.get("lastError")
+        state["historicalConsecutiveFailures"] = int(state.get("consecutiveFailures") or 0)
+        state["historicalErrorRetiredAt"] = datetime.now(timezone.utc).isoformat()
+        state["lastError"] = None
+        state["consecutiveFailures"] = 0
+
+
 def _scheduler_iteration(now: Optional[datetime] = None) -> float:
     state = _read_state()
     automation_enabled = bool(ODDS_REFRESH_AUTOMATION_ENABLED())
     state["oddsRefreshAutomationEnabled"] = automation_enabled
 
     if not automation_enabled:
-        state["cadenceMinutes"] = None
-        state["nextRefreshAt"] = None
+        _normalize_disabled_scheduler_state(state)
         _write_state(state)
         return 300
 
@@ -808,6 +833,8 @@ def get_refresh_status() -> Dict[str, Any]:
     """Return current scheduler status for the admin dashboard."""
     state = _read_state()
     automation_enabled = bool(state.get("oddsRefreshAutomationEnabled", ODDS_REFRESH_AUTOMATION_ENABLED()))
+    if not automation_enabled:
+        _normalize_disabled_scheduler_state(state)
     quota = state.get("quotaRemaining")
     base = _determine_base_cadence_minutes() if automation_enabled else None
     effective = _quota_cap(base, quota) if base is not None else None
@@ -824,6 +851,9 @@ def get_refresh_status() -> Dict[str, Any]:
         "provider": "The Odds API",
         "oddsRefreshAutomationEnabled": automation_enabled,
         "oddsRefreshAutomationState": "ENABLED" if automation_enabled else "DISABLED",
+        "historicalLastError": state.get("historicalLastError"),
+        "historicalConsecutiveFailures": int(state.get("historicalConsecutiveFailures") or 0),
+        "historicalErrorRetiredAt": state.get("historicalErrorRetiredAt"),
         "closingCaptureLastRun": state.get("closingCaptureLastRun"),
         "closingCaptureEligible": int(state.get("closingCaptureEligible") or 0),
         "closingLinesCapturedThisRun": int(state.get("closingLinesCapturedThisRun") or 0),
