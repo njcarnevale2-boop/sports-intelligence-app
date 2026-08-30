@@ -284,6 +284,13 @@ function edgeDirection(projection: GameProjection) {
   };
 }
 
+function moveTheLineErrorMessage(error: unknown) {
+  const fallback = "Move-the-Line is unavailable for this game right now.";
+  if (!(error instanceof Error)) return fallback;
+  const message = error.message.trim();
+  return message || fallback;
+}
+
 export default function GameIntelligencePage() {
   const params = useParams<{ eventId: string }>();
   const searchParams = useSearchParams();
@@ -303,6 +310,7 @@ export default function GameIntelligencePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [added, setAdded] = useState(false);
+  const [addToCardNotice, setAddToCardNotice] = useState("");
   const [askInput, setAskInput] = useState("");
   const [askMessages, setAskMessages] = useState<AskSiaMessage[]>([]);
   const [askLoading, setAskLoading] = useState(false);
@@ -377,7 +385,18 @@ export default function GameIntelligencePage() {
   async function handleAddToCard() {
     if (!opportunity) return;
     const result = await addToCardHelper(opportunity as Record<string, unknown>);
-    if (result.success) setAdded(true);
+    setAdded(true);
+    if (!result.success) {
+      setAddToCardNotice("Added to My Card. Performance tracking could not be started right now.");
+      return;
+    }
+
+    if (result.trackingStatus === "PARTIAL") {
+      setAddToCardNotice(result.warning || "Added to My Card. Performance tracking could not be fully started.");
+      return;
+    }
+
+    setAddToCardNotice("Added to My Card — tracking active.");
   }
 
   async function submitAsk(questionOverride?: string, moveTheLinePayload?: MoveTheLineResult | null) {
@@ -430,8 +449,8 @@ export default function GameIntelligencePage() {
         }),
       });
       setMoveResult(result);
-    } catch {
-      setMoveError("Move-the-Line is unavailable for this game right now.");
+    } catch (error) {
+      setMoveError(moveTheLineErrorMessage(error));
       setMoveResult(null);
     } finally {
       setMoveLoading(false);
@@ -619,6 +638,7 @@ export default function GameIntelligencePage() {
             <a href="#ask-sia"><Button variant="outline" className="h-10 border-white/10 bg-transparent text-white hover:bg-white/[0.05]">ASK SIA</Button></a>
             <a href="#advanced"><Button variant="outline" className="h-10 border-white/10 bg-transparent text-white hover:bg-white/[0.05]">ADVANCED</Button></a>
           </div>
+          {addToCardNotice ? <p className="mt-3 text-sm text-zinc-400">{addToCardNotice}</p> : null}
         </section>
 
         <section id="ask-sia" className="rounded-3xl border border-white/[0.08] bg-[#0B1119] p-6 md:p-8">

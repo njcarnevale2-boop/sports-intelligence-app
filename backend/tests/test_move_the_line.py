@@ -298,3 +298,21 @@ def test_api_route_works(monkeypatch):
     payload = response.json()
     assert payload["eventId"] == "evt-1"
     assert payload["hypothetical"]["status"] == "PLAYABLE"
+
+
+def test_api_route_preserves_error_detail(monkeypatch):
+    monkeypatch.setattr(
+        move_the_line_route,
+        "evaluate_move_the_line",
+        lambda event_id, hypothetical_spread, assumed_odds, snapshot_id=None: (_ for _ in ()).throw(
+            ValueError("Model spread context is unavailable for this game.")
+        ),
+    )
+
+    response = client.post(
+        "/api/move-the-line",
+        json={"eventId": "evt-1", "hypotheticalSpread": -2.0, "assumedOdds": -105},
+    )
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["detail"] == "Model spread context is unavailable for this game."

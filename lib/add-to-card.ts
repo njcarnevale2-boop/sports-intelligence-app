@@ -2,7 +2,7 @@
  * addToCard — shared helper for all "Add to My Card" entry points.
  *
  * Writes to localStorage AND fires POST /api/recommendation/snapshot so
- * CLV tracking begins immediately.  Snapshot failures are surfaced to the
+ * performance tracking begins immediately. Snapshot failures are surfaced to the
  * caller via the returned status object; they do NOT silently succeed.
  */
 
@@ -11,10 +11,23 @@ import { fetchJson } from "@/app/lib/api";
 export type SavedCardItem = Record<string, unknown>;
 
 const CARD_KEY = "sports-intelligence-card";
+const PARTIAL_TRACKING_WARNING = "Added to My Card. Performance tracking could not be fully started.";
+
+type SnapshotTrackingStatus = "COMPLETE" | "PARTIAL" | "FAILED";
+
+type SnapshotResponse = {
+  success: boolean;
+  snapshotRecorded?: boolean;
+  ledgerRecorded?: boolean;
+  trackingStatus?: SnapshotTrackingStatus;
+  snapshotId?: string;
+  reason?: string;
+  warning?: string;
+};
 
 export type AddToCardResult =
-  | { success: true; alreadyExists: boolean; snapshotId?: string }
-  | { success: false; error: string };
+  | { success: true; alreadyExists: boolean; snapshotId?: string; trackingStatus: "COMPLETE" | "PARTIAL"; warning?: string }
+  | { success: false; error: string; trackingStatus: "FAILED" };
 
 export async function addToCard(item: SavedCardItem): Promise<AddToCardResult> {
   const id = item.id as string | undefined;
@@ -44,7 +57,7 @@ export async function addToCard(item: SavedCardItem): Promise<AddToCardResult> {
 
   // Always attempt snapshot, even if already in localStorage (idempotent on backend)
   try {
-    const snap = await fetchJson<{ success: boolean; snapshotId?: string; reason?: string }>(
+    const snap = await fetchJson<SnapshotResponse>(
       "/api/recommendation/snapshot",
       {
         method: "POST",
@@ -91,14 +104,38 @@ export async function addToCard(item: SavedCardItem): Promise<AddToCardResult> {
         }),
       }
     );
-    if (!snap.success) {
-      return { success: false, error: snap.reason ?? "Snapshot creation failed" };
+
+    if (snap.trackingStatus === "PARTIAL" && snap.snapshotRecorded) {
+      return {
+        success: true,
+        alreadyExists,
+        snapshotId: snap.snapshotId,
+        trackingStatus: "PARTIAL",
+        warning: snap.warning || PARTIAL_TRACKING_WARNING,
+      };
     }
-    return { success: true, alreadyExists, snapshotId: snap.snapshotId };
+
+    if (!snap.success || snap.trackingStatus === "FAILED") {
+      return {
+        success: false,
+        trackingStatus: "FAILED",
+        error: snap.reason ?? "Performance tracking could not be started right now.",
+      };
+    }
+
+    return {
+      success: true,
+      alreadyExists,
+      snapshotId: snap.snapshotId,
+      trackingStatus: "COMPLETE",
+    };
   } catch (err) {
-    // Backend unavailable — card is still saved locally, but CLV tracking failed
-    const msg = err instanceof Error ? err.message : "Unknown error";
-    return { success: false, error: `Card saved locally but CLV tracking failed: ${msg}` };
+    // Backend unavailable — card is still saved locally, but tracking could not be started.
+    return {
+      success: false,
+      trackingStatus: "FAILED",
+      error: "Added to My Card. Performance tracking could not be started right now.",
+    };
   }
 }
 

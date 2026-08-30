@@ -289,6 +289,8 @@ export default function OpportunitiesPage() {
       const result = await addToCardWithSnapshot(opportunity as Record<string, unknown>);
       if (!result.success) {
         setSnapshotErrors((prev) => ({ ...prev, [opportunity.id]: result.error }));
+      } else if (result.trackingStatus === "PARTIAL") {
+        setSnapshotErrors((prev) => ({ ...prev, [opportunity.id]: result.warning || "Added to My Card. Performance tracking could not be fully started." }));
       } else {
         // Clear any prior error on re-add
         setSnapshotErrors((prev) => { const next = { ...prev }; delete next[opportunity.id]; return next; });

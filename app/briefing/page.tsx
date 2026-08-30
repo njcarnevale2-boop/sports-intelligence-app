@@ -219,9 +219,11 @@ export default function BriefingPage() {
     const result = await addToCardHelper(opp as Record<string, unknown>);
     setAddedId(opp.id);
     setSnapshotMsg(
-      result.success
-        ? "Added to My Card — tracking active."
-        : "Added to My Card, but performance tracking could not start."
+      !result.success
+        ? "Added to My Card, but performance tracking could not start right now."
+        : result.trackingStatus === "PARTIAL"
+          ? (result.warning || "Added to My Card. Performance tracking could not be fully started.")
+          : "Added to My Card — tracking active."
     );
   }
 

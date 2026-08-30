@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
 from app.services.recommendation_snapshot import (
     capture_closing_lines,
@@ -16,17 +16,34 @@ def create_snapshot(payload: dict):
     """Store an immutable recommendation snapshot when a bet is added to My Card."""
     snapshot_id = store_snapshot(payload)
     if not snapshot_id:
-        return {"success": False, "reason": "database unavailable"}
+        return {
+            "success": False,
+            "snapshotRecorded": False,
+            "ledgerRecorded": False,
+            "trackingStatus": "FAILED",
+            "reason": "database unavailable",
+        }
 
     decision_payload = dict(payload)
     decision_payload["sourceSnapshotId"] = snapshot_id
     try:
         decision = record_my_card_decision_from_payload(decision_payload)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "success": True,
+            "snapshotRecorded": True,
+            "ledgerRecorded": False,
+            "trackingStatus": "PARTIAL",
+            "snapshotId": snapshot_id,
+            "warning": "Added to My Card. Performance tracking could not be fully started.",
+            "trackingDetail": str(exc),
+        }
 
     return {
         "success": True,
+        "snapshotRecorded": True,
+        "ledgerRecorded": True,
+        "trackingStatus": "COMPLETE",
         "snapshotId": snapshot_id,
         "decisionId": decision["decisionId"],
         "decisionVersion": decision["decisionVersion"],
