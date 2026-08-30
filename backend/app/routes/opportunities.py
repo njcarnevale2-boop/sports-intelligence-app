@@ -1541,9 +1541,8 @@ def get_opportunity(
 # ---------------------------------------------------------
 
 
-@router.get("/games/{event_id}/opportunity")
-def get_game_best_opportunity(event_id: str):
-    """Return the top-ranked SIA opportunity for this game, or null if none qualifies."""
+def _get_game_best_opportunity_payload(event_id: str, *, include_best_by_market: bool) -> dict:
+    """Build game opportunity payload with optional cross-market research cards."""
     from app.services.games import service as games_service
 
     game_row = None
@@ -1570,16 +1569,19 @@ def get_game_best_opportunity(event_id: str):
         if str(o.get("eventId") or "") == str(event_id)
     ]
 
-    mixed_bundle = get_opportunities(limit=500, best_lines_only=True, include_experimental=True, week=target_week)
-    mixed_event_opportunities = [
-        o for o in mixed_bundle.get("opportunities", [])
-        if str(o.get("eventId") or "") == str(event_id)
-    ]
+    mixed_event_opportunities = []
+    if include_best_by_market:
+        mixed_bundle = get_opportunities(limit=500, best_lines_only=True, include_experimental=True, week=target_week)
+        mixed_event_opportunities = [
+            o for o in mixed_bundle.get("opportunities", [])
+            if str(o.get("eventId") or "") == str(event_id)
+        ]
 
     if not event_opportunities:
         return {
             "eventId": event_id,
             "opportunity": None,
+            "snapshotId": production_bundle.get("snapshotId"),
             "bestByMarket": {},
             "intelligenceReport": build_intelligence_report(
                 event_id=event_id,
@@ -1593,16 +1595,18 @@ def get_game_best_opportunity(event_id: str):
     opportunity = event_opportunities[0]
 
     best_by_market: dict[str, dict] = {}
-    for market in ["spread", "moneyline", "total"]:
-        per_market = [o for o in mixed_event_opportunities if str(o.get("market") or "") == market]
-        if not per_market:
-            continue
-        per_market.sort(key=lambda o: int(o.get("globalResearchRank") or o.get("rank") or 9999))
-        best_by_market[market] = per_market[0]
+    if include_best_by_market:
+        for market in ["spread", "moneyline", "total"]:
+            per_market = [o for o in mixed_event_opportunities if str(o.get("market") or "") == market]
+            if not per_market:
+                continue
+            per_market.sort(key=lambda o: int(o.get("globalResearchRank") or o.get("rank") or 9999))
+            best_by_market[market] = per_market[0]
 
     return {
         "eventId": event_id,
         "opportunity": opportunity,
+        "snapshotId": production_bundle.get("snapshotId"),
         "bestByMarket": best_by_market,
         "intelligenceReport": build_intelligence_report(
             event_id=event_id,
@@ -1611,6 +1615,12 @@ def get_game_best_opportunity(event_id: str):
             market_snapshot=market_snapshot,
         ),
     }
+
+
+@router.get("/games/{event_id}/opportunity")
+def get_game_best_opportunity(event_id: str):
+    """Return the top-ranked SIA opportunity for this game, or null if none qualifies."""
+    return _get_game_best_opportunity_payload(event_id, include_best_by_market=True)
 
 
 @router.get(

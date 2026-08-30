@@ -361,3 +361,47 @@ def test_no_det_boundary_completes_and_classifies_without_discontinuity():
         assert hypothetical["boundaryStatus"] == expected_boundary
         assert hypothetical["insidePlayableRange"] is expected_inside
         assert hypothetical["truePlayableTo"] == -2.0
+
+
+def test_base_context_uses_game_payload_without_live_snapshot_lookup(monkeypatch):
+    monkeypatch.setattr(
+        move_the_line,
+        "_live_snapshot_id",
+        lambda event_id: (_ for _ in ()).throw(AssertionError("_live_snapshot_id should not be called")),
+    )
+
+    monkeypatch.setattr(
+        move_the_line,
+        "_get_game_best_opportunity_payload",
+        lambda event_id, include_best_by_market=False: {
+            "snapshotId": "snap-from-production-bundle",
+            "opportunity": {
+                "pick": "NO +7",
+                "market": "spread",
+                "side": "away",
+                "point": 7.0,
+                "price": -105.0,
+                "recommendation": "STRONG BET",
+                "qualificationStatus": "QUALIFIED",
+                "currentWinProbability": 0.61,
+                "currentPushProbability": 0.03,
+                "currentLossProbability": 0.36,
+                "currentEV": 0.09,
+                "impliedProbability": 48.8,
+                "calibratedEdge": 0.122,
+                "edge": 12.2,
+                "fairLine": -1.0,
+                "truePlayableTo": -2.0,
+                "sportsIntelligenceScore": {"score": 84.0},
+                "confidence": 80.0,
+                "dataCompleteness": 96.0,
+                "marketIntelligence": {"score": 7.0, "booksMoving": 4, "steamBooks": 1, "consensus": 0.0},
+            },
+        },
+    )
+
+    base = move_the_line._build_base_context(event_id="evt-1", snapshot_id=None)
+    assert base["sourceMode"] == "LIVE"
+    assert base["sourceSnapshotId"] == "snap-from-production-bundle"
+    assert base["selection"] == "NO +7"
+    assert base["truePlayableTo"] == -2.0

@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 import pandas as pd
 
 from app.config import settings
-from app.routes.opportunities import get_game_best_opportunity, get_opportunities
+from app.routes.opportunities import _get_game_best_opportunity_payload, get_opportunities
 from app.runtime_paths import runtime_paths
 from app.services.decision_ledger import get_latest_decision_by_snapshot_id
 from app.services.games import service as games_service
@@ -124,7 +124,7 @@ def _live_snapshot_id(event_id: str) -> Optional[str]:
 
 def _build_base_context(event_id: str, snapshot_id: Optional[str]) -> Dict[str, Any]:
     source_mode = "LIVE"
-    source_snapshot_id = _live_snapshot_id(event_id)
+    source_snapshot_id: Optional[str] = None
 
     if snapshot_id:
         decision = get_latest_decision_by_snapshot_id(snapshot_id)
@@ -157,8 +157,9 @@ def _build_base_context(event_id: str, snapshot_id: Optional[str]) -> Dict[str, 
                 "marketIntelligence": {"score": 0.0, "booksMoving": 0, "steamBooks": 0, "consensus": 0.0},
             }
 
-    game_bundle = get_game_best_opportunity(event_id)
+    game_bundle = _get_game_best_opportunity_payload(event_id, include_best_by_market=False)
     opportunity = game_bundle.get("opportunity") or {}
+    source_snapshot_id = game_bundle.get("snapshotId") or source_snapshot_id
 
     if not opportunity:
         raise ValueError("No qualifying opportunity available for this game.")
