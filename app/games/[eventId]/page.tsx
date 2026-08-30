@@ -447,7 +447,7 @@ export default function GameIntelligencePage() {
           assumedOdds: oddsToUse,
           snapshotId,
         }),
-      });
+      }, 20000);
       setMoveResult(result);
     } catch (error) {
       setMoveError(moveTheLineErrorMessage(error));

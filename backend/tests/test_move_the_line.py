@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from typing import Optional
 
 from fastapi.testclient import TestClient
+import pytest
 
 from app.main import app
 from app.services import move_the_line
@@ -316,3 +318,46 @@ def test_api_route_preserves_error_detail(monkeypatch):
     assert response.status_code == 400
     payload = response.json()
     assert payload["detail"] == "Model spread context is unavailable for this game."
+
+
+def test_no_det_boundary_completes_and_classifies_without_discontinuity():
+    event_id = "c1d3fcec25aaeb06ebd2244d33d338e0"  # NO @ DET in canonical local data
+
+    try:
+        baseline = move_the_line.evaluate_move_the_line(
+            event_id=event_id,
+            hypothetical_spread=3.0,
+            assumed_odds=-105,
+        )
+    except ValueError as exc:
+        pytest.skip(f"NO @ DET baseline unavailable in this local dataset: {exc}")
+
+    assert baseline["current"]["selection"].startswith("NO ")
+    assert baseline["current"]["spread"] == 7.0
+    assert baseline["current"]["truePlayableTo"] == -2.0
+
+    cases = [
+        (3.0, "PLAYABLE", "INSIDE", True),
+        (-1.5, "PLAYABLE", "INSIDE", True),
+        (-2.0, "PLAYABLE", "AT_BOUNDARY", True),
+        (-2.5, "PASS", "OUTSIDE", False),
+    ]
+
+    for spread, expected_status, expected_boundary, expected_inside in cases:
+        start = time.perf_counter()
+        result = move_the_line.evaluate_move_the_line(
+            event_id=event_id,
+            hypothetical_spread=spread,
+            assumed_odds=-105,
+        )
+        elapsed = time.perf_counter() - start
+
+        # Guard against pathological runtime while allowing deterministic cold-cache cost.
+        assert elapsed < 20.0
+
+        hypothetical = result["hypothetical"]
+        assert hypothetical["hypotheticalSpread"] == spread
+        assert hypothetical["status"] == expected_status
+        assert hypothetical["boundaryStatus"] == expected_boundary
+        assert hypothetical["insidePlayableRange"] is expected_inside
+        assert hypothetical["truePlayableTo"] == -2.0
