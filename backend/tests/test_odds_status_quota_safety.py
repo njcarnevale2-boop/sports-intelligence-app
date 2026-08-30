@@ -240,6 +240,189 @@ def test_get_odds_status_exposes_latest_core_request_cost_and_cumulative_usage(m
     assert out["coreOddsCostVerificationStatus"] == "UNKNOWN"
 
 
+def _setup_snapshot_rows(runtime_root, count: int) -> None:
+    db_path = runtime_root / "database" / "nfl_model.duckdb"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    con = duckdb.connect(str(db_path))
+    try:
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS odds_snapshots (
+                fetched_at TIMESTAMP,
+                api_event_id VARCHAR,
+                commence_time TIMESTAMP,
+                home_team VARCHAR,
+                away_team VARCHAR,
+                home_code VARCHAR,
+                away_code VARCHAR,
+                bookmaker_key VARCHAR,
+                bookmaker_title VARCHAR,
+                market_key VARCHAR,
+                outcome_name VARCHAR,
+                outcome_code VARCHAR,
+                point DOUBLE,
+                price DOUBLE,
+                implied_prob DOUBLE,
+                snapshot_type VARCHAR,
+                source VARCHAR
+            )
+            """
+        )
+        fetched_at = datetime(2026, 8, 29, 20, 9, 52)
+        for i in range(count):
+            con.execute(
+                "INSERT INTO odds_snapshots VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                [
+                    fetched_at,
+                    f"evt-{i}",
+                    fetched_at,
+                    "BUF",
+                    "KC",
+                    "BUF",
+                    "KC",
+                    "draftkings",
+                    "DraftKings",
+                    "spreads",
+                    "BUF",
+                    "home",
+                    -2.5,
+                    -110.0,
+                    0.5238,
+                    "current",
+                    "the_odds_api",
+                ],
+            )
+        con.commit()
+    finally:
+        con.close()
+
+
+def test_get_odds_status_snapshot_count_with_refresh_telemetry_data(monkeypatch, tmp_path):
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+    _setup_snapshot_rows(runtime_root, count=7)
+
+    db_path = runtime_root / "database" / "nfl_model.duckdb"
+    con = duckdb.connect(str(db_path))
+    try:
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS odds_refresh_run_telemetry (
+                run_at TIMESTAMP,
+                refresh_status VARCHAR,
+                skip_reason VARCHAR,
+                warning_code VARCHAR,
+                target_regular_week INTEGER,
+                expected_in_scope_events INTEGER,
+                provider_request_skipped BOOLEAN,
+                quota_guard_allowed BOOLEAN,
+                quota_guard_reason VARCHAR,
+                provider_events_returned INTEGER,
+                events_rejected_by_window INTEGER,
+                events_rejected_by_schedule_match INTEGER,
+                events_rejected_by_team_match INTEGER,
+                events_rejected_by_date_match INTEGER,
+                events_accepted INTEGER,
+                snapshot_rows_inserted INTEGER
+            )
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO odds_refresh_run_telemetry VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            [
+                datetime(2026, 8, 29, 20, 10, 0),
+                "COMPLETED",
+                None,
+                None,
+                1,
+                16,
+                False,
+                True,
+                None,
+                16,
+                0,
+                0,
+                0,
+                0,
+                16,
+                950,
+            ],
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    out = odds_status.get_odds_status()
+
+    assert out["snapshotCount"] == 7
+    assert out["coreRefreshRun"]["status"] == "COMPLETED"
+    assert out["coreRefreshRun"]["quotaGuardAllowed"] is True
+
+
+def test_get_odds_status_snapshot_count_when_refresh_telemetry_schema_is_unavailable(monkeypatch, tmp_path):
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+    _setup_snapshot_rows(runtime_root, count=5)
+
+    # Simulate an older telemetry table shape without quota guard columns.
+    db_path = runtime_root / "database" / "nfl_model.duckdb"
+    con = duckdb.connect(str(db_path))
+    try:
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS odds_refresh_run_telemetry (
+                run_at TIMESTAMP,
+                refresh_status VARCHAR,
+                skip_reason VARCHAR,
+                warning_code VARCHAR,
+                target_regular_week INTEGER,
+                expected_in_scope_events INTEGER,
+                provider_request_skipped BOOLEAN,
+                provider_events_returned INTEGER,
+                events_rejected_by_window INTEGER,
+                events_rejected_by_schedule_match INTEGER,
+                events_rejected_by_team_match INTEGER,
+                events_rejected_by_date_match INTEGER,
+                events_accepted INTEGER,
+                snapshot_rows_inserted INTEGER
+            )
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO odds_refresh_run_telemetry VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            [
+                datetime(2026, 8, 29, 20, 12, 0),
+                "COMPLETED",
+                None,
+                None,
+                1,
+                16,
+                False,
+                16,
+                0,
+                0,
+                0,
+                0,
+                16,
+                950,
+            ],
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    out = odds_status.get_odds_status()
+
+    assert out["snapshotCount"] == 5
+    assert out["coreRefreshRun"]["status"] == "COMPLETED"
+    assert out["coreRefreshRun"]["quotaGuardAllowed"] is None
+    assert out["coreRefreshRun"]["quotaGuardReason"] is None
+
+
 def test_exact_verified_shape_permits_request_when_quota_healthy(monkeypatch, tmp_path):
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))

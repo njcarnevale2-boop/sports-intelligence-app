@@ -787,30 +787,43 @@ def get_odds_status() -> Dict[str, Any]:
             "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'odds_refresh_run_telemetry'"
         ).fetchone()[0] > 0
         if has_refresh_telemetry:
-            latest_refresh_telemetry = con.execute(
-                """
-                SELECT
-                    run_at,
-                    refresh_status,
-                    skip_reason,
-                    warning_code,
-                    target_regular_week,
-                    expected_in_scope_events,
-                    provider_request_skipped,
-                    quota_guard_allowed,
-                    quota_guard_reason,
-                    provider_events_returned,
-                    events_rejected_by_window,
-                    events_rejected_by_schedule_match,
-                    events_rejected_by_team_match,
-                    events_rejected_by_date_match,
-                    events_accepted,
-                    snapshot_rows_inserted
-                FROM odds_refresh_run_telemetry
-                ORDER BY run_at DESC
-                LIMIT 1
-                """
-            ).fetchone()
+            try:
+                refresh_cols = {
+                    str(row[0]).lower()
+                    for row in con.execute(
+                        "SELECT column_name FROM information_schema.columns WHERE table_name = 'odds_refresh_run_telemetry'"
+                    ).fetchall()
+                }
+
+                quota_guard_allowed_expr = "quota_guard_allowed" if "quota_guard_allowed" in refresh_cols else "NULL AS quota_guard_allowed"
+                quota_guard_reason_expr = "quota_guard_reason" if "quota_guard_reason" in refresh_cols else "NULL AS quota_guard_reason"
+
+                latest_refresh_telemetry = con.execute(
+                    f"""
+                    SELECT
+                        run_at,
+                        refresh_status,
+                        skip_reason,
+                        warning_code,
+                        target_regular_week,
+                        expected_in_scope_events,
+                        provider_request_skipped,
+                        {quota_guard_allowed_expr},
+                        {quota_guard_reason_expr},
+                        provider_events_returned,
+                        events_rejected_by_window,
+                        events_rejected_by_schedule_match,
+                        events_rejected_by_team_match,
+                        events_rejected_by_date_match,
+                        events_accepted,
+                        snapshot_rows_inserted
+                    FROM odds_refresh_run_telemetry
+                    ORDER BY run_at DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+            except Exception:
+                latest_refresh_telemetry = None
 
         # Determine staleness
         if latest_ts is None:
