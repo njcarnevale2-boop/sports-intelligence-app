@@ -70,14 +70,130 @@ test("plain-language explanation is deterministic and includes model, market, va
       market: {
         homeSpread: -7,
       },
+      spreadAnalysis: {
+        edgePoints: 10.18,
+      },
     },
     "Weak"
   );
 
   assert.match(text, /SIA projects NO 26\.1-DET 22\.9/);
   assert.match(text, /market currently has DET favored by 7\.0/);
+  assert.match(text, /That is a 10\.2-point disagreement versus the current spread/);
   assert.match(text, /creating a 26\.2-point model edge on NO \+7/);
   assert.match(text, /Sportsbooks have not yet strongly confirmed the model's view/);
+});
+
+test("disagreement sentence uses canonical spreadAnalysis.edgePoints not presenter arithmetic", () => {
+  const text = buildPrimaryWhySia(
+    {
+      ...baseOpportunity,
+      pick: "DOG +4.5",
+      edge: 11.4,
+    },
+    {
+      awayTeam: "DOG",
+      homeTeam: "FAV",
+      model: {
+        // Intentionally mismatch these values to prove they are not used for disagreement magnitude.
+        marginHome: -0.5,
+        projectedScore: {
+          away: 23.0,
+          home: 22.5,
+        },
+      },
+      market: {
+        homeSpread: -7.0,
+      },
+      spreadAnalysis: {
+        edgePoints: 9.75,
+      },
+    },
+    "Mixed"
+  );
+
+  assert.match(text, /That is a 9\.8-point disagreement versus the current spread/);
+  assert.doesNotMatch(text, /6\.5-point disagreement/);
+});
+
+test("market orientation copy handles away underdog", () => {
+  const text = buildPrimaryWhySia(
+    { ...baseOpportunity, pick: "AWY +7" },
+    {
+      awayTeam: "AWY",
+      homeTeam: "HME",
+      model: { marginHome: -2.0, projectedScore: { away: 24.0, home: 22.0 } },
+      market: { homeSpread: -7.0 },
+      spreadAnalysis: { edgePoints: 5.0 },
+    },
+    "Weak"
+  );
+
+  assert.match(text, /HME favored by 7\.0/);
+});
+
+test("market orientation copy handles home underdog", () => {
+  const text = buildPrimaryWhySia(
+    { ...baseOpportunity, pick: "HME +3" },
+    {
+      awayTeam: "AWY",
+      homeTeam: "HME",
+      model: { marginHome: 1.0, projectedScore: { away: 20.0, home: 21.0 } },
+      market: { homeSpread: 3.0 },
+      spreadAnalysis: { edgePoints: 4.0 },
+    },
+    "Mixed"
+  );
+
+  assert.match(text, /AWY favored by 3\.0/);
+});
+
+test("market orientation copy handles away favorite", () => {
+  const text = buildPrimaryWhySia(
+    { ...baseOpportunity, pick: "AWY -2.5" },
+    {
+      awayTeam: "AWY",
+      homeTeam: "HME",
+      model: { marginHome: 0.2, projectedScore: { away: 21.5, home: 21.3 } },
+      market: { homeSpread: 2.5 },
+      spreadAnalysis: { edgePoints: 2.7 },
+    },
+    "Strong"
+  );
+
+  assert.match(text, /AWY favored by 2\.5/);
+});
+
+test("market orientation copy handles home favorite", () => {
+  const text = buildPrimaryWhySia(
+    { ...baseOpportunity, pick: "HME -4" },
+    {
+      awayTeam: "AWY",
+      homeTeam: "HME",
+      model: { marginHome: -4.5, projectedScore: { away: 17.0, home: 21.5 } },
+      market: { homeSpread: -4.0 },
+      spreadAnalysis: { edgePoints: 0.5 },
+    },
+    "Strong"
+  );
+
+  assert.match(text, /HME favored by 4\.0/);
+});
+
+test("market orientation copy handles near-zero spread as pick'em", () => {
+  const text = buildPrimaryWhySia(
+    { ...baseOpportunity, pick: "HME PK" },
+    {
+      awayTeam: "AWY",
+      homeTeam: "HME",
+      model: { marginHome: 0.0, projectedScore: { away: 20.0, home: 20.0 } },
+      market: { homeSpread: 0.00001 },
+      spreadAnalysis: { edgePoints: 0.0 },
+    },
+    "Mixed"
+  );
+
+  assert.match(text, /a pick'em/);
 });
 
 test("weak market confirmation warning appears only for bet recommendations", () => {
@@ -125,4 +241,32 @@ test("market confirmation label mapping is user-friendly", () => {
   assert.equal(getMarketConfirmationLabel(7.5), "Strong");
   assert.equal(getMarketConfirmationLabel(5.5), "Mixed");
   assert.equal(getMarketConfirmationLabel(3.2), "Weak");
+});
+
+test("primary decision uses canonical Playable To whenever value is present", () => {
+  const withStatusMissing = buildPrimaryDecisionSnapshot(
+    {
+      ...baseOpportunity,
+      truePlayableTo: 5.5,
+      truePlayableToStatus: undefined,
+    },
+    { score: 80.0, recommendation: "BET" },
+    "Moderate",
+    "Mixed"
+  );
+
+  assert.equal(withStatusMissing.playableTo, "NO +5.5");
+
+  const withoutValue = buildPrimaryDecisionSnapshot(
+    {
+      ...baseOpportunity,
+      truePlayableTo: null,
+      truePlayableToStatus: "UNAVAILABLE",
+    },
+    { score: 80.0, recommendation: "BET" },
+    "Moderate",
+    "Mixed"
+  );
+
+  assert.equal(withoutValue.playableTo, "See Game Intelligence");
 });

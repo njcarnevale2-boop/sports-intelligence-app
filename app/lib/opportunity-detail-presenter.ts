@@ -44,6 +44,9 @@ type PresenterProjection = {
   market: {
     homeSpread: number;
   };
+  spreadAnalysis?: {
+    edgePoints?: number;
+  };
 };
 
 function formatOdds(price: number) {
@@ -88,8 +91,15 @@ export function buildPrimaryWhySia(
     ? `The market currently has ${marketSpreadText(projection.homeTeam, projection.awayTeam, projection.market.homeSpread)}.`
     : `The market implies ${opp.impliedProbability.toFixed(1)}% at the current price.`;
 
+  const canonicalSpreadDisagreement =
+    projection?.spreadAnalysis?.edgePoints != null && Number.isFinite(projection.spreadAnalysis.edgePoints)
+      ? Math.abs(projection.spreadAnalysis.edgePoints)
+      : null;
+
   const disagreement = projection
-    ? `That is a ${Math.abs(projection.model.marginHome - projection.market.homeSpread).toFixed(1)}-point disagreement versus the current spread, creating a ${opp.edge.toFixed(1)}-point model edge on ${opp.pick}.`
+    ? canonicalSpreadDisagreement != null
+      ? `That is a ${canonicalSpreadDisagreement.toFixed(1)}-point disagreement versus the current spread, creating a ${opp.edge.toFixed(1)}-point model edge on ${opp.pick}.`
+      : `That creates a ${opp.edge.toFixed(1)}-point model edge on ${opp.pick}.`
     : `That creates a ${opp.edge.toFixed(1)}-point model edge on ${opp.pick}.`;
 
   const value = opp.evPerDollar >= 0.08
@@ -177,9 +187,12 @@ export function buildPrimaryDecisionSnapshot(
   marketConfirmation: string
 ) {
   const line = `${opp.pick}`;
+  const playableToValue = opp.truePlayableTo;
+  const hasCanonicalPlayableTo =
+    playableToValue != null && Number.isFinite(playableToValue);
   const playableTo =
-    opp.truePlayableToStatus === "AVAILABLE" && opp.truePlayableTo != null
-      ? `${opp.pick.split(" ")[0]} ${formatLine(opp.truePlayableTo)}`
+    hasCanonicalPlayableTo
+      ? `${opp.pick.split(" ")[0]} ${formatLine(playableToValue)}`
       : "See Game Intelligence";
 
   return {
