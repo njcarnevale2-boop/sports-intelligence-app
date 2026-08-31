@@ -743,7 +743,7 @@ export default function GameIntelligencePage() {
           </div>
         </section>
 
-        <section className="rounded-3xl border border-white/[0.08] bg-[#0B1119] p-6 md:p-8">
+        <section id="move-the-line" className="rounded-3xl border border-white/[0.08] bg-[#0B1119] p-6 md:p-8">
           <p className="text-xs uppercase tracking-[0.2em] text-zinc-600">Move The Line</p>
           <p className="mt-2 text-sm text-zinc-400">Test a hypothetical spread using SIA's existing probability engine while holding price constant.</p>
 

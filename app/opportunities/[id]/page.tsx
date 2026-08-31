@@ -6,11 +6,17 @@ import Link from "next/link";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import ExecutiveSummary from "@/components/executive-summary";
 import SportsIntelligenceScoreCard from "@/components/sports-intelligence-score-card";
 import { fetchJson } from "../../lib/api";
 import { trackAnalyticsEvent } from "../../lib/analytics";
 import { addToCard as addToCardWithSnapshot } from "@/lib/add-to-card";
+import {
+  buildDecisionBoxes,
+  buildPrimaryDecisionSnapshot,
+  buildPrimaryWhySia,
+  getMarketConfirmationLabel,
+  shouldShowMarketDisagreementExplanation,
+} from "../../lib/opportunity-detail-presenter";
 import {
   formatRestAdvantage,
   formatRestDays,
@@ -115,6 +121,8 @@ type Opportunity = {
   alternateBooks?: AlternateBook[];
 
   injuryContext?: InjuryContext;
+  truePlayableTo?: number | null;
+  truePlayableToStatus?: "AVAILABLE" | "UNAVAILABLE";
 };
 
 type DecisionTimeline = {
@@ -244,51 +252,6 @@ function marketAppearance(score: number) {
 
 // ── Deterministic explanation helpers ───────────────────────────────────────
 
-function buildWhySIALikes(opp: Opportunity, weatherStatus: { dataStatus?: string } | null): string {
-  const { pick, modelProbability, impliedProbability, edge, evPerDollar, sportsIntelligenceScore: si, marketIntelligence: mi } = opp;
-  const prob = `SIA gives ${pick} a ${modelProbability.toFixed(1)}% win probability compared with the market's ${impliedProbability.toFixed(1)}% implied probability, creating a ${edge.toFixed(1)}-point model edge.`;
-  const ev = evPerDollar >= 0.08 ? ` The current price generates ${evPerDollar >= 0.20 ? "strong" : "positive"} expected value (+$${evPerDollar.toFixed(3)} per dollar wagered).` : "";
-  let mkt = "";
-  if (mi.score >= 7) mkt = " Market movement has confirmed the model's direction.";
-  else if (mi.score >= 5) mkt = " Market confirmation is mixed, which tempers overall conviction.";
-  else mkt = " The market has not yet confirmed the model's direction.";
-  const rec = si.recommendation;
-  const tier = rec === "Elite Bet" || rec === "Strong Bet" ? ` This keeps the recommendation at ${rec}.` : ` The overall setup is graded as a ${rec}.`;
-  return `${prob}${ev}${mkt}${tier}`;
-}
-
-function buildSupportingSignals(opp: Opportunity): string[] {
-  const signals: string[] = [];
-  if (opp.edge >= 20) signals.push("Exceptional model edge over the current market");
-  else if (opp.edge >= 12) signals.push("Strong model edge over the current market");
-  else if (opp.edge >= 5) signals.push("Positive model edge is present");
-  if (opp.evPerDollar >= 0.20) signals.push("Strong expected value at the current price");
-  else if (opp.evPerDollar >= 0.08) signals.push("Positive expected value at the current price");
-  if (opp.confidence >= 80) signals.push("High model confidence");
-  else if (opp.confidence >= 65) signals.push("Solid model confidence");
-  const mi = opp.marketIntelligence;
-  if (mi.score >= 7) signals.push("Sportsbook movement confirms the model");
-  else if (mi.score >= 5 && mi.consensus >= 60) signals.push("Directional market agreement present");
-  if (opp.dataCompleteness >= 85) signals.push("Strong underlying data coverage");
-  const injSev = opp.injuryContext?.severity?.toLowerCase() ?? "neutral";
-  if (injSev === "neutral" || injSev === "small") signals.push("No material injury concern");
-  return signals.slice(0, 4);
-}
-
-function buildCautionSignals(opp: Opportunity, weatherStatus: { dataStatus?: string } | null): string[] {
-  const cautions: string[] = [];
-  const mi = opp.marketIntelligence;
-  if (mi.score < 5) cautions.push("The market has not confirmed the model's direction");
-  else if (mi.score < 7) cautions.push("Market confirmation is mixed");
-  if (weatherStatus?.dataStatus === "UNAVAILABLE") cautions.push("Game-time weather forecast not yet available");
-  if (opp.dataCompleteness < 70) cautions.push("Incomplete underlying data reduces conviction");
-  const injSev = opp.injuryContext?.severity?.toLowerCase() ?? "neutral";
-  if (injSev === "moderate") cautions.push("Injury context is a moderate concern");
-  else if (injSev === "significant" || injSev === "major") cautions.push("Injury context is a material headwind");
-  if (opp.edge < 5) cautions.push("Model edge is modest");
-  return cautions.slice(0, 4);
-}
-
 function buildMarketScoreExplanation(market: MarketIntelligence): string {
   const { score, booksMoving, booksTracked, steamBooks, consensus, snapshots } = market;
   const level = score >= 7 ? "strong" : score >= 5 ? "moderate" : "limited";
@@ -416,9 +379,6 @@ export default function OpportunityAnalysisPage() {
   const [added, setAdded] = useState(false);
   const [snapshotError, setSnapshotError] = useState("");
   const [weatherStatus, setWeatherStatus] = useState<{ dataStatus?: string; lastUpdated?: string | null } | null>(null);
-  const [showFullExplainability, setShowFullExplainability] = useState(false);
-  const [showMarketDetails, setShowMarketDetails] = useState(false);
-
   useEffect(() => {
     async function loadData() {
       try {
@@ -608,10 +568,6 @@ export default function OpportunityAnalysisPage() {
     );
   }
 
-  const probabilityGap =
-    opportunity.modelProbability -
-    opportunity.impliedProbability;
-
   const alternateBooks =
     opportunity.alternateBooks ??
     [];
@@ -632,6 +588,22 @@ export default function OpportunityAnalysisPage() {
   const contextWeek = context?.week;
   const contextAwayTeam = context?.awayTeam ?? opportunity.awayTeam;
   const contextHomeTeam = context?.homeTeam ?? opportunity.homeTeam;
+  const marketConfirmation = getMarketConfirmationLabel(market.score);
+  const primaryWhy = buildPrimaryWhySia(opportunity, projection, marketConfirmation);
+  const decisionBoxes = buildDecisionBoxes(opportunity, weatherStatus);
+  const stakeRecommendation =
+    executiveAnalysis?.stakeRecommendation?.trim() ||
+    "No canonical stake guidance available right now.";
+  const primaryDecision = buildPrimaryDecisionSnapshot(
+    opportunity,
+    sportsScore,
+    stakeRecommendation,
+    marketConfirmation
+  );
+  const showDisagreementExplanation = shouldShowMarketDisagreementExplanation(
+    sportsScore.recommendation,
+    market.score
+  );
 
   return (
     <main className="min-h-screen bg-[#070A0F] text-white">
@@ -680,171 +652,136 @@ export default function OpportunityAnalysisPage() {
           </div>
         </div>
 
-        {/* HERO */}
+        {/* PRIMARY DECISION HERO */}
 
-        <section className="mt-12">
-
-          <p className="text-xs font-medium uppercase tracking-[0.2em] text-zinc-600">
-            {opportunity.matchup}
-          </p>
-
-          <div className="mt-4 flex flex-col gap-8 lg:flex-row lg:items-end lg:justify-between">
-
+        <section className="mt-10 rounded-3xl border border-emerald-400/20 bg-[linear-gradient(135deg,#111A18_0%,#0C121A_100%)] p-7 lg:p-9">
+          <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
-              <h1 className="text-5xl font-semibold tracking-[-0.04em] md:text-7xl">
-                {opportunity.pick}
-              </h1>
-
-              <div className="mt-4 flex flex-wrap items-center gap-3">
-
-                <Badge className="bg-white text-black hover:bg-white">
-                  Best Line
-                </Badge>
-
-                <span className="text-sm text-zinc-400">
-                  {
-                    opportunity.book
-                  }
-                </span>
-
-                <span className="text-sm text-zinc-600">
-                  {formatOdds(
-                    opportunity.price
-                  )}
-                </span>
-              </div>
+              <p className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">{opportunity.matchup}</p>
+              <p className="mt-2 text-xs uppercase tracking-[0.2em] text-zinc-600">Model Rank #{opportunity.rank}</p>
+              <h1 className="mt-4 text-4xl font-semibold tracking-[-0.03em] md:text-6xl">{primaryDecision.betLinePrice}</h1>
+              <p className="mt-3 text-xs uppercase tracking-[0.18em] text-zinc-600">Best Sportsbook: {primaryDecision.bestSportsbook}</p>
             </div>
 
-            <div className="flex flex-wrap gap-10">
-
-              <div>
-                <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700">
-                  SI Score
-                </p>
-
-                <p className="mt-1 text-3xl font-semibold text-emerald-400">
-                  {sportsScore.score.toFixed(
-                    1
-                  )}
-                  <span className="text-sm text-zinc-600">
-                    /100
-                  </span>
-                </p>
-              </div>
-
-              <div>
-                <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700 inline-flex items-center">
-                  Confidence
-                  <Tooltip term="Confidence" />
-                </p>
-
-                <p className="mt-1 text-3xl font-semibold">
-                  {
-                    opportunity.confidence
-                  }<span className="text-xl text-zinc-500">/100</span>
-                </p>
-              </div>
-
-              <div>
-                <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700 inline-flex items-center">
-                  Model Edge
-                  <Tooltip term="Model Edge" />
-                </p>
-
-                <p className="mt-1 text-3xl font-semibold text-emerald-400">
-                  +
-                  {opportunity.edge.toFixed(
-                    1
-                  )}
-                  %
-                </p>
-              </div>
-
-              <div>
-                <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-700 inline-flex items-center">
-                  EV / $1
-                  <Tooltip term="EV" />
-                </p>
-
-                <p className="mt-1 text-3xl font-semibold">
-                  +$
-                  {opportunity.evPerDollar.toFixed(
-                    3
-                  )}
-                </p>
-              </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="outline" className="border-emerald-400/30 bg-emerald-400/[0.1] text-emerald-300">{primaryDecision.recommendation}</Badge>
+              <Badge variant="outline" className="border-white/[0.08] bg-white/[0.03] text-zinc-300">SI {sportsScore.grade}</Badge>
+              <Badge variant="outline" className={`${marketStyle.border} ${marketStyle.text}`}>Market {market.grade}</Badge>
             </div>
           </div>
-        </section>
 
-        {/* WHY SIA LIKES THIS BET */}
+          <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+              <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">SIA Decision</p>
+              <p className="mt-2 text-xl font-semibold text-zinc-100">{primaryDecision.recommendation}</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+              <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">SI Score</p>
+              <p className="mt-2 text-xl font-semibold text-emerald-400">{primaryDecision.siScore.toFixed(1)} <span className="text-sm text-zinc-600">/100</span></p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+              <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">SIA Win Probability</p>
+              <p className="mt-2 text-xl font-semibold text-zinc-100">{primaryDecision.siaWinProbability.toFixed(1)}%</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+              <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">Market Implied Probability</p>
+              <p className="mt-2 text-xl font-semibold text-zinc-100">{primaryDecision.marketImpliedProbability.toFixed(1)}%</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+              <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">Line</p>
+              <p className="mt-2 text-base font-semibold text-zinc-100">{primaryDecision.line}</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+              <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">Price</p>
+              <p className="mt-2 text-base font-semibold text-zinc-100">{primaryDecision.price}</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+              <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">Playable To</p>
+              <p className="mt-2 text-base font-semibold text-zinc-100">{primaryDecision.playableTo}</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+              <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">Stake Recommendation</p>
+              <p className="mt-2 text-base font-semibold text-zinc-100">{primaryDecision.stakeRecommendation}</p>
+            </div>
+          </div>
 
-        <section className="mt-10 rounded-3xl border border-white/[0.08] bg-[#0B1119] p-7 lg:p-8">
-          <p className="text-[11px] uppercase tracking-[0.22em] text-emerald-400">Why SIA Likes This Bet</p>
-          <p className="mt-4 text-base leading-8 text-zinc-300">
-            {buildWhySIALikes(opportunity, weatherStatus)}
-          </p>
-
-          <div className="mt-6 grid gap-4 sm:grid-cols-2">
-            {/* Supporting signals */}
-            {buildSupportingSignals(opportunity).length > 0 && (
-              <div className="rounded-2xl border border-emerald-400/15 bg-emerald-400/[0.04] p-5">
-                <p className="text-[10px] uppercase tracking-[0.2em] text-emerald-400">Supporting This Bet</p>
-                <ul className="mt-3 space-y-2">
-                  {buildSupportingSignals(opportunity).map((s) => (
-                    <li key={s} className="flex items-start gap-2 text-sm text-zinc-300">
-                      <span className="mt-0.5 text-emerald-400">✓</span>
-                      {s}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            {/* Caution signals */}
-            {buildCautionSignals(opportunity, weatherStatus).length > 0 && (
-              <div className="rounded-2xl border border-amber-400/15 bg-amber-400/[0.04] p-5">
-                <p className="text-[10px] uppercase tracking-[0.2em] text-amber-400">What Holds It Back</p>
-                <ul className="mt-3 space-y-2">
-                  {buildCautionSignals(opportunity, weatherStatus).map((s) => (
-                    <li key={s} className="flex items-start gap-2 text-sm text-zinc-300">
-                      <span className="mt-0.5 text-amber-400">–</span>
-                      {s}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
+          <div className="mt-5 rounded-2xl border border-white/10 bg-black/20 p-4">
+            <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">Market Confirmation</p>
+            <p className="mt-2 text-sm text-zinc-300">{primaryDecision.marketConfirmation}</p>
           </div>
 
           <div className="mt-6 flex flex-wrap gap-3">
-            <button
+            <Button
               onClick={addToCard}
               disabled={added}
-              className={`rounded-xl border px-5 py-2.5 text-sm font-medium transition ${added ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300" : "border-white/10 bg-white text-black hover:bg-zinc-200"}`}
+              className={added ? "h-11 bg-emerald-400/10 px-6 text-emerald-300" : "h-11 bg-white px-6 text-black hover:bg-zinc-200"}
             >
               {added ? "Added to My Card ✓" : "Add to My Card"}
-            </button>
+            </Button>
+            <Link href={`/games/${opportunity.eventId}#move-the-line`}>
+              <Button variant="outline" className="h-11 border-white/10 bg-transparent px-6 text-white hover:bg-white/[0.05]">Move the Line</Button>
+            </Link>
+            <Link href={`/games/${opportunity.eventId}#ask-sia`}>
+              <Button variant="outline" className="h-11 border-white/10 bg-transparent px-6 text-white hover:bg-white/[0.05]">Ask SIA</Button>
+            </Link>
             <Link href="/my-card">
-              <button className="rounded-xl border border-white/10 bg-transparent px-5 py-2.5 text-sm text-white transition hover:bg-white/[0.05]">
-                Review My Card →
-              </button>
+              <Button variant="outline" className="h-11 border-white/10 bg-transparent px-6 text-white hover:bg-white/[0.05]">Review My Card</Button>
             </Link>
           </div>
           {snapshotError && <p className="mt-2 text-xs text-amber-400">{snapshotError}</p>}
         </section>
 
-        {/* SPORTS INTELLIGENCE SCORE */}
+        {/* WHY SIA LIKES IT */}
 
-        <section className="mt-8">
+        <section id="why" className="mt-8 rounded-3xl border border-white/[0.08] bg-[#0B1119] p-7 lg:p-8">
+          <p className="text-[11px] uppercase tracking-[0.22em] text-emerald-400">Why SIA Likes It</p>
+          <p className="mt-4 text-base leading-8 text-zinc-300">{primaryWhy}</p>
+          {showDisagreementExplanation && (
+            <p className="mt-4 rounded-2xl border border-amber-400/25 bg-amber-400/[0.06] px-4 py-3 text-sm text-amber-200">
+              SIA strongly disagrees with the market. Sportsbooks have not yet confirmed the model&apos;s view.
+            </p>
+          )}
+        </section>
 
-          <SportsIntelligenceScoreCard
-            score={sportsScore}
-          />
+        {/* THREE DECISION BOXES */}
 
-          {/* COMPACT SCORE BREAKDOWN */}
+        <section className="mt-6 grid gap-4 lg:grid-cols-3">
+          <article className="rounded-2xl border border-emerald-400/20 bg-emerald-400/[0.05] p-5">
+            <p className="text-[10px] uppercase tracking-[0.2em] text-emerald-300">Why Bet It</p>
+            <ul className="mt-3 space-y-2 text-sm text-zinc-200">
+              {decisionBoxes.whyBetIt.map((item) => (
+                <li key={item}>• {item}</li>
+              ))}
+            </ul>
+          </article>
+          <article className="rounded-2xl border border-amber-400/20 bg-amber-400/[0.05] p-5">
+            <p className="text-[10px] uppercase tracking-[0.2em] text-amber-300">What Could Go Wrong</p>
+            <ul className="mt-3 space-y-2 text-sm text-zinc-200">
+              {decisionBoxes.whatCouldGoWrong.map((item) => (
+                <li key={item}>• {item}</li>
+              ))}
+            </ul>
+          </article>
+          <article className="rounded-2xl border border-sky-400/20 bg-sky-400/[0.05] p-5">
+            <p className="text-[10px] uppercase tracking-[0.2em] text-sky-300">What To Watch</p>
+            <ul className="mt-3 space-y-2 text-sm text-zinc-200">
+              {decisionBoxes.whatToWatch.map((item) => (
+                <li key={item}>• {item}</li>
+              ))}
+            </ul>
+          </article>
+        </section>
 
-          <div className="mt-6 rounded-3xl border border-white/[0.08] bg-[#0B1119] p-6 lg:p-8">
+        {/* ADVANCED ANALYSIS */}
+
+        <section id="advanced" className="mt-8 rounded-3xl border border-white/[0.08] bg-[#0B1119] p-6 lg:p-8">
+          <details>
+            <summary className="cursor-pointer text-sm font-semibold uppercase tracking-[0.2em] text-zinc-300">Advanced Analysis</summary>
+
+            <div className="mt-6">
+              <SportsIntelligenceScoreCard score={sportsScore} />
+
+              <div className="mt-6 rounded-3xl border border-white/[0.08] bg-[#0B1119] p-6 lg:p-8">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
                 <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">Score Breakdown</p>
@@ -879,15 +816,7 @@ export default function OpportunityAnalysisPage() {
               ))}
             </div>
 
-            {/* FULL EXPLANATION COLLAPSIBLE */}
-            <button
-              onClick={() => setShowFullExplainability((v) => !v)}
-              className="mt-5 flex items-center gap-2 text-xs text-zinc-500 transition hover:text-zinc-300"
-            >
-              <span>{showFullExplainability ? "▲ Hide Full Explanation" : "▼ See Full Score Explanation"}</span>
-            </button>
-
-            {showFullExplainability && explainability && (
+            {explainability && (
               <div className="mt-6 space-y-6">
                 <p className="max-w-3xl text-sm leading-7 text-zinc-400">{explainability.overallSummary}</p>
 
@@ -962,16 +891,12 @@ export default function OpportunityAnalysisPage() {
                 </div>
               </div>
             )}
-          </div>
+              </div>
 
-        </section>
-
-        {/* EXECUTIVE ANALYST */}
-
-        {executiveAnalysis && (
-          <section className="mt-8 rounded-3xl border border-white/[0.08] bg-[#0B1119] p-8 lg:p-10">
+              {executiveAnalysis && (
+                <section className="mt-8 rounded-3xl border border-white/[0.08] bg-[#0B1119] p-8 lg:p-10">
             <p className="text-xs font-medium uppercase tracking-[0.18em] text-zinc-700">
-              Executive Analyst
+              Analyst Commentary
             </p>
 
             <h2 className="mt-3 text-3xl font-semibold tracking-tight">
@@ -1036,13 +961,13 @@ export default function OpportunityAnalysisPage() {
                 </p>
               </div>
             </div>
-          </section>
-        )}
+                </section>
+              )}
 
-        {/* DECISION TIMELINE — only shown when there is at least one meaningful event */}
+              {/* DECISION TIMELINE — only shown when there is at least one meaningful event */}
 
-        {decisionTimeline && decisionTimeline.timeline.length > 0 && (
-        <section className="mt-8 rounded-3xl border border-white/[0.08] bg-[#0B1119] p-8 lg:p-10">
+              {decisionTimeline && decisionTimeline.timeline.length > 0 && (
+                <section className="mt-8 rounded-3xl border border-white/[0.08] bg-[#0B1119] p-8 lg:p-10">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
               <p className="text-xs font-medium uppercase tracking-[0.18em] text-sky-400">Decision Timeline</p>
@@ -1069,94 +994,12 @@ export default function OpportunityAnalysisPage() {
               </div>
             ))}
           </div>
-        </section>
-        )}
+                </section>
+              )}
 
-        {/* EXECUTIVE RECOMMENDATION */}
+              {/* MATCHUP PROJECTION */}
 
-        <section className="mt-8 rounded-3xl border border-emerald-400/15 bg-[linear-gradient(135deg,#111A18_0%,#0C121A_100%)] p-8 lg:p-10">
-
-          <p className="text-xs font-medium uppercase tracking-[0.18em] text-emerald-400">
-            Executive Recommendation
-          </p>
-
-          <h2 className="mt-3 max-w-4xl text-3xl font-semibold tracking-tight">
-            {sportsScore.recommendation}. The
-            model sees a{" "}
-            {probabilityGap.toFixed(
-              1
-            )}{" "}
-            percentage-point probability
-            advantage over the market.
-          </h2>
-
-          <p className="mt-5 max-w-3xl text-base leading-8 text-zinc-400">
-            NFL Analytics OS estimates this
-            position at{" "}
-            {opportunity.modelProbability.toFixed(
-              1
-            )}
-            % versus a market-implied
-            probability of{" "}
-            {opportunity.impliedProbability.toFixed(
-              1
-            )}
-            %. The best available price is{" "}
-            {opportunity.pick} at{" "}
-            {opportunity.book} for{" "}
-            {formatOdds(
-              opportunity.price
-            )}
-            .
-          </p>
-
-          <div className="mt-8 flex flex-wrap gap-3">
-
-            <Button
-              onClick={addToCard}
-              disabled={added}
-              className={
-                added
-                  ? "h-11 bg-emerald-400/10 px-6 text-emerald-300"
-                  : "h-11 bg-white px-6 text-black hover:bg-zinc-200"
-              }
-            >
-              {added
-                ? "Added to My Card ✓"
-                : "Add to My Card"}
-            </Button>
-
-            <Link href="/my-card">
-              <Button
-                variant="outline"
-                className="h-11 border-white/10 bg-transparent px-6 text-white hover:bg-white/[0.05]"
-              >
-                Review My Card →
-              </Button>
-            </Link>
-          </div>
-          {snapshotError && (
-            <p className="mt-2 text-xs text-amber-400">{snapshotError}</p>
-          )}
-        </section>
-
-        {/* EXECUTIVE SUMMARY */}
-
-        <div className="mt-8">
-          <ExecutiveSummary
-            opportunity={
-              opportunity
-            }
-            projection={
-              projection
-            }
-            context={context}
-          />
-        </div>
-
-        {/* MATCHUP PROJECTION */}
-
-        <section className="mt-8">
+              <section className="mt-8">
 
           <p className="text-xs font-medium uppercase tracking-[0.18em] text-sky-400">
             Matchup Projection
@@ -1444,11 +1287,11 @@ export default function OpportunityAnalysisPage() {
               </div>
             </>
           )}
-        </section>
+            </section>
 
-        {/* SCHEDULE CONTEXT */}
+            {/* SCHEDULE CONTEXT */}
 
-        <section className="mt-8">
+            <section className="mt-8">
 
           <p className="text-xs font-medium uppercase tracking-[0.18em] text-violet-400">
             Schedule Context
@@ -1626,11 +1469,11 @@ export default function OpportunityAnalysisPage() {
               <p className="text-sm text-zinc-500">{getContextReason(context)}</p>
             </div>
           )}
-        </section>
+            </section>
 
-        {/* MARKET INTELLIGENCE */}
+            {/* MARKET INTELLIGENCE */}
 
-        <section className="mt-10">
+            <section className="mt-10">
 
           <p className="text-xs font-medium uppercase tracking-[0.18em] text-emerald-400">
             Market Intelligence
@@ -1714,15 +1557,6 @@ export default function OpportunityAnalysisPage() {
               {buildMarketScoreExplanation(market)}
             </p>
 
-            {/* Toggle for full technical detail */}
-            <button
-              onClick={() => setShowMarketDetails((v) => !v)}
-              className="mt-4 flex items-center gap-2 text-xs text-zinc-500 transition hover:text-zinc-300"
-            >
-              {showMarketDetails ? "▲ Hide Market Details" : "▼ View Market Details"}
-            </button>
-
-            {showMarketDetails && (
               <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <div className="rounded-xl border border-white/[0.06] bg-black/10 p-4">
                   <p className="text-[10px] uppercase tracking-wider text-zinc-700">
@@ -1779,7 +1613,6 @@ export default function OpportunityAnalysisPage() {
                   </div>
                 )}
               </div>
-            )}
           </div>
 
           {/* SPORTSBOOK TABLE */}
@@ -1891,11 +1724,11 @@ export default function OpportunityAnalysisPage() {
               </div>
             )}
           </div>
-        </section>
+            </section>
 
-        {/* MODEL METRICS */}
+            {/* MODEL METRICS */}
 
-        <section className="mt-8 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+            <section className="mt-8 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
 
           <div className="rounded-2xl border border-white/[0.07] bg-[#0D131C] p-6">
 
@@ -1958,11 +1791,11 @@ export default function OpportunityAnalysisPage() {
               )}
             </p>
           </div>
-        </section>
+            </section>
 
-        {/* SIGNAL QUALITY */}
+            {/* SIGNAL QUALITY */}
 
-        <section className="mt-8 grid gap-4 lg:grid-cols-2">
+            <section className="mt-8 grid gap-4 lg:grid-cols-2">
 
           <article className="rounded-3xl border border-white/[0.08] bg-[#0D131C] p-7">
 
@@ -2096,69 +1929,9 @@ export default function OpportunityAnalysisPage() {
               </div>
             </div>
           </article>
-        </section>
-
-        {/* BOTTOM LINE */}
-
-        <section className="mt-8 rounded-3xl border border-emerald-400/15 bg-emerald-400/[0.035] p-8">
-
-          <p className="text-xs uppercase tracking-[0.18em] text-emerald-400">
-            Bottom Line
-          </p>
-
-          <h2 className="mt-3 text-3xl font-semibold">
-            {opportunity.pick}:{" "}
-            {sportsScore.recommendation}.
-          </h2>
-
-          <p className="mt-4 max-w-3xl text-sm leading-7 text-zinc-400">
-            The Sports Intelligence
-            Score is currently{" "}
-            {sportsScore.score.toFixed(
-              1
-            )}
-            /100 with a{" "}
-            {sportsScore.grade} grade.
-            The model sees strong
-            expected value, while
-            observed market behavior is
-            currently graded{" "}
-            {market.grade}. Continue
-            monitoring price, injuries,
-            market movement, and other
-            contextual changes before
-            kickoff.
-          </p>
-
-          <div className="mt-7 flex flex-wrap gap-3">
-
-            <Button
-              onClick={addToCard}
-              disabled={added}
-              className={
-                added
-                  ? "bg-emerald-400/10 text-emerald-300"
-                  : "bg-white text-black hover:bg-zinc-200"
-              }
-            >
-              {added
-                ? "Added to My Card ✓"
-                : "Add to My Card"}
-            </Button>
-
-            <Link href="/opportunities">
-              <Button
-                variant="outline"
-                className="border-white/10 bg-transparent text-white"
-              >
-                Back to
-                Opportunities
-              </Button>
-            </Link>
-          </div>
-          {snapshotError && (
-            <p className="mt-2 text-xs text-amber-400">{snapshotError}</p>
-          )}
+              </section>
+            </div>
+          </details>
         </section>
       </div>
     </main>
