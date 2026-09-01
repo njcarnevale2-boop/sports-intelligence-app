@@ -10,6 +10,16 @@ import { fetchJson } from "../../lib/api";
 import { addToCard as addToCardHelper } from "@/lib/add-to-card";
 import { formatKickoffDateEt, formatKickoffTimeEt } from "@/app/lib/time-format";
 import {
+  buildAskSiaPayload,
+  buildMoveTheLinePayload,
+  decisionBoundaryLabel,
+  interpretMarketIntelligence,
+  moveTheLineErrorMessage,
+  normalizeDecisionStages,
+  resolveAnalysisSnapshotId,
+  type DecisionStage,
+} from "@/app/lib/game-intelligence-utils";
+import {
   formatTravelMiles,
   formatTravelShift,
   getRestLabel,
@@ -34,6 +44,29 @@ type MarketIntelligence = {
   steamBooks: number;
   booksMoving: number;
   booksTracked: number;
+  supportingBooks?: number;
+  opposingBooks?: number;
+  consensus?: number;
+  snapshots?: number;
+  largestPointMove?: number;
+  largestPriceMove?: number;
+};
+
+type AvailableBook = {
+  book: string;
+  point: number | null;
+  price: number | null;
+  edge: number;
+  evPerDollar: number | null;
+  isBest: boolean;
+};
+
+type DecisionDegradation = {
+  stages: DecisionStage[];
+  recommendedPlayableTo?: number | null;
+  recommendedPlayableToStatus?: "AVAILABLE" | "UNAVAILABLE";
+  mathematicalEvBoundary?: number | null;
+  mathematicalEvBoundaryStatus?: "AVAILABLE" | "UNAVAILABLE";
 };
 
 type SportsIntelligenceScore = {
@@ -67,6 +100,9 @@ type Opportunity = {
   truePlayableTo?: number | null;
   truePlayableToStatus?: "AVAILABLE" | "UNAVAILABLE";
   truePlayableToReason?: string | null;
+  recommendedPlayableTo?: number | null;
+  recommendedPlayableToStatus?: "AVAILABLE" | "UNAVAILABLE";
+  recommendedPlayableToReason?: string | null;
   worstObservedPlayablePrice?: number | null;
   worstObservedPlayablePriceStatus?: "AVAILABLE" | "UNAVAILABLE";
   minimumPlayableEV?: number | null;
@@ -77,12 +113,16 @@ type Opportunity = {
   productionEligible?: boolean;
   marketValidationStatus?: string;
   qualificationStatus?: string;
+  allAvailableBooks?: AvailableBook[];
+  allAvailableBooksCount?: number;
+  decisionDegradation?: DecisionDegradation;
 };
 
 type GameOpportunityResponse = {
   opportunity: Opportunity | null;
   bestByMarket?: Record<string, Opportunity>;
   intelligenceReport?: IntelligenceReport;
+  snapshotId?: string;
 };
 
 type IntelligenceReport = {
@@ -123,6 +163,7 @@ type AskSiaResponse = {
   answer: string;
   why: string[];
   whatChangesDecision: string;
+  biggestReasonToHesitate?: string | null;
   snapshotNote?: string | null;
   missingData?: string[];
 };
@@ -162,6 +203,10 @@ type MoveTheLineResult = {
     statusReason: string;
     decisionSummary: string;
     priceDisclosure: string;
+    recommendedPlayableTo?: number | null;
+    recommendedPlayableToStatus?: "AVAILABLE" | "UNAVAILABLE";
+    recommendedPlayableToReason?: string | null;
+    decisionDegradation?: DecisionDegradation;
   };
   valueChange: {
     probabilityChange?: number | null;
@@ -284,19 +329,12 @@ function edgeDirection(projection: GameProjection) {
   };
 }
 
-function moveTheLineErrorMessage(error: unknown) {
-  const fallback = "Move-the-Line is unavailable for this game right now.";
-  if (!(error instanceof Error)) return fallback;
-  const message = error.message.trim();
-  return message || fallback;
-}
-
 export default function GameIntelligencePage() {
   const params = useParams<{ eventId: string }>();
   const searchParams = useSearchParams();
   const eventId = params.eventId;
   const presetAsk = searchParams.get("ask") || "";
-  const snapshotId = searchParams.get("snapshotId") || undefined;
+  const snapshotIdFromUrl = searchParams.get("snapshotId") || undefined;
 
   const [projection, setProjection] = useState<GameProjection | null>(null);
   const [context, setContext] = useState<ScheduleContext | null>(null);
@@ -321,6 +359,7 @@ export default function GameIntelligencePage() {
   const [moveResult, setMoveResult] = useState<MoveTheLineResult | null>(null);
   const [moveLoading, setMoveLoading] = useState(false);
   const [moveError, setMoveError] = useState("");
+  const [canonicalSnapshotId, setCanonicalSnapshotId] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     if (!eventId) return;
@@ -345,11 +384,14 @@ export default function GameIntelligencePage() {
         if (oppResult.status === "fulfilled") {
           setOpportunity(oppResult.value.opportunity);
           setBestByMarket(oppResult.value.bestByMarket ?? {});
+          setCanonicalSnapshotId(resolveAnalysisSnapshotId(oppResult.value.snapshotId, snapshotIdFromUrl));
           if (oppResult.value.intelligenceReport) setIntelligenceReport(oppResult.value.intelligenceReport);
           if (oppResult.value.opportunity?.market === "spread") {
             setMoveSpread(oppResult.value.opportunity.point);
             setMoveAssumedOdds(oppResult.value.opportunity.price);
           }
+        } else {
+          setCanonicalSnapshotId(resolveAnalysisSnapshotId(undefined, snapshotIdFromUrl));
         }
         if (weatherResult.status === "fulfilled") setWeather(weatherResult.value);
         if (injuryResult.status === "fulfilled") setInjury(injuryResult.value.injuryContext);
@@ -363,7 +405,7 @@ export default function GameIntelligencePage() {
     }
 
     void load();
-  }, [eventId]);
+  }, [eventId, snapshotIdFromUrl]);
 
   useEffect(() => {
     async function loadBankroll() {
@@ -410,7 +452,7 @@ export default function GameIntelligencePage() {
       const response = await fetchJson<AskSiaResponse>("/api/ask-sia", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ eventId, question, snapshotId, moveTheLine: moveTheLinePayload ?? undefined }),
+        body: JSON.stringify(buildAskSiaPayload(eventId, question, canonicalSnapshotId, moveTheLinePayload ?? undefined)),
       });
 
       setAskMessages((prev) => [...prev, { question, response }]);
@@ -441,12 +483,7 @@ export default function GameIntelligencePage() {
       const result = await fetchJson<MoveTheLineResult>("/api/move-the-line", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          eventId,
-          hypotheticalSpread: spreadToUse,
-          assumedOdds: oddsToUse,
-          snapshotId,
-        }),
+        body: JSON.stringify(buildMoveTheLinePayload(eventId, spreadToUse, oddsToUse, canonicalSnapshotId)),
       }, 20000);
       setMoveResult(result);
     } catch (error) {
@@ -462,7 +499,7 @@ export default function GameIntelligencePage() {
     if (opportunity?.market !== "spread") return;
     if (moveSpread == null) return;
     void runMoveTheLine(moveSpread, moveAssumedOdds ?? opportunity.price);
-  }, [eventId, loading, moveSpread, moveAssumedOdds, opportunity?.market, opportunity?.price]);
+  }, [eventId, loading, moveSpread, moveAssumedOdds, opportunity?.market, opportunity?.price, canonicalSnapshotId]);
 
   const reasonSummary = useMemo(() => {
     if (intelligenceReport?.whySummary) return intelligenceReport.whySummary;
@@ -522,6 +559,14 @@ export default function GameIntelligencePage() {
     intelligenceReport?.betTrigger?.message ??
     intelligenceReport?.qualificationReasons?.[0] ??
     "The market no longer offers enough edge at the current price.";
+  const recommendedBoundaryLabel = opportunity
+    ? decisionBoundaryLabel(opportunity.pick, opportunity.recommendedPlayableTo)
+    : "Unavailable";
+  const mathematicalBoundaryLabel = opportunity
+    ? decisionBoundaryLabel(opportunity.pick, opportunity.truePlayableTo)
+    : "Unavailable";
+  const marketInterpretation = interpretMarketIntelligence(opportunity?.marketIntelligence ?? {});
+  const decisionStages = normalizeDecisionStages(moveResult?.hypothetical?.decisionDegradation?.stages ?? opportunity?.decisionDegradation?.stages);
   const alternateMarketCards = ["spread", "moneyline", "total"]
     .map((marketKey) => ({ marketKey, item: bestByMarket[marketKey] ?? null }))
     .filter(({ marketKey, item }) => item != null && marketKey !== opportunity?.market);
@@ -601,9 +646,10 @@ export default function GameIntelligencePage() {
                   <p className="mt-1 text-xs text-zinc-400">{opportunity?.book ?? "No current quote"}</p>
                 </div>
                 <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                  <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Playable To</p>
-                  <p className="mt-2 text-base font-semibold text-zinc-100">{formatTruePlayableTo(opportunity)}</p>
-                  <p className="mt-1 text-xs text-zinc-500">Uses true line-specific threshold only.</p>
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Recommended Bet Range</p>
+                  <p className="mt-2 text-base font-semibold text-zinc-100">{recommendedBoundaryLabel}</p>
+                  <p className="mt-1 text-xs text-zinc-500">SIA keeps this as an official BET/STRONG BET through this line.</p>
+                  <p className="mt-2 text-xs text-zinc-400">Mathematical EV boundary: {mathematicalBoundaryLabel}</p>
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
                   <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
@@ -698,6 +744,13 @@ export default function GameIntelligencePage() {
                 <p className="mt-3 text-xs uppercase tracking-[0.16em] text-zinc-600">What Changes The Decision</p>
                 <p className="mt-1 text-sm text-zinc-300">{item.response.whatChangesDecision}</p>
 
+                {item.response.biggestReasonToHesitate ? (
+                  <>
+                    <p className="mt-3 text-xs uppercase tracking-[0.16em] text-zinc-600">Biggest Reason To Hesitate</p>
+                    <p className="mt-1 text-sm text-zinc-300">{item.response.biggestReasonToHesitate}</p>
+                  </>
+                ) : null}
+
                 {item.response.snapshotNote ? (
                   <p className="mt-3 text-xs text-zinc-500">{item.response.snapshotNote}</p>
                 ) : null}
@@ -743,6 +796,28 @@ export default function GameIntelligencePage() {
           </div>
         </section>
 
+        <section className="rounded-3xl border border-white/[0.08] bg-[#0B1119] p-6 md:p-8">
+          <p className="text-xs uppercase tracking-[0.2em] text-zinc-600">Best Price vs Other Available Books</p>
+          <p className="mt-2 text-sm text-zinc-400">SIA ranks one best execution line and keeps the rest available for line shopping. No additional provider calls are made here.</p>
+          <div className="mt-4 rounded-2xl border border-emerald-400/20 bg-emerald-400/[0.05] p-4">
+            <p className="text-[10px] uppercase tracking-[0.18em] text-emerald-300">Best Price</p>
+            <p className="mt-2 text-base font-semibold text-zinc-100">{formatBestPrice(opportunity)}</p>
+          </div>
+          <details className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+            <summary className="cursor-pointer text-sm font-semibold text-zinc-200">All available books ({opportunity?.allAvailableBooksCount ?? opportunity?.allAvailableBooks?.length ?? 0})</summary>
+            <div className="mt-3 space-y-2">
+              {(opportunity?.allAvailableBooks ?? []).map((row) => (
+                <div key={`${row.book}-${row.point}-${row.price}`} className="rounded-xl border border-white/10 bg-black/20 p-3">
+                  <p className="text-sm font-medium text-zinc-100">{row.book}{row.isBest ? " - Best Price" : ""}</p>
+                  <p className="mt-1 text-xs text-zinc-400">
+                    Line: {row.point != null ? formatSpread(row.point) : "N/A"} · Price: {row.price != null ? signed(row.price) : "N/A"} · EV: {row.evPerDollar != null ? `${row.evPerDollar >= 0 ? "+" : ""}${row.evPerDollar.toFixed(3)} per $1` : "Unavailable"}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </details>
+        </section>
+
         <section id="move-the-line" className="rounded-3xl border border-white/[0.08] bg-[#0B1119] p-6 md:p-8">
           <p className="text-xs uppercase tracking-[0.2em] text-zinc-600">Move The Line</p>
           <p className="mt-2 text-sm text-zinc-400">Test a hypothetical spread using SIA's existing probability engine while holding price constant.</p>
@@ -753,8 +828,9 @@ export default function GameIntelligencePage() {
               <p className="mt-2 text-lg font-semibold">{opportunity ? `${opportunity.pick} (${signed(opportunity.price)})` : "Unavailable"}</p>
             </div>
             <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">SIA Playable-To</p>
-              <p className="mt-2 text-lg font-semibold">{opportunity?.truePlayableTo != null ? `${opportunity.pick.split(" ")[0]} ${formatSpread(opportunity.truePlayableTo)}` : "Unavailable"}</p>
+              <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Official Bet Through</p>
+              <p className="mt-2 text-lg font-semibold">{recommendedBoundaryLabel}</p>
+              <p className="mt-1 text-xs text-zinc-500">Mathematical EV boundary: {mathematicalBoundaryLabel}</p>
             </div>
           </div>
 
@@ -853,12 +929,19 @@ export default function GameIntelligencePage() {
                     </div>
                   </div>
 
-                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                    <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Playable-To Visual</p>
-                    <p className="mt-2 text-xs text-zinc-400">
-                      BETTER PRICE {formatSpread((moveResult.current.spread ?? 0) + 1)} {formatSpread((moveResult.current.spread ?? 0) + 0.5)} {formatSpread(moveResult.current.spread ?? 0)} {formatSpread((moveResult.current.spread ?? 0) - 0.5)} {formatSpread((moveResult.current.spread ?? 0) - 1)} | {moveResult.hypothetical.truePlayableTo != null ? formatSpread(moveResult.hypothetical.truePlayableTo) : "N/A"} PLAYABLE TO
-                    </p>
-                  </div>
+                  {decisionStages.length > 0 ? (
+                    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                      <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Decision Degradation</p>
+                      <div className="mt-2 space-y-1">
+                        {decisionStages.map((stage) => (
+                          <p key={`${stage.label}-${stage.spread}`} className="text-xs text-zinc-300">
+                            {stage.label}: {opportunity?.pick.split(" ")[0]} {formatSpread(stage.spread)} - {stage.recommendation} ({stage.qualificationStatus})
+                          </p>
+                        ))}
+                      </div>
+                      <p className="mt-3 text-xs text-zinc-500">Positive EV can persist past the official recommendation range, but SIA only publishes official bets through the qualified boundary.</p>
+                    </div>
+                  ) : null}
 
                   <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
                     <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Ask SIA About This Line</p>
@@ -907,6 +990,23 @@ export default function GameIntelligencePage() {
               {intelligenceReport?.qualificationReasons?.[0] ?? "Market alignment can shift as prices, injuries, and weather update before kickoff."}
             </p>
           </div>
+        </section>
+
+        <section className="rounded-3xl border border-white/[0.08] bg-[#0B1119] p-6 md:p-8">
+          <p className="text-xs uppercase tracking-[0.2em] text-zinc-600">Market Read</p>
+          <p className="mt-2 text-base font-semibold text-zinc-100">{marketInterpretation.headline}</p>
+          <p className="mt-2 text-sm text-zinc-400">{marketInterpretation.detail}</p>
+          <details className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+            <summary className="cursor-pointer text-xs font-semibold uppercase tracking-[0.18em] text-zinc-300">Technical market metrics</summary>
+            <div className="mt-3 space-y-1 text-xs text-zinc-400">
+              <p>Signal: {opportunity?.marketIntelligence.signal ?? "Unavailable"}</p>
+              <p>Books moving: {opportunity ? `${opportunity.marketIntelligence.booksMoving}/${opportunity.marketIntelligence.booksTracked}` : "Unavailable"}</p>
+              <p>Supporting vs opposing: {opportunity ? `${opportunity.marketIntelligence.supportingBooks ?? 0}/${opportunity.marketIntelligence.opposingBooks ?? 0}` : "Unavailable"}</p>
+              <p>Steam books: {opportunity?.marketIntelligence.steamBooks ?? 0}</p>
+              <p>Consensus: {opportunity?.marketIntelligence.consensus != null ? `${opportunity.marketIntelligence.consensus.toFixed(1)}%` : "Unavailable"}</p>
+              <p>Snapshots: {opportunity?.marketIntelligence.snapshots ?? "Unavailable"}</p>
+            </div>
+          </details>
         </section>
 
         <section id="advanced" className="rounded-3xl border border-white/[0.08] bg-[#0B1119] p-6 md:p-8">

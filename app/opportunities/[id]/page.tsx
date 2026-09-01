@@ -33,10 +33,20 @@ import Tooltip from "@/components/ui/tooltip";
 
 type AlternateBook = {
   book: string;
-  point: number;
-  price: number;
+  point: number | null;
+  price: number | null;
   edge: number;
-  evPerDollar: number;
+  evPerDollar: number | null;
+  isBest?: boolean;
+};
+
+type DecisionDegradationStage = {
+  label: string;
+  spread: number;
+  recommendation: string;
+  qualificationStatus: string;
+  status: string;
+  boundaryStatus: string;
 };
 
 type MarketIntelligence = {
@@ -119,6 +129,18 @@ type Opportunity = {
   sportsIntelligenceScore: SportsIntelligenceScore;
 
   alternateBooks?: AlternateBook[];
+  allAvailableBooks?: AlternateBook[];
+  allAvailableBooksCount?: number;
+  recommendedPlayableTo?: number | null;
+  recommendedPlayableToStatus?: "AVAILABLE" | "UNAVAILABLE";
+  recommendedPlayableToReason?: string | null;
+  decisionDegradation?: {
+    stages: DecisionDegradationStage[];
+    recommendedPlayableTo?: number | null;
+    recommendedPlayableToStatus?: "AVAILABLE" | "UNAVAILABLE";
+    mathematicalEvBoundary?: number | null;
+    mathematicalEvBoundaryStatus?: "AVAILABLE" | "UNAVAILABLE";
+  };
 
   injuryContext?: InjuryContext;
   truePlayableTo?: number | null;
@@ -696,8 +718,9 @@ export default function OpportunityAnalysisPage() {
               <p className="mt-2 text-base font-semibold text-zinc-100">{primaryDecision.price}</p>
             </div>
             <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-              <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">Playable To</p>
-              <p className="mt-2 text-base font-semibold text-zinc-100">{primaryDecision.playableTo}</p>
+              <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">Recommended To</p>
+              <p className="mt-2 text-base font-semibold text-zinc-100">{primaryDecision.recommendedTo}</p>
+              <p className="mt-1 text-xs text-zinc-500">Official BET/STRONG BET range.</p>
             </div>
             <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
               <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">Stake Recommendation</p>
@@ -708,6 +731,8 @@ export default function OpportunityAnalysisPage() {
           <div className="mt-5 rounded-2xl border border-white/10 bg-black/20 p-4">
             <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">Market Confirmation</p>
             <p className="mt-2 text-sm text-zinc-300">{primaryDecision.marketConfirmation}</p>
+            <p className="mt-3 text-xs text-zinc-500">Mathematical EV boundary: {primaryDecision.mathematicalBoundary}</p>
+            <p className="mt-1 text-xs text-zinc-500">{primaryDecision.boundaryExplanation}</p>
           </div>
 
           <div className="mt-6 flex flex-wrap gap-3">
@@ -1688,26 +1713,27 @@ export default function OpportunityAnalysisPage() {
                   </span>
 
                   <span>
-                    {formatPoint(
-                      opportunity.market,
-                      opportunity.side,
-                      book.point,
-                      opportunity.awayTeam,
-                      opportunity.homeTeam
-                    )}
+                    {book.point != null
+                      ? formatPoint(
+                        opportunity.market,
+                        opportunity.side,
+                        book.point,
+                        opportunity.awayTeam,
+                        opportunity.homeTeam
+                      )
+                      : "Unavailable"}
                   </span>
 
                   <span>
-                    {formatOdds(
-                      book.price
-                    )}
+                    {book.price != null
+                      ? formatOdds(
+                        book.price
+                      )
+                      : "Unavailable"}
                   </span>
 
                   <span>
-                    +$
-                    {book.evPerDollar.toFixed(
-                      3
-                    )}
+                    {book.evPerDollar != null ? `+$${book.evPerDollar.toFixed(3)}` : "Unavailable"}
                   </span>
                 </div>
               )
@@ -1721,6 +1747,26 @@ export default function OpportunityAnalysisPage() {
                   sportsbook prices are
                   currently available.
                 </p>
+              </div>
+            )}
+
+            {(opportunity.allAvailableBooks ?? []).length > 0 && (
+              <div className="border-t border-white/[0.06] px-6 py-6">
+                <details>
+                  <summary className="cursor-pointer text-sm font-semibold text-zinc-300">
+                    All available books ({opportunity.allAvailableBooksCount ?? opportunity.allAvailableBooks?.length ?? 0})
+                  </summary>
+                  <div className="mt-3 space-y-2">
+                    {(opportunity.allAvailableBooks ?? []).map((book) => (
+                      <div key={`${book.book}-${book.point}-${book.price}-all`} className="rounded-xl border border-white/[0.07] bg-black/20 px-4 py-3 text-sm text-zinc-300">
+                        <p className="font-medium text-zinc-200">{book.book}{book.isBest ? " - Best Price" : ""}</p>
+                        <p className="mt-1 text-xs text-zinc-500">
+                          Line {book.point != null ? formatPoint(opportunity.market, opportunity.side, book.point, opportunity.awayTeam, opportunity.homeTeam) : "Unavailable"} · Price {book.price != null ? formatOdds(book.price) : "Unavailable"} · EV {book.evPerDollar != null ? `+${book.evPerDollar.toFixed(3)}` : "Unavailable"}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </details>
               </div>
             )}
           </div>

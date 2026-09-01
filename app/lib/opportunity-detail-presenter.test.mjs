@@ -32,6 +32,8 @@ const baseOpportunity = {
   injuryContext: {
     severity: "neutral",
   },
+  recommendedPlayableTo: 3,
+  recommendedPlayableToStatus: "AVAILABLE",
   truePlayableTo: -2,
   truePlayableToStatus: "AVAILABLE",
 };
@@ -50,7 +52,8 @@ test("primary decision snapshot preserves canonical values", () => {
   assert.equal(snapshot.siaWinProbability, 77.4);
   assert.equal(snapshot.marketImpliedProbability, 51.2);
   assert.equal(snapshot.bestSportsbook, "LowVig.ag");
-  assert.equal(snapshot.playableTo, "NO -2");
+  assert.equal(snapshot.recommendedTo, "NO +3");
+  assert.equal(snapshot.mathematicalBoundary, "NO -2");
   assert.equal(snapshot.stakeRecommendation, "Strong");
 });
 
@@ -243,10 +246,12 @@ test("market confirmation label mapping is user-friendly", () => {
   assert.equal(getMarketConfirmationLabel(3.2), "Weak");
 });
 
-test("primary decision uses canonical Playable To whenever value is present", () => {
+test("primary decision emphasizes recommended boundary and preserves mathematical boundary", () => {
   const withStatusMissing = buildPrimaryDecisionSnapshot(
     {
       ...baseOpportunity,
+      recommendedPlayableTo: 5.5,
+      recommendedPlayableToStatus: undefined,
       truePlayableTo: 5.5,
       truePlayableToStatus: undefined,
     },
@@ -255,11 +260,14 @@ test("primary decision uses canonical Playable To whenever value is present", ()
     "Mixed"
   );
 
-  assert.equal(withStatusMissing.playableTo, "NO +5.5");
+  assert.equal(withStatusMissing.recommendedTo, "NO +5.5");
+  assert.equal(withStatusMissing.mathematicalBoundary, "NO +5.5");
 
   const withoutValue = buildPrimaryDecisionSnapshot(
     {
       ...baseOpportunity,
+      recommendedPlayableTo: null,
+      recommendedPlayableToStatus: "UNAVAILABLE",
       truePlayableTo: null,
       truePlayableToStatus: "UNAVAILABLE",
     },
@@ -268,5 +276,6 @@ test("primary decision uses canonical Playable To whenever value is present", ()
     "Mixed"
   );
 
-  assert.equal(withoutValue.playableTo, "See Game Intelligence");
+  assert.equal(withoutValue.recommendedTo, "See Game Intelligence");
+  assert.equal(withoutValue.mathematicalBoundary, "Unavailable");
 });

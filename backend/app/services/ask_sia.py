@@ -469,9 +469,30 @@ def _verified_game_specific_risk(context: Dict[str, Any]) -> Optional[str]:
 
 def _decision_boundary_text(context: Dict[str, Any]) -> str:
     selection = str(context.get("selection") or "Current pick")
+    recommended_playable_to = _to_float(context.get("recommendedPlayableTo"))
     playable_to = _to_float(context.get("truePlayableTo"))
-    if playable_to is None:
+    decision_degradation = context.get("decisionDegradation") if isinstance(context.get("decisionDegradation"), dict) else {}
+    stages = decision_degradation.get("stages") if isinstance(decision_degradation, dict) else []
+    if recommended_playable_to is None and playable_to is None:
         return "I don't have enough verified SIA data to compute a Playable-To boundary right now."
+
+    team = str(selection or "").split(" ")[0] or "Selection"
+    if recommended_playable_to is not None and playable_to is not None:
+        transition_text = ""
+        if isinstance(stages, list) and stages:
+            ordered = []
+            for stage in stages:
+                rec = str(stage.get("recommendation") or "").upper()
+                if rec and rec not in ordered:
+                    ordered.append(rec)
+            if ordered:
+                transition_text = f" Conviction typically degrades as {' -> '.join(ordered)} as the line worsens."
+        return (
+            f"SIA's official bet range currently holds to {team} {recommended_playable_to:+g}. "
+            f"Modeled EV can remain positive down to {team} {playable_to:+g}, but beyond the official range the recommendation degrades.{transition_text}"
+        )
+    if recommended_playable_to is not None:
+        return f"SIA's official bet range currently holds to {team} {recommended_playable_to:+g}."
 
     return (
         f"SIA would move this to PASS if {selection} moved beyond its current Playable-To of {_format_playable_to_with_selection(selection, playable_to)}, "
@@ -538,6 +559,7 @@ def _build_structured_explanation(
     primary_reason = ""
     supporting_reasons: List[str] = []
     risk_factors: List[str] = []
+    biggest_reason_to_hesitate = ""
     decision_boundary = ""
     market_context = ""
     confidence_summary = ""
@@ -566,9 +588,12 @@ def _build_structured_explanation(
     verified_risk = _verified_game_specific_risk(context)
     if verified_risk:
         risk_factors.append(verified_risk)
+        biggest_reason_to_hesitate = verified_risk
 
     if not risk_factors:
         risk_factors.append("No major game-specific risk is currently verified.")
+    if not biggest_reason_to_hesitate:
+        biggest_reason_to_hesitate = risk_factors[0]
 
     decision_boundary = _decision_boundary_text(context)
 
@@ -670,13 +695,29 @@ def _build_structured_explanation(
                 why = ["The current market, price, and confidence do not clear SIA's qualification policy."]
             primary_reason = "No-qualified-bet explanation."
         else:
-            answer = f"SIA currently favors {selection}."
+            answer = f"SIA currently favors {selection} because this line still clears SIA's official bet standards."
             primary_reason = "Positive value based on calibrated probability versus price."
-            if calibrated_prob is not None and implied_prob is not None:
-                why = [
-                    f"SIA gives {selection} a {calibrated_prob * 100:.1f}% win/cover probability versus {implied_prob:.1f}% implied by the market.",
-                    f"Push-aware EV is {current_ev:+.3f} per $1 at the current price." if current_ev is not None else "Current push-aware EV is positive at the quoted price.",
-                ]
+            why = []
+            if calibrated_edge is not None:
+                why.append(f"Model vs market: SIA remains {calibrated_edge * 100:.1f} points above market expectation on this side.")
+            if current_ev is not None:
+                why.append("Price quality: the current quote still clears SIA's official value threshold.")
+            market_intel = context.get("marketIntelligence") or {}
+            books_moving = _to_float(market_intel.get("booksMoving"))
+            books_tracked = _to_float(market_intel.get("booksTracked"))
+            signal = str(market_intel.get("signal") or "").strip()
+            if books_moving is not None and books_tracked and books_tracked > 0:
+                why.append(f"Market context: {int(books_moving)} of {int(books_tracked)} books are moving ({signal or 'signal unavailable'}).")
+            recommended_playable_to = _to_float(context.get("recommendedPlayableTo"))
+            current_point = _to_float(context.get("point"))
+            team = selection.split(" ")[0] if selection else "Selection"
+            if recommended_playable_to is not None and current_point is not None:
+                why.append(
+                    f"Spread cushion: SIA's official recommendation holds through {team} {recommended_playable_to:+g}, and this pick is currently better than that boundary."
+                )
+            if len(why) < 2 and calibrated_prob is not None and implied_prob is not None:
+                why.append(f"SIA probability remains above market implied probability for this selection.")
+            why = why[:4]
             if not production_eligible:
                 why.append("This market is currently in shadow validation and is not eligible for The SIA 3.")
 
@@ -717,6 +758,7 @@ def _build_structured_explanation(
                 "answer": answer,
                 "why": why,
                 "whatChangesDecision": what_changes,
+                "biggestReasonToHesitate": biggest_reason_to_hesitate,
                 "structured": {
                     "primaryReason": primary_reason,
                     "supportingReasons": supporting_reasons,
@@ -922,6 +964,7 @@ def _build_structured_explanation(
         "answer": answer,
         "why": why,
         "whatChangesDecision": what_changes,
+        "biggestReasonToHesitate": biggest_reason_to_hesitate,
         "structured": {
             "primaryReason": primary_reason,
             "supportingReasons": supporting_reasons,
@@ -973,6 +1016,7 @@ def _build_live_context(event_id: str) -> Dict[str, Any]:
     week = game_row.get("week")
     opportunities_payload = get_opportunities(limit=100, best_lines_only=True, week=week)
     top_sia3 = (opportunities_payload.get("opportunities") or [])[:3]
+    bundle_snapshot_id = game_bundle.get("snapshotId") or opportunities_payload.get("snapshotId")
 
     return {
         "eventId": event_id,
@@ -1002,6 +1046,7 @@ def _build_live_context(event_id: str) -> Dict[str, Any]:
         "whySummary": report.get("whySummary"),
         "betTrigger": report.get("betTrigger"),
         "marketIntelligence": opportunity.get("marketIntelligence"),
+        "decisionDegradation": opportunity.get("decisionDegradation"),
         "lineMovement": opportunity.get("marketIntelligence"),
         "restTravel": context_payload,
         "injuryContext": injuries_payload.get("injuryContext"),
@@ -1015,8 +1060,11 @@ def _build_live_context(event_id: str) -> Dict[str, Any]:
         "bestAvailablePrice": opportunity.get("bestAvailablePrice"),
         "bestAvailableLine": opportunity.get("bestAvailableLine"),
         "bestAvailableSportsbook": opportunity.get("book"),
+        "recommendedPlayableTo": _to_float(opportunity.get("recommendedPlayableTo")),
+        "recommendedPlayableToStatus": opportunity.get("recommendedPlayableToStatus"),
+        "recommendedPlayableToReason": opportunity.get("recommendedPlayableToReason"),
         "rank": opportunity.get("rank"),
-        "snapshotId": opportunities_payload.get("snapshotId"),
+        "snapshotId": bundle_snapshot_id,
         "topSia3": top_sia3,
         "bestByMarket": best_by_market,
         "marketValidationStatus": opportunity.get("marketValidationStatus"),
@@ -1064,6 +1112,7 @@ def _context_for_market(live_context: Dict[str, Any], market_key: Optional[str])
             "siScore": (selected.get("sportsIntelligenceScore") or {}).get("score"),
             "recommendation": selected.get("recommendation"),
             "marketIntelligence": selected.get("marketIntelligence"),
+            "decisionDegradation": selected.get("decisionDegradation"),
             "qualificationReasons": selected.get("qualificationReasons") or [],
             "betStatus": selected.get("betStatus"),
             "whySummary": selected.get("whySummary"),
@@ -1075,6 +1124,9 @@ def _context_for_market(live_context: Dict[str, Any], market_key: Optional[str])
             "bestAvailablePrice": selected.get("bestAvailablePrice"),
             "bestAvailableLine": selected.get("bestAvailableLine"),
             "bestAvailableSportsbook": selected.get("bestAvailableSportsbook") or selected.get("book"),
+            "recommendedPlayableTo": selected.get("recommendedPlayableTo"),
+            "recommendedPlayableToStatus": selected.get("recommendedPlayableToStatus"),
+            "recommendedPlayableToReason": selected.get("recommendedPlayableToReason"),
             "rank": selected.get("rank"),
             "marketValidationStatus": selected.get("marketValidationStatus"),
             "productionEligible": selected.get("productionEligible"),
@@ -1138,6 +1190,7 @@ def answer_from_context(
         "answer": response["answer"],
         "why": response["why"],
         "whatChangesDecision": response["whatChangesDecision"],
+        "biggestReasonToHesitate": response.get("biggestReasonToHesitate"),
         "snapshotNote": response["snapshotNote"],
         "structured": response["structured"],
         "missingData": response["missingData"],
@@ -1158,6 +1211,8 @@ def answer_from_context(
             "pushAwareEV": scoped_context.get("currentEV"),
             "fairLine": scoped_context.get("fairLine"),
             "playableTo": scoped_context.get("truePlayableTo"),
+            "recommendedPlayableTo": scoped_context.get("recommendedPlayableTo"),
+            "recommendedPlayableToStatus": scoped_context.get("recommendedPlayableToStatus"),
             "siScore": scoped_context.get("siScore"),
             "recommendation": scoped_context.get("recommendation"),
             "betStatus": scoped_context.get("betStatus"),

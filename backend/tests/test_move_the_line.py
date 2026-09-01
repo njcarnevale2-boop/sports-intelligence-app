@@ -223,6 +223,48 @@ def test_snapshot_id_preserved(monkeypatch):
     assert result["sourceSnapshotId"] == "snap-123"
 
 
+def test_move_the_line_includes_recommended_boundary_and_degradation(monkeypatch):
+    monkeypatch.setattr(move_the_line, "_build_base_context", lambda event_id, snapshot_id: _base_context())
+    monkeypatch.setattr(move_the_line, "_load_model_margin_home", lambda event_id: 1.5)
+    monkeypatch.setattr(move_the_line, "spread_outcome_probabilities", lambda model_margin_home, side, spread_point: FakeProbs(win=0.66, push=0.02, loss=0.32))
+    monkeypatch.setattr(
+        move_the_line,
+        "build_spread_decision_boundaries",
+        lambda **kwargs: type(
+            "Profile",
+            (),
+            {
+                "recommended_playable_to": 2.0,
+                "recommended_playable_to_status": "AVAILABLE",
+                "recommended_playable_to_reason": None,
+                "stages": [
+                    {
+                        "label": "Current line",
+                        "spread": 3.0,
+                        "recommendation": "STRONG BET",
+                        "qualificationStatus": "QUALIFIED",
+                        "status": "PLAYABLE",
+                        "boundaryStatus": "INSIDE",
+                    },
+                    {
+                        "label": "Official bet through",
+                        "spread": 2.0,
+                        "recommendation": "BET",
+                        "qualificationStatus": "QUALIFIED",
+                        "status": "PLAYABLE",
+                        "boundaryStatus": "INSIDE",
+                    },
+                ],
+            },
+        )(),
+    )
+
+    result = move_the_line.evaluate_move_the_line(event_id="evt-1", hypothetical_spread=2.5, assumed_odds=-115)
+    assert result["hypothetical"]["recommendedPlayableTo"] == 2.0
+    assert result["hypothetical"]["decisionDegradation"]["recommendedPlayableTo"] == 2.0
+    assert len(result["hypothetical"]["decisionDegradation"]["stages"]) == 2
+
+
 def test_probability_engine_reused(monkeypatch):
     calls = {"count": 0, "spread": None}
 

@@ -10,6 +10,7 @@ from app.routes.opportunities import _get_game_best_opportunity_payload, get_opp
 from app.runtime_paths import runtime_paths
 from app.services.decision_ledger import get_latest_decision_by_snapshot_id
 from app.services.games import service as games_service
+from app.services.decision_profile import build_spread_decision_boundaries
 from app.services.probability_engine import (
     ev_per_dollar_with_push,
     fair_price_from_win_push,
@@ -282,6 +283,17 @@ def evaluate_move_the_line(
     inside_playable = _is_inside_spread_playable_range(rounded_hypo, true_playable_to)
     at_boundary = _is_boundary(rounded_hypo, true_playable_to)
 
+    decision_profile = build_spread_decision_boundaries(
+        model_margin_home=model_margin_home,
+        side=side,
+        current_point=original_point,
+        price=rounded_assumed_odds,
+        true_playable_to=true_playable_to,
+        confidence=_to_float(base.get("confidence")) or 75.0,
+        data_completeness=_to_float(base.get("dataCompleteness")) or 100.0,
+        market_intelligence=base.get("marketIntelligence") or {},
+    )
+
     score_payload = calculate_sports_intelligence_score(
         opportunity={
             "edge": round(edge * 100, 1),
@@ -342,6 +354,15 @@ def evaluate_move_the_line(
             "status": _decision_status(inside_playable),
             "statusReason": "At SIA's current boundary." if at_boundary else ("Still inside SIA's current playable range." if inside_playable else "Outside SIA's current playable range."),
             "decisionSummary": _decision_summary(hypothetical_selection, inside_playable, at_boundary, ev_change),
+            "recommendedPlayableTo": decision_profile.recommended_playable_to,
+            "recommendedPlayableToStatus": decision_profile.recommended_playable_to_status,
+            "recommendedPlayableToReason": decision_profile.recommended_playable_to_reason,
+            "decisionDegradation": {
+                "stages": decision_profile.stages,
+                "recommendedPlayableTo": decision_profile.recommended_playable_to,
+                "recommendedPlayableToStatus": decision_profile.recommended_playable_to_status,
+                "mathematicalEvBoundary": round(true_playable_to, 2) if true_playable_to is not None else None,
+            },
         },
         "current": {
             "selection": original_selection,

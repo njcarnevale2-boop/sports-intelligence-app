@@ -27,6 +27,8 @@ type PresenterOpportunity = {
   injuryContext?: {
     severity?: string | null;
   } | null;
+  recommendedPlayableTo?: number | null;
+  recommendedPlayableToStatus?: "AVAILABLE" | "UNAVAILABLE";
   truePlayableTo?: number | null;
   truePlayableToStatus?: "AVAILABLE" | "UNAVAILABLE";
 };
@@ -187,13 +189,21 @@ export function buildPrimaryDecisionSnapshot(
   marketConfirmation: string
 ) {
   const line = `${opp.pick}`;
-  const playableToValue = opp.truePlayableTo;
-  const hasCanonicalPlayableTo =
-    playableToValue != null && Number.isFinite(playableToValue);
-  const playableTo =
-    hasCanonicalPlayableTo
-      ? `${opp.pick.split(" ")[0]} ${formatLine(playableToValue)}`
+  const team = opp.pick.split(" ")[0] || "Selection";
+  const recommendedBoundaryValue = opp.recommendedPlayableTo;
+  const hasRecommendedBoundary =
+    recommendedBoundaryValue != null && Number.isFinite(recommendedBoundaryValue);
+  const recommendedTo =
+    hasRecommendedBoundary
+      ? `${team} ${formatLine(recommendedBoundaryValue)}`
       : "See Game Intelligence";
+
+  const mathematicalBoundaryValue = opp.truePlayableTo;
+  const hasMathematicalBoundary =
+    mathematicalBoundaryValue != null && Number.isFinite(mathematicalBoundaryValue);
+  const mathematicalBoundary = hasMathematicalBoundary
+    ? `${team} ${formatLine(mathematicalBoundaryValue)}`
+    : "Unavailable";
 
   return {
     betLinePrice: `${line} (${formatOdds(opp.price)})`,
@@ -204,7 +214,10 @@ export function buildPrimaryDecisionSnapshot(
     bestSportsbook: opp.book,
     line,
     price: formatOdds(opp.price),
-    playableTo,
+    recommendedTo,
+    mathematicalBoundary,
+    boundaryExplanation:
+      "SIA can still model positive EV beyond the official recommendation range, but official bets stop once recommendation quality degrades.",
     stakeRecommendation,
     marketConfirmation,
   };

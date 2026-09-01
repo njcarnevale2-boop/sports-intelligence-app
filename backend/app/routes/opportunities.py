@@ -20,6 +20,7 @@ from app.services.decision_change_engine import build_decision_timeline
 from app.services.weather import WeatherAnalyzer
 from app.services.market_data import market_data_service, select_best_line_row
 from app.services.fair_price import build_fair_price_result
+from app.services.decision_profile import build_spread_decision_boundaries
 from app.services.calibration import apply_guarded_isotonic, calibration_info
 from app.services.decision_board import build_decision_board_payload
 from app.services.probability_engine import (
@@ -487,6 +488,7 @@ def build_id(
 def row_to_opportunity(
     row,
     include_alternates=None,
+    include_all_available_books=None,
     market_snapshot=None,
     injury_ctx=None,
     group_rows=None,
@@ -659,6 +661,39 @@ def row_to_opportunity(
     result["bestAvailableLine"] = fair_price_result.best_available_line
     result["pushAwareEV"] = fair_price_result.current_ev
 
+    if market_key == "spread":
+        spread_profile = build_spread_decision_boundaries(
+            model_margin_home=safe_float(game_projection_row.get("model_margin_home")) if game_projection_row is not None else None,
+            side=str(row.get("side") or "").lower(),
+            current_point=safe_float(row.get("point")),
+            price=safe_float(row.get("price")),
+            true_playable_to=fair_price_result.true_playable_to,
+            confidence=float(safe_float(row.get("confidence_score")) or 75.0),
+            data_completeness=float((safe_float(row.get("data_completeness")) or 1.0) * 100.0),
+            market_intelligence=market_intelligence,
+        )
+        result["recommendedPlayableTo"] = spread_profile.recommended_playable_to
+        result["recommendedPlayableToStatus"] = spread_profile.recommended_playable_to_status
+        result["recommendedPlayableToReason"] = spread_profile.recommended_playable_to_reason
+        result["decisionDegradation"] = {
+            "stages": spread_profile.stages,
+            "recommendedPlayableTo": spread_profile.recommended_playable_to,
+            "recommendedPlayableToStatus": spread_profile.recommended_playable_to_status,
+            "mathematicalEvBoundary": fair_price_result.true_playable_to,
+            "mathematicalEvBoundaryStatus": fair_price_result.true_playable_to_status,
+        }
+    else:
+        result["recommendedPlayableTo"] = None
+        result["recommendedPlayableToStatus"] = "UNAVAILABLE"
+        result["recommendedPlayableToReason"] = "Recommended spread boundary applies to spread markets only."
+        result["decisionDegradation"] = {
+            "stages": [],
+            "recommendedPlayableTo": None,
+            "recommendedPlayableToStatus": "UNAVAILABLE",
+            "mathematicalEvBoundary": fair_price_result.true_playable_to,
+            "mathematicalEvBoundaryStatus": fair_price_result.true_playable_to_status,
+        }
+
     if result["currentWinProbability"] is not None and implied_prob is not None:
         result["edge"] = round((float(result["currentWinProbability"]) - implied_prob) * 100, 1)
         result["calibratedEdge"] = float(result["currentWinProbability"]) - implied_prob
@@ -706,6 +741,10 @@ def row_to_opportunity(
         result[
             "alternateBooks"
         ] = include_alternates
+
+    if include_all_available_books is not None:
+        result["allAvailableBooks"] = include_all_available_books
+        result["allAvailableBooksCount"] = len(include_all_available_books)
 
     return result
 
@@ -893,6 +932,7 @@ def best_line_for_group(
 def make_alternate_books(
     group,
     selected_row,
+    limit: int | None = 5,
 ):
     alternates = []
 
@@ -953,7 +993,33 @@ def make_alternate_books(
         reverse=True,
     )
 
-    return alternates[:5]
+    if limit is None:
+        return alternates
+
+    return alternates[:limit]
+
+
+def make_all_available_books(group, selected_row):
+    selected_entry = {
+        "book": str(selected_row.get("sportsbook")),
+        "point": safe_float(selected_row.get("point")),
+        "price": safe_float(selected_row.get("price")),
+        "edge": 0.0,
+        "evPerDollar": None,
+        "isBest": True,
+    }
+
+    edge_value = safe_float(selected_row.get("edge_pp"))
+    if edge_value is not None and edge_value > 1.0:
+        edge_value = edge_value / 100.0
+    selected_entry["edge"] = round(float(edge_value or 0.0) * 100, 1)
+
+    selected_ev = safe_float(selected_row.get("ev_per_dollar"))
+    if selected_ev is not None:
+        selected_entry["evPerDollar"] = round(float(selected_ev), 3)
+
+    alternates = [{**item, "isBest": False} for item in make_alternate_books(group, selected_row, limit=None)]
+    return [selected_entry, *alternates]
 
 
 # ---------------------------------------------------------
@@ -1077,6 +1143,7 @@ def get_opportunities(
                     "selected": selected,
                     "group": group,
                     "alternates": make_alternate_books(group, selected),
+                    "allAvailableBooks": make_all_available_books(group, selected),
                     "groupMinRank": group_min_rank,
                     "calibratedEdge": float(calibrated_edge),
                     "ev": float(safe_float(selected.get("ev_per_dollar")) or 0.0),
@@ -1120,6 +1187,7 @@ def get_opportunities(
                 "selected": selected,
                 "group": gen["group"],
                 "alternates": make_alternate_books(gen["group"], selected),
+                "allAvailableBooks": make_all_available_books(gen["group"], selected),
                 "groupMinRank": int(gen.get("groupMinRank") or 9999),
                 "calibratedEdge": float(calibrated_edge),
                 "ev": float(safe_float(selected.get("ev_per_dollar")) or 0.0),
@@ -1152,6 +1220,7 @@ def get_opportunities(
         item = row_to_opportunity(
             selected,
             include_alternates=candidate["alternates"],
+            include_all_available_books=candidate["allAvailableBooks"],
             market_snapshot=market_snapshots.get(str(selected["api_event_id"])),
             injury_ctx=shared_injury_ctx,
             group_rows=candidate["group"],
@@ -1525,13 +1594,19 @@ def get_opportunity(
         )
     )
 
+    all_available_books = make_all_available_books(match, selected)
+    projection_lookup = load_game_projection_lookup()
+
     return (
         row_to_opportunity(
             selected,
             include_alternates=(
                 alternates
             ),
+            include_all_available_books=all_available_books,
             market_snapshot=market_data_service.event_market_snapshot(str(selected["api_event_id"])),
+            group_rows=match,
+            game_projection_row=projection_lookup.get(str(selected["api_event_id"])),
         )
     )
 

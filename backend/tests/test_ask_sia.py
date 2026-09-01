@@ -31,12 +31,58 @@ def _base_live_context() -> dict:
         "currentEV": 0.08,
         "fairLine": -128.0,
         "truePlayableTo": -5.0,
+        "recommendedPlayableTo": 3.0,
+        "recommendedPlayableToStatus": "AVAILABLE",
         "siScore": 81.8,
         "recommendation": "STRONG BET",
         "betStatus": "STRONG BET",
         "whySummary": "SIA identified a qualified edge based on model probability, price, and confidence.",
         "betTrigger": {"available": False, "message": "Actionable price not currently available"},
         "marketIntelligence": {"signal": "CONFIRMED", "booksMoving": 5, "booksTracked": 8, "steamBooks": 2},
+        "decisionDegradation": {
+            "stages": [
+                {
+                    "label": "Current line",
+                    "spread": 7.0,
+                    "recommendation": "STRONG BET",
+                    "qualificationStatus": "QUALIFIED",
+                    "status": "PLAYABLE",
+                    "boundaryStatus": "INSIDE",
+                },
+                {
+                    "label": "Official bet through",
+                    "spread": 3.0,
+                    "recommendation": "BET",
+                    "qualificationStatus": "QUALIFIED",
+                    "status": "PLAYABLE",
+                    "boundaryStatus": "INSIDE",
+                },
+                {
+                    "label": "Lean starts",
+                    "spread": 1.0,
+                    "recommendation": "LEAN",
+                    "qualificationStatus": "NOT_QUALIFIED",
+                    "status": "PLAYABLE",
+                    "boundaryStatus": "INSIDE",
+                },
+                {
+                    "label": "Pass starts",
+                    "spread": 0.0,
+                    "recommendation": "PASS",
+                    "qualificationStatus": "NOT_QUALIFIED",
+                    "status": "PLAYABLE",
+                    "boundaryStatus": "INSIDE",
+                },
+                {
+                    "label": "Mathematical EV boundary",
+                    "spread": -5.0,
+                    "recommendation": "PASS",
+                    "qualificationStatus": "NOT_QUALIFIED",
+                    "status": "PLAYABLE",
+                    "boundaryStatus": "AT_BOUNDARY",
+                },
+            ]
+        },
         "lineMovement": {
             "signal": "CONFIRMED",
             "booksMoving": 5,
@@ -127,6 +173,23 @@ def test_why_sia_likes_pick():
     )
     assert "favors" in result["answer"].lower()
     assert result["intent"] == "WHY"
+
+
+def test_why_answer_includes_hesitation_and_degradation_context():
+    context = _base_live_context()
+    context["marketIntelligence"] = {"signal": "Market Resistance", "booksMoving": 1, "booksTracked": 10, "steamBooks": 0}
+
+    result = ask_sia.answer_from_context(
+        event_id="evt-1",
+        question="Why does SIA like this bet? I need to feel more confident.",
+        live_context=context,
+    )
+
+    assert result["intent"] == "WHY"
+    assert "official bet standards" in result["answer"]
+    assert 2 <= len(result["why"]) <= 4
+    assert result["biggestReasonToHesitate"] is not None
+    assert "official bet range" in result["whatChangesDecision"]
 
 
 def test_biggest_risk_question():
@@ -416,7 +479,8 @@ def test_what_changes_the_bet_uses_canonical_playable_to():
         question="What changes the bet?",
         live_context=_base_live_context(),
     )
-    assert "moved beyond its current Playable-To" in result["answer"]
+    assert "official bet range currently holds" in result["answer"]
+    assert "NO +3" in result["answer"]
     assert "NO -5" in result["answer"]
     assert "CURRENT BET: NO +7" in result["why"]
 
