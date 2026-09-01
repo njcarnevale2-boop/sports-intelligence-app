@@ -67,7 +67,6 @@ def _why_sia_likes_it(opp: dict[str, Any]) -> str:
     implied_prob_pct = _safe_float(opp.get("impliedProbability"))
     edge = _safe_float(opp.get("edge"))
     ev = _safe_float(opp.get("currentEV"))
-    playable_to = opp.get("truePlayableTo")
 
     parts: list[str] = []
     if model_prob is not None:
@@ -82,8 +81,6 @@ def _why_sia_likes_it(opp: dict[str, Any]) -> str:
         parts.append(f"Current edge is {edge:.1f} percentage points.")
     if ev is not None:
         parts.append(f"Push-aware expected value is {ev:+.3f} per $1.")
-    if playable_to is not None:
-        parts.append(f"The position remains playable through {playable_to}.")
 
     if not parts:
         return "SIA retains a qualified spread edge at the currently executable price."
@@ -92,18 +89,15 @@ def _why_sia_likes_it(opp: dict[str, Any]) -> str:
 
 def _risk_factors(opp: dict[str, Any], quote_freshness: str, market_depth: str) -> list[str]:
     factors: list[str] = []
-    true_playable_to = opp.get("truePlayableTo")
-    if true_playable_to is not None:
-        factors.append(f"Line moving beyond {true_playable_to} would invalidate the playable threshold.")
     if quote_freshness == "STALE":
-        factors.append("Quote freshness is stale; re-verify the market before placing a bet.")
+        factors.append("Market movement is the biggest execution risk. Confirm the current line and price before betting.")
     if market_depth in {"THIN", "SINGLE_BOOK", "NO_BOOKS"}:
         factors.append("Market depth is limited, which can reduce execution reliability.")
     injury_summary = str((opp.get("injuryContext") or {}).get("summary") or "").strip()
     if injury_summary:
         factors.append(f"Injury updates can change edge: {injury_summary}")
     if not factors:
-        factors.append("Material injury, weather, or late market movement can invalidate the thesis.")
+        factors.append("The current recommendation is based on the observed line and price. A materially worse market could reduce SIA's edge.")
     return factors
 
 

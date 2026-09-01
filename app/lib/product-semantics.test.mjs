@@ -18,6 +18,11 @@ test("home page uses current-bet and model-cushion semantics", () => {
   assert.match(page, /MODEL CUSHION/);
   assert.match(page, /currently observed executable quote/i);
   assert.doesNotMatch(page, /RECOMMENDED TO/);
+  assert.doesNotMatch(page, /CURRENT LINE STATUS" value=/);
+
+  const statusHeaderCount = (page.match(/Current Line Status/g) ?? []).length;
+  assert.equal(statusHeaderCount, 2);
+  assert.doesNotMatch(page, /playable threshold|official bet through|recommended through/i);
 });
 
 test("advanced surfaces label model boundaries as theoretical", () => {

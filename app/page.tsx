@@ -385,7 +385,6 @@ export default function Home() {
                     <InfoTile label="CONFIDENCE" value={primary.confidence != null ? `${primary.confidence}/100` : "Unavailable"} />
                     <InfoTile label="SIA VS MARKET" value={`${formatPercent(primary.modelProbability)} vs ${formatPercent(primary.marketImpliedProbability)}`} />
                     <InfoTile label="PROBABILITY EDGE" value={formatProbabilityEdge(primary.edge)} subtext={probabilityEdgeSubtext(primary)} />
-                    <InfoTile label="CURRENT LINE STATUS" value={freshnessLabel(primary.quoteFreshness)} subtext={primaryLineStatus?.detail} />
                   </div>
 
                   <div className="grid gap-3 sm:grid-cols-2">

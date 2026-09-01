@@ -176,6 +176,17 @@ def test_playable_to_and_optional_fields_do_not_crash():
     assert len(row["whySiaLikesIt"]) > 0
 
 
+def test_home_copy_avoids_theoretical_playable_boundary_language():
+    opportunities = [_base_opp(truePlayableTo=-2.0, playableTo=-2.0)]
+
+    payload = build_decision_board_payload(opportunities)
+    row = payload["decisionBoard"][0]
+
+    assert "playable" not in row["whySiaLikesIt"].lower()
+    assert "playable" not in (row["riskFactors"][0] or "").lower()
+    assert "threshold" not in (row["riskFactors"][0] or "").lower()
+
+
 def test_game_card_status_mapping():
     assert map_game_card_status({"productionEligible": True, "qualificationStatus": "QUALIFIED", "marketDataStatus": "LIVE"}) == "SIA PLAY"
     assert map_game_card_status({"productionEligible": True, "qualificationStatus": "NOT_QUALIFIED", "recommendation": "LEAN", "marketDataStatus": "LIVE"}) == "LEAN"

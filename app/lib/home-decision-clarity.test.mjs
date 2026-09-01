@@ -36,7 +36,7 @@ test("bet range stays anchored to the current executable line", () => {
 test("model cushion is deterministic and display-only", () => {
   assert.equal(getModelCushionDistance(base), 4);
   assert.equal(formatModelCushion(base), "STRONG");
-  assert.match(modelCushionSubtext(base), /Display-only model cushion/);
+  assert.equal(modelCushionSubtext(base), "SIA sees substantial model value beyond the current line.");
 
   assert.equal(formatModelCushion({ ...base, line: 3 }), "MINIMAL");
   assert.equal(formatModelCushion({ ...base, line: 3.5 }), "LIMITED");
@@ -45,6 +45,14 @@ test("model cushion is deterministic and display-only", () => {
     formatModelCushion({ ...base, recommendedPlayableToStatus: "UNAVAILABLE" }),
     "Unavailable",
   );
+});
+
+test("model cushion copy is bettor-friendly and hides theoretical boundary numbers", () => {
+  assert.equal(modelCushionSubtext({ ...base, line: 3 }), "SIA's edge is concentrated near the current line.");
+  assert.equal(modelCushionSubtext({ ...base, line: 3.5 }), "SIA sees some model value beyond the current line.");
+  assert.equal(modelCushionSubtext({ ...base, line: 5 }), "SIA sees meaningful model value beyond the current line.");
+  assert.equal(modelCushionSubtext(base), "SIA sees substantial model value beyond the current line.");
+  assert.doesNotMatch(modelCushionSubtext(base), /theoretical|boundary|pts|\d/i);
 });
 
 test("model cushion does not change with probability or EV fields", () => {

@@ -51,11 +51,12 @@ export function formatModelCushion(item: HomeDecisionItem) {
 }
 
 export function modelCushionSubtext(item: HomeDecisionItem) {
-  const distance = getModelCushionDistance(item);
-  if (distance == null) {
-    return "Theoretical boundary data is unavailable for this matchup.";
-  }
-  return `Display-only model cushion from current line to theoretical boundary (${distance.toFixed(1)} pts).`;
+  const cushion = formatModelCushion(item);
+  if (cushion === "STRONG") return "SIA sees substantial model value beyond the current line.";
+  if (cushion === "MODERATE") return "SIA sees meaningful model value beyond the current line.";
+  if (cushion === "LIMITED") return "SIA sees some model value beyond the current line.";
+  if (cushion === "MINIMAL") return "SIA's edge is concentrated near the current line.";
+  return "Model cushion is unavailable for this matchup.";
 }
 
 export function formatProbabilityEdge(edge: number | null) {
