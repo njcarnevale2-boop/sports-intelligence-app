@@ -718,9 +718,9 @@ export default function OpportunityAnalysisPage() {
               <p className="mt-2 text-base font-semibold text-zinc-100">{primaryDecision.price}</p>
             </div>
             <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-              <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">Recommended To</p>
-              <p className="mt-2 text-base font-semibold text-zinc-100">{primaryDecision.recommendedTo}</p>
-              <p className="mt-1 text-xs text-zinc-500">Official BET/STRONG BET range.</p>
+              <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">Theoretical Model Boundary</p>
+              <p className="mt-2 text-base font-semibold text-zinc-100">{primaryDecision.theoreticalModelBoundary}</p>
+              <p className="mt-1 text-xs text-zinc-500">Research estimate only. Not an execution recommendation.</p>
             </div>
             <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
               <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">Stake Recommendation</p>
@@ -731,7 +731,7 @@ export default function OpportunityAnalysisPage() {
           <div className="mt-5 rounded-2xl border border-white/10 bg-black/20 p-4">
             <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">Market Confirmation</p>
             <p className="mt-2 text-sm text-zinc-300">{primaryDecision.marketConfirmation}</p>
-            <p className="mt-3 text-xs text-zinc-500">Mathematical EV boundary: {primaryDecision.mathematicalBoundary}</p>
+            <p className="mt-3 text-xs text-zinc-500">Theoretical EV boundary: {primaryDecision.mathematicalBoundary}</p>
             <p className="mt-1 text-xs text-zinc-500">{primaryDecision.boundaryExplanation}</p>
           </div>
 

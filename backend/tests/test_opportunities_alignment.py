@@ -252,3 +252,46 @@ def test_opportunity_qualification_and_si_inputs_use_push_aware_semantics(tmp_pa
     # SI expected value component should reflect 0.123 EV, not raw board EV.
     si = opp["sportsIntelligenceScore"]
     assert abs(float(si["components"]["expectedValue"]) - 24.6) < 0.2
+
+
+def test_spread_opportunity_emits_boundary_research_metadata(tmp_path, monkeypatch):
+    rows = [
+        {
+            "api_event_id": "evt-boundary-1",
+            "commence_time": "2026-09-13T17:00:00+00:00",
+            "away_team": "NO",
+            "home_team": "ATL",
+            "market": "spread",
+            "side": "away",
+            "point": 3.0,
+            "sportsbook": "DraftKings",
+            "price": -110,
+            "model_prob": 0.58,
+            "implied_prob_raw": 0.55,
+            "fair_odds": -120,
+            "edge_pp": 0.03,
+            "ev_per_dollar": 0.04,
+            "kelly_full": 0.03,
+            "kelly_20pct": 0.006,
+            "recommendation": "BET",
+            "confidence_score": 68,
+            "data_completeness": 0.95,
+            "market_confidence": 0.8,
+            "model_confidence": 0.7,
+            "rank": 1,
+        }
+    ]
+
+    opportunities_route = _patch_dependencies(monkeypatch, tmp_path, rows)
+    payload = opportunities_route.get_opportunities(limit=10, best_lines_only=True, week=1)
+    opp = payload["opportunities"][0]
+
+    research = opp["executionBoundaryResearch"]
+    assert research["mode"] == "OBSERVED_PLUS_MODEL_SIMULATION"
+    assert research["observedExecution"]["quoteObserved"] is True
+    assert research["observedExecution"]["line"] == 3.0
+    assert research["theoreticalBoundary"]["status"] in {"AVAILABLE", "UNAVAILABLE"}
+    assert research["theoreticalBoundary"]["distanceBucket"] in {"3.0+", "2.5", "2.0", "1.5", "1.0", "0.5", "0.0", "UNAVAILABLE"}
+    assert isinstance(research["transitionFlags"]["crossesZero"], bool)
+    assert isinstance(research["degradationPath"], list)
+    assert research["degradationPath"][0]["quoteObserved"] is True

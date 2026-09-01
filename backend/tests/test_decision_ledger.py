@@ -40,6 +40,45 @@ def _decision_payload(event_id: str, price: float = -110.0, si_score: float = 80
         "fairLine": -128.0,
         "truePlayableTo": -118.0,
         "truePlayableToStatus": "AVAILABLE",
+        "recommendedPlayableTo": -112.0,
+        "recommendedPlayableToStatus": "AVAILABLE",
+        "recommendedPlayableToReason": "TEST",
+        "boundaryDistancePoints": 2.0,
+        "boundaryDistanceBucket": "2.0",
+        "boundaryCrossesZero": False,
+        "boundaryUnderdogToFavorite": False,
+        "boundaryCrossesKey3": True,
+        "boundaryCrossesKey7": True,
+        "observedQuoteAvailable": True,
+        "executionBoundaryMode": "OBSERVED_PLUS_MODEL_SIMULATION",
+        "executionBoundaryResearch": {
+            "mode": "OBSERVED_PLUS_MODEL_SIMULATION",
+            "observedExecution": {
+                "quoteObserved": True,
+                "line": 7.0,
+                "price": -110.0,
+                "sportsbook": "DraftKings",
+                "quoteTimestamp": "2026-09-13T15:00:00+00:00",
+            },
+            "theoreticalBoundary": {
+                "line": 3.0,
+                "status": "AVAILABLE",
+                "reason": "TEST",
+                "distanceFromCurrent": 4.0,
+                "distanceBucket": "3.0+",
+            },
+            "transitionFlags": {
+                "crossesZero": False,
+                "underdogToFavorite": False,
+                "crossesKeyNumber3": True,
+                "crossesKeyNumber7": True,
+            },
+            "degradationPath": [
+                {"pointsWorse": 0.0, "line": 7.0, "quoteObserved": True},
+                {"pointsWorse": 1.0, "line": 6.0, "quoteObserved": False},
+            ],
+            "simulatedOnly": False,
+        },
         "siScore": si_score,
         "siGrade": "A-",
         "siRank": 1,
@@ -321,6 +360,9 @@ def test_decision_list_and_model_version_fields(tmp_path, monkeypatch):
     assert item["rankingVersion"]
     assert item["qualificationPolicyVersion"]
     assert item["oddsTimestamp"] == "2026-09-13T15:00:00+00:00"
+    assert item["recommendedPlayableTo"] == -112.0
+    assert item["executionBoundaryMode"] == "OBSERVED_PLUS_MODEL_SIMULATION"
+    assert item["executionBoundaryResearch"]["mode"] == "OBSERVED_PLUS_MODEL_SIMULATION"
 
 
 def test_admin_audit_and_prospective_performance_endpoints(tmp_path, monkeypatch):
@@ -366,6 +408,8 @@ def test_admin_audit_and_prospective_performance_endpoints(tmp_path, monkeypatch
     assert p["datasetLabel"] == "PROSPECTIVE AUDITED TRACK RECORD"
     assert p["historicalLabel"] == "MARKET-REFERENCE BACKTEST"
     assert "byRank" in p
+    assert "executionBoundaryResearch" in p
+    assert "distanceBuckets" in p["executionBoundaryResearch"]
 
 
 def test_recommendation_snapshot_auto_records_my_card_decision(tmp_path, monkeypatch):

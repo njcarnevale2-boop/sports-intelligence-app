@@ -219,6 +219,159 @@ def _market_eligibility(market: str) -> tuple[bool, str, str]:
     return False, "Market family is not production-eligible.", status
 
 
+def _crosses_value(a: float, b: float, target: float) -> bool:
+    low = min(a, b)
+    high = max(a, b)
+    return low <= target <= high
+
+
+def _distance_bucket(distance: float | None) -> str:
+    if distance is None:
+        return "UNAVAILABLE"
+    if distance >= 3.0:
+        return "3.0+"
+    if distance >= 2.5:
+        return "2.5"
+    if distance >= 2.0:
+        return "2.0"
+    if distance >= 1.5:
+        return "1.5"
+    if distance >= 1.0:
+        return "1.0"
+    if distance >= 0.5:
+        return "0.5"
+    return "0.0"
+
+
+def _build_execution_boundary_research(
+    *,
+    market_key: str,
+    current_point: float | None,
+    current_price: float | None,
+    sportsbook: str | None,
+    market_last_updated: str | None,
+    recommended_playable_to: float | None,
+    recommended_playable_to_status: str | None,
+    recommended_playable_to_reason: str | None,
+    decision_stages: list[dict[str, Any]],
+) -> dict[str, Any]:
+    observed_available = current_point is not None and current_price is not None and bool(str(sportsbook or "").strip())
+
+    if market_key != "spread":
+        return {
+            "mode": "UNAVAILABLE_FOR_NON_SPREAD",
+            "observedExecution": {
+                "quoteObserved": observed_available,
+                "line": current_point,
+                "price": current_price,
+                "sportsbook": sportsbook,
+                "quoteTimestamp": market_last_updated,
+            },
+            "theoreticalBoundary": {
+                "line": None,
+                "status": "UNAVAILABLE",
+                "reason": "Spread-only research metadata.",
+                "distanceFromCurrent": None,
+                "distanceBucket": "UNAVAILABLE",
+            },
+            "transitionFlags": {
+                "crossesZero": False,
+                "underdogToFavorite": False,
+                "crossesKeyNumber3": False,
+                "crossesKeyNumber7": False,
+            },
+            "degradationPath": [],
+            "simulatedOnly": True,
+        }
+
+    distance = None
+    if current_point is not None and recommended_playable_to is not None:
+        distance = abs(float(current_point) - float(recommended_playable_to))
+
+    crosses_zero = False
+    underdog_to_favorite = False
+    crosses_three = False
+    crosses_seven = False
+    if current_point is not None and recommended_playable_to is not None:
+        current_val = float(current_point)
+        boundary_val = float(recommended_playable_to)
+        crosses_zero = _crosses_value(current_val, boundary_val, 0.0)
+        underdog_to_favorite = current_val > 0 and boundary_val < 0
+        crosses_three = _crosses_value(abs(current_val), abs(boundary_val), 3.0)
+        crosses_seven = _crosses_value(abs(current_val), abs(boundary_val), 7.0)
+
+    degradation_path: list[dict[str, Any]] = []
+    if current_point is not None:
+        degradation_path.append(
+            {
+                "pointsWorse": 0.0,
+                "line": float(current_point),
+                "quoteObserved": observed_available,
+                "observedPrice": current_price,
+                "observedSportsbook": sportsbook,
+                "recommendation": None,
+                "qualificationStatus": None,
+                "crossesZeroFromCurrent": False,
+                "underdogToFavoriteFromCurrent": False,
+                "crossesKeyNumber3FromCurrent": False,
+                "crossesKeyNumber7FromCurrent": False,
+            }
+        )
+
+    seen_lines = {float(current_point)} if current_point is not None else set()
+    for stage in decision_stages:
+        stage_line = safe_float(stage.get("spread"))
+        if stage_line is None or current_point is None:
+            continue
+        stage_line = float(stage_line)
+        if stage_line in seen_lines:
+            continue
+        seen_lines.add(stage_line)
+
+        points_worse = max(0.0, float(current_point) - stage_line)
+        degradation_path.append(
+            {
+                "pointsWorse": points_worse,
+                "line": stage_line,
+                "quoteObserved": False,
+                "observedPrice": None,
+                "observedSportsbook": None,
+                "recommendation": stage.get("recommendation"),
+                "qualificationStatus": stage.get("qualificationStatus"),
+                "crossesZeroFromCurrent": _crosses_value(float(current_point), stage_line, 0.0),
+                "underdogToFavoriteFromCurrent": float(current_point) > 0 and stage_line < 0,
+                "crossesKeyNumber3FromCurrent": _crosses_value(abs(float(current_point)), abs(stage_line), 3.0),
+                "crossesKeyNumber7FromCurrent": _crosses_value(abs(float(current_point)), abs(stage_line), 7.0),
+            }
+        )
+
+    return {
+        "mode": "OBSERVED_PLUS_MODEL_SIMULATION",
+        "observedExecution": {
+            "quoteObserved": observed_available,
+            "line": current_point,
+            "price": current_price,
+            "sportsbook": sportsbook,
+            "quoteTimestamp": market_last_updated,
+        },
+        "theoreticalBoundary": {
+            "line": recommended_playable_to,
+            "status": recommended_playable_to_status or "UNAVAILABLE",
+            "reason": recommended_playable_to_reason,
+            "distanceFromCurrent": distance,
+            "distanceBucket": _distance_bucket(distance),
+        },
+        "transitionFlags": {
+            "crossesZero": crosses_zero,
+            "underdogToFavorite": underdog_to_favorite,
+            "crossesKeyNumber3": crosses_three,
+            "crossesKeyNumber7": crosses_seven,
+        },
+        "degradationPath": degradation_path,
+        "simulatedOnly": False,
+    }
+
+
 def _market_key(value: str | None) -> str:
     raw = str(value or "").strip().lower()
     if raw == "spreads":
@@ -682,6 +835,17 @@ def row_to_opportunity(
             "mathematicalEvBoundary": fair_price_result.true_playable_to,
             "mathematicalEvBoundaryStatus": fair_price_result.true_playable_to_status,
         }
+        result["executionBoundaryResearch"] = _build_execution_boundary_research(
+            market_key=market_key,
+            current_point=safe_float(row.get("point")),
+            current_price=safe_float(row.get("price")),
+            sportsbook=str(row.get("sportsbook") or "") or None,
+            market_last_updated=market_snapshot.get("lastUpdated") if market_snapshot else None,
+            recommended_playable_to=spread_profile.recommended_playable_to,
+            recommended_playable_to_status=spread_profile.recommended_playable_to_status,
+            recommended_playable_to_reason=spread_profile.recommended_playable_to_reason,
+            decision_stages=spread_profile.stages,
+        )
     else:
         result["recommendedPlayableTo"] = None
         result["recommendedPlayableToStatus"] = "UNAVAILABLE"
@@ -693,6 +857,17 @@ def row_to_opportunity(
             "mathematicalEvBoundary": fair_price_result.true_playable_to,
             "mathematicalEvBoundaryStatus": fair_price_result.true_playable_to_status,
         }
+        result["executionBoundaryResearch"] = _build_execution_boundary_research(
+            market_key=market_key,
+            current_point=safe_float(row.get("point")),
+            current_price=safe_float(row.get("price")),
+            sportsbook=str(row.get("sportsbook") or "") or None,
+            market_last_updated=market_snapshot.get("lastUpdated") if market_snapshot else None,
+            recommended_playable_to=None,
+            recommended_playable_to_status="UNAVAILABLE",
+            recommended_playable_to_reason="Spread-only research metadata.",
+            decision_stages=[],
+        )
 
     if result["currentWinProbability"] is not None and implied_prob is not None:
         result["edge"] = round((float(result["currentWinProbability"]) - implied_prob) * 100, 1)

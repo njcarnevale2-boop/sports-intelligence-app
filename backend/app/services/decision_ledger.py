@@ -65,6 +65,18 @@ CREATE TABLE IF NOT EXISTS decision_ledger (
     fair_line REAL,
     true_playable_to REAL,
     true_playable_to_status TEXT,
+    recommended_playable_to REAL,
+    recommended_playable_to_status TEXT,
+    recommended_playable_to_reason TEXT,
+    boundary_distance_points REAL,
+    boundary_distance_bucket TEXT,
+    boundary_crosses_zero INTEGER,
+    boundary_underdog_to_favorite INTEGER,
+    boundary_crosses_key_3 INTEGER,
+    boundary_crosses_key_7 INTEGER,
+    observed_quote_available INTEGER,
+    execution_boundary_mode TEXT,
+    execution_boundary_research_json TEXT,
 
     si_score REAL,
     si_grade TEXT,
@@ -185,6 +197,18 @@ DECISION_FIELDS = [
     "fairLine",
     "truePlayableTo",
     "truePlayableToStatus",
+    "recommendedPlayableTo",
+    "recommendedPlayableToStatus",
+    "recommendedPlayableToReason",
+    "boundaryDistancePoints",
+    "boundaryDistanceBucket",
+    "boundaryCrossesZero",
+    "boundaryUnderdogToFavorite",
+    "boundaryCrossesKey3",
+    "boundaryCrossesKey7",
+    "observedQuoteAvailable",
+    "executionBoundaryMode",
+    "executionBoundaryResearch",
     "siScore",
     "siGrade",
     "siRank",
@@ -224,6 +248,28 @@ def _connect() -> sqlite3.Connection:
 def _ensure_schema() -> None:
     con = _connect()
     con.executescript(_SCHEMA)
+    existing_columns = {
+        str(row["name"])
+        for row in con.execute("PRAGMA table_info(decision_ledger)").fetchall()
+    }
+    required_columns = {
+        "recommended_playable_to": "REAL",
+        "recommended_playable_to_status": "TEXT",
+        "recommended_playable_to_reason": "TEXT",
+        "boundary_distance_points": "REAL",
+        "boundary_distance_bucket": "TEXT",
+        "boundary_crosses_zero": "INTEGER",
+        "boundary_underdog_to_favorite": "INTEGER",
+        "boundary_crosses_key_3": "INTEGER",
+        "boundary_crosses_key_7": "INTEGER",
+        "observed_quote_available": "INTEGER",
+        "execution_boundary_mode": "TEXT",
+        "execution_boundary_research_json": "TEXT",
+    }
+    for name, sql_type in required_columns.items():
+        if name in existing_columns:
+            continue
+        con.execute(f"ALTER TABLE decision_ledger ADD COLUMN {name} {sql_type}")
     con.commit()
     con.close()
 
@@ -289,6 +335,18 @@ def _row_to_decision(row: sqlite3.Row) -> Dict[str, Any]:
         "fairLine": row["fair_line"],
         "truePlayableTo": row["true_playable_to"],
         "truePlayableToStatus": row["true_playable_to_status"],
+        "recommendedPlayableTo": row["recommended_playable_to"],
+        "recommendedPlayableToStatus": row["recommended_playable_to_status"],
+        "recommendedPlayableToReason": row["recommended_playable_to_reason"],
+        "boundaryDistancePoints": row["boundary_distance_points"],
+        "boundaryDistanceBucket": row["boundary_distance_bucket"],
+        "boundaryCrossesZero": None if row["boundary_crosses_zero"] is None else bool(row["boundary_crosses_zero"]),
+        "boundaryUnderdogToFavorite": None if row["boundary_underdog_to_favorite"] is None else bool(row["boundary_underdog_to_favorite"]),
+        "boundaryCrossesKey3": None if row["boundary_crosses_key_3"] is None else bool(row["boundary_crosses_key_3"]),
+        "boundaryCrossesKey7": None if row["boundary_crosses_key_7"] is None else bool(row["boundary_crosses_key_7"]),
+        "observedQuoteAvailable": None if row["observed_quote_available"] is None else bool(row["observed_quote_available"]),
+        "executionBoundaryMode": row["execution_boundary_mode"],
+        "executionBoundaryResearch": json.loads(row["execution_boundary_research_json"] or "null"),
         "siScore": row["si_score"],
         "siGrade": row["si_grade"],
         "siRank": row["si_rank"],
@@ -337,6 +395,18 @@ def _payload_from_decision_row(row: sqlite3.Row) -> Dict[str, Any]:
         "fairLine": row["fair_line"],
         "truePlayableTo": row["true_playable_to"],
         "truePlayableToStatus": row["true_playable_to_status"],
+        "recommendedPlayableTo": row["recommended_playable_to"],
+        "recommendedPlayableToStatus": row["recommended_playable_to_status"],
+        "recommendedPlayableToReason": row["recommended_playable_to_reason"],
+        "boundaryDistancePoints": row["boundary_distance_points"],
+        "boundaryDistanceBucket": row["boundary_distance_bucket"],
+        "boundaryCrossesZero": None if row["boundary_crosses_zero"] is None else bool(row["boundary_crosses_zero"]),
+        "boundaryUnderdogToFavorite": None if row["boundary_underdog_to_favorite"] is None else bool(row["boundary_underdog_to_favorite"]),
+        "boundaryCrossesKey3": None if row["boundary_crosses_key_3"] is None else bool(row["boundary_crosses_key_3"]),
+        "boundaryCrossesKey7": None if row["boundary_crosses_key_7"] is None else bool(row["boundary_crosses_key_7"]),
+        "observedQuoteAvailable": None if row["observed_quote_available"] is None else bool(row["observed_quote_available"]),
+        "executionBoundaryMode": row["execution_boundary_mode"],
+        "executionBoundaryResearch": json.loads(row["execution_boundary_research_json"] or "null"),
         "siScore": row["si_score"],
         "siGrade": row["si_grade"],
         "siRank": row["si_rank"],
@@ -392,8 +462,73 @@ def record_decision(payload: Dict[str, Any], publication_type: str = "OTHER") ->
     decision_version = 1 if previous is None else int(previous["decision_version"]) + 1
     supersedes_decision_id = None if previous is None else previous["decision_id"]
 
+    decision_values = [
+        decision_id,
+        decision_group_id,
+        decision_version,
+        supersedes_decision_id,
+        publication_type,
+        normalized["publishedAtUTC"],
+        int(normalized["season"]),
+        int(normalized["week"]),
+        normalized["eventId"],
+        normalized["commenceTime"],
+        normalized["awayTeam"],
+        normalized["homeTeam"],
+        normalized["selection"],
+        normalized["market"],
+        normalized["side"],
+        normalized["point"],
+        normalized["price"],
+        normalized["sportsbook"],
+        normalized["rawProbability"],
+        normalized["calibratedProbability"],
+        normalized["pushProbability"],
+        normalized["lossProbability"],
+        normalized["rawEdge"],
+        normalized["calibratedEdge"],
+        normalized["currentEV"],
+        normalized["fairLine"],
+        normalized["truePlayableTo"],
+        normalized["truePlayableToStatus"],
+        normalized["recommendedPlayableTo"],
+        normalized["recommendedPlayableToStatus"],
+        normalized["recommendedPlayableToReason"],
+        normalized["boundaryDistancePoints"],
+        normalized["boundaryDistanceBucket"],
+        1 if normalized["boundaryCrossesZero"] else 0 if normalized["boundaryCrossesZero"] is not None else None,
+        1 if normalized["boundaryUnderdogToFavorite"] else 0 if normalized["boundaryUnderdogToFavorite"] is not None else None,
+        1 if normalized["boundaryCrossesKey3"] else 0 if normalized["boundaryCrossesKey3"] is not None else None,
+        1 if normalized["boundaryCrossesKey7"] else 0 if normalized["boundaryCrossesKey7"] is not None else None,
+        1 if normalized["observedQuoteAvailable"] else 0 if normalized["observedQuoteAvailable"] is not None else None,
+        normalized["executionBoundaryMode"],
+        json.dumps(normalized["executionBoundaryResearch"], ensure_ascii=True) if normalized["executionBoundaryResearch"] is not None else None,
+        normalized["siScore"],
+        normalized["siGrade"],
+        normalized["siRank"],
+        normalized["recommendation"],
+        normalized["qualificationStatus"],
+        json.dumps(normalized["qualificationReasons"], ensure_ascii=True),
+        normalized["modelVersion"],
+        normalized["probabilityEngineVersion"],
+        normalized["calibrationVersion"],
+        normalized["siScoreVersion"],
+        normalized["rankingVersion"],
+        normalized["qualificationPolicyVersion"],
+        normalized["gitCommitHash"],
+        normalized["oddsProvider"],
+        normalized["oddsTimestamp"],
+        normalized["modelTimestamp"],
+        normalized["marketTimestamp"],
+        normalized["sourceSnapshotId"],
+        payload_hash,
+        canonical_payload,
+        idempotency_key,
+        _utc_now_iso(),
+    ]
+
     con.execute(
-        """
+        f"""
         INSERT INTO decision_ledger (
             decision_id, decision_group_id, decision_version, supersedes_decision_id,
             publication_type, published_at_utc,
@@ -403,6 +538,10 @@ def record_decision(payload: Dict[str, Any], publication_type: str = "OTHER") ->
             raw_probability, calibrated_probability, push_probability, loss_probability,
             raw_edge, calibrated_edge, current_ev,
             fair_line, true_playable_to, true_playable_to_status,
+            recommended_playable_to, recommended_playable_to_status, recommended_playable_to_reason,
+            boundary_distance_points, boundary_distance_bucket,
+            boundary_crosses_zero, boundary_underdog_to_favorite, boundary_crosses_key_3, boundary_crosses_key_7,
+            observed_quote_available, execution_boundary_mode, execution_boundary_research_json,
             si_score, si_grade, si_rank,
             recommendation, qualification_status, qualification_reasons,
             model_version, probability_engine_version, calibration_version,
@@ -410,60 +549,9 @@ def record_decision(payload: Dict[str, Any], publication_type: str = "OTHER") ->
             odds_provider, odds_timestamp, model_timestamp, market_timestamp,
             source_snapshot_id,
             payload_hash, canonical_payload, idempotency_key, recorded_at_utc
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ) VALUES ({','.join(['?'] * len(decision_values))})
         """,
-        [
-            decision_id,
-            decision_group_id,
-            decision_version,
-            supersedes_decision_id,
-            publication_type,
-            normalized["publishedAtUTC"],
-            int(normalized["season"]),
-            int(normalized["week"]),
-            normalized["eventId"],
-            normalized["commenceTime"],
-            normalized["awayTeam"],
-            normalized["homeTeam"],
-            normalized["selection"],
-            normalized["market"],
-            normalized["side"],
-            normalized["point"],
-            normalized["price"],
-            normalized["sportsbook"],
-            normalized["rawProbability"],
-            normalized["calibratedProbability"],
-            normalized["pushProbability"],
-            normalized["lossProbability"],
-            normalized["rawEdge"],
-            normalized["calibratedEdge"],
-            normalized["currentEV"],
-            normalized["fairLine"],
-            normalized["truePlayableTo"],
-            normalized["truePlayableToStatus"],
-            normalized["siScore"],
-            normalized["siGrade"],
-            normalized["siRank"],
-            normalized["recommendation"],
-            normalized["qualificationStatus"],
-            json.dumps(normalized["qualificationReasons"], ensure_ascii=True),
-            normalized["modelVersion"],
-            normalized["probabilityEngineVersion"],
-            normalized["calibrationVersion"],
-            normalized["siScoreVersion"],
-            normalized["rankingVersion"],
-            normalized["qualificationPolicyVersion"],
-            normalized["gitCommitHash"],
-            normalized["oddsProvider"],
-            normalized["oddsTimestamp"],
-            normalized["modelTimestamp"],
-            normalized["marketTimestamp"],
-            normalized["sourceSnapshotId"],
-            payload_hash,
-            canonical_payload,
-            idempotency_key,
-            _utc_now_iso(),
-        ],
+        decision_values,
     )
     con.commit()
 
@@ -775,6 +863,13 @@ def _decision_payload_from_opportunity(opportunity: Dict[str, Any], published_at
     if not isinstance(qualification_reasons, list):
         qualification_reasons = reasons
 
+    boundary_research = opportunity.get("executionBoundaryResearch")
+    if not isinstance(boundary_research, dict):
+        boundary_research = {}
+    theoretical_boundary = boundary_research.get("theoreticalBoundary") if isinstance(boundary_research.get("theoreticalBoundary"), dict) else {}
+    transition_flags = boundary_research.get("transitionFlags") if isinstance(boundary_research.get("transitionFlags"), dict) else {}
+    observed_execution = boundary_research.get("observedExecution") if isinstance(boundary_research.get("observedExecution"), dict) else {}
+
     decision = {
         "publishedAtUTC": published_at_utc,
         "season": opportunity.get("season"),
@@ -799,6 +894,18 @@ def _decision_payload_from_opportunity(opportunity: Dict[str, Any], published_at
         "fairLine": _to_float(opportunity.get("fairLine")),
         "truePlayableTo": _to_float(opportunity.get("truePlayableTo")),
         "truePlayableToStatus": opportunity.get("truePlayableToStatus"),
+        "recommendedPlayableTo": _to_float(opportunity.get("recommendedPlayableTo")),
+        "recommendedPlayableToStatus": opportunity.get("recommendedPlayableToStatus"),
+        "recommendedPlayableToReason": opportunity.get("recommendedPlayableToReason"),
+        "boundaryDistancePoints": _to_float(theoretical_boundary.get("distanceFromCurrent")),
+        "boundaryDistanceBucket": theoretical_boundary.get("distanceBucket"),
+        "boundaryCrossesZero": transition_flags.get("crossesZero"),
+        "boundaryUnderdogToFavorite": transition_flags.get("underdogToFavorite"),
+        "boundaryCrossesKey3": transition_flags.get("crossesKeyNumber3"),
+        "boundaryCrossesKey7": transition_flags.get("crossesKeyNumber7"),
+        "observedQuoteAvailable": observed_execution.get("quoteObserved"),
+        "executionBoundaryMode": boundary_research.get("mode"),
+        "executionBoundaryResearch": boundary_research if boundary_research else None,
         "siScore": _to_float(score_obj.get("score") if isinstance(score_obj, dict) else None),
         "siGrade": score_obj.get("grade") if isinstance(score_obj, dict) else None,
         "siRank": opportunity.get("weekRank") if opportunity.get("weekRank") is not None else opportunity.get("rank"),
@@ -846,6 +953,10 @@ def record_my_card_decision_from_payload(payload: Dict[str, Any]) -> Dict[str, A
         "fairLine": payload.get("fairLine"),
         "truePlayableTo": payload.get("truePlayableTo"),
         "truePlayableToStatus": payload.get("truePlayableToStatus"),
+        "recommendedPlayableTo": payload.get("recommendedPlayableTo"),
+        "recommendedPlayableToStatus": payload.get("recommendedPlayableToStatus"),
+        "recommendedPlayableToReason": payload.get("recommendedPlayableToReason"),
+        "executionBoundaryResearch": payload.get("executionBoundaryResearch"),
         "recommendation": payload.get("recommendation") or "MY_CARD",
         "sportsIntelligenceScore": {
             "score": payload.get("siScore"),
@@ -1484,7 +1595,10 @@ def get_prospective_performance() -> Dict[str, Any]:
     con = _connect()
     rows = con.execute(
         """
-        SELECT s.slot_rank, d.market, d.si_score, d.raw_edge, d.current_ev, d.sportsbook,
+         SELECT s.slot_rank, d.market, d.si_score, d.raw_edge, d.current_ev, d.sportsbook,
+             d.boundary_distance_bucket, d.boundary_crosses_zero, d.boundary_underdog_to_favorite,
+             d.boundary_crosses_key_3, d.boundary_crosses_key_7, d.observed_quote_available,
+             d.execution_boundary_mode,
                o.bet_result, o.profit_per_dollar, o.clv
         FROM decision_ledger d
         JOIN sia3_publication_slots s ON s.decision_id = d.decision_id
@@ -1524,6 +1638,42 @@ def get_prospective_performance() -> Dict[str, Any]:
             "roi": None if not rprofits else sum(rprofits) / len(rprofits),
         }
 
+    bucket_keys = ["0.0", "0.5", "1.0", "1.5", "2.0", "2.5", "3.0+", "UNAVAILABLE"]
+    distance_buckets: Dict[str, Dict[str, Any]] = {}
+    for bucket in bucket_keys:
+        bucket_rows = [r for r in graded if str(r["boundary_distance_bucket"] or "UNAVAILABLE") == bucket]
+        b_wins = sum(1 for r in bucket_rows if r["bet_result"] == "WIN")
+        b_losses = sum(1 for r in bucket_rows if r["bet_result"] == "LOSS")
+        b_pushes = sum(1 for r in bucket_rows if r["bet_result"] == "PUSH")
+        b_non_push = b_wins + b_losses
+        b_profits = [float(r["profit_per_dollar"]) for r in bucket_rows if r["profit_per_dollar"] is not None]
+        b_clv = [float(r["clv"]) for r in bucket_rows if r["clv"] is not None]
+        distance_buckets[bucket] = {
+            "sampleSize": len(bucket_rows),
+            "W": b_wins,
+            "L": b_losses,
+            "P": b_pushes,
+            "winRate": None if b_non_push == 0 else b_wins / b_non_push,
+            "roi": None if not b_profits else sum(b_profits) / len(b_profits),
+            "averageCLV": None if not b_clv else sum(b_clv) / len(b_clv),
+            "status": "INSUFFICIENT SAMPLE" if len(bucket_rows) < 25 else "READY",
+        }
+
+    def _transition_block(flag_name: str) -> Dict[str, Any]:
+        flagged = [r for r in graded if bool(r[flag_name])]
+        wins_f = sum(1 for r in flagged if r["bet_result"] == "WIN")
+        losses_f = sum(1 for r in flagged if r["bet_result"] == "LOSS")
+        pushes_f = sum(1 for r in flagged if r["bet_result"] == "PUSH")
+        denom_f = wins_f + losses_f
+        return {
+            "sampleSize": len(flagged),
+            "W": wins_f,
+            "L": losses_f,
+            "P": pushes_f,
+            "winRate": None if denom_f == 0 else wins_f / denom_f,
+            "status": "INSUFFICIENT SAMPLE" if len(flagged) < 25 else "READY",
+        }
+
     return {
         "datasetLabel": "PROSPECTIVE AUDITED TRACK RECORD",
         "historicalLabel": "MARKET-REFERENCE BACKTEST",
@@ -1540,6 +1690,19 @@ def get_prospective_performance() -> Dict[str, Any]:
             "1": by_rank[1],
             "2": by_rank[2],
             "3": by_rank[3],
+        },
+        "executionBoundaryResearch": {
+            "observedVsSimulated": {
+                "observedOfficialQuotes": sum(1 for r in rows if bool(r["observed_quote_available"])),
+                "modelSimulatedBoundaries": sum(1 for r in rows if str(r["execution_boundary_mode"] or "").upper() == "OBSERVED_PLUS_MODEL_SIMULATION"),
+            },
+            "distanceBuckets": distance_buckets,
+            "transitions": {
+                "crossesZero": _transition_block("boundary_crosses_zero"),
+                "underdogToFavorite": _transition_block("boundary_underdog_to_favorite"),
+                "crossesKeyNumber3": _transition_block("boundary_crosses_key_3"),
+                "crossesKeyNumber7": _transition_block("boundary_crosses_key_7"),
+            },
         },
     }
 

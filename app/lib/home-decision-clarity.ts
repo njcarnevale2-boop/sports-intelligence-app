@@ -1,11 +1,11 @@
 type HomeDecisionItem = {
   selection: string;
+  line: number | null;
   recommendedPlayableTo: number | null;
   recommendedPlayableToStatus?: string | null;
   edge: number | null;
   modelProbability: number | null;
   marketImpliedProbability: number | null;
-  line: number | null;
   price: number | null;
   sportsbook: string | null;
 };
@@ -26,11 +26,36 @@ function teamFromSelection(selection: string) {
   return team || "Selection";
 }
 
-export function formatRecommendedTo(item: HomeDecisionItem) {
-  if (item.recommendedPlayableToStatus !== "AVAILABLE" || item.recommendedPlayableTo == null) {
+export function formatBetRange(item: HomeDecisionItem) {
+  if (item.line == null || !Number.isFinite(item.line)) {
     return "Unavailable";
   }
-  return `${teamFromSelection(item.selection)} ${formatSigned(item.recommendedPlayableTo)}`;
+  return `${teamFromSelection(item.selection)} ${formatSigned(item.line)} or better`;
+}
+
+export function getModelCushionDistance(item: HomeDecisionItem) {
+  if (item.recommendedPlayableToStatus !== "AVAILABLE") return null;
+  if (item.line == null || item.recommendedPlayableTo == null) return null;
+  if (!Number.isFinite(item.line) || !Number.isFinite(item.recommendedPlayableTo)) return null;
+  return Math.abs(item.line - item.recommendedPlayableTo);
+}
+
+export function formatModelCushion(item: HomeDecisionItem) {
+  const distance = getModelCushionDistance(item);
+  if (distance == null) return "Unavailable";
+
+  if (distance === 0) return "MINIMAL";
+  if (distance <= 1.0) return "LIMITED";
+  if (distance <= 2.5) return "MODERATE";
+  return "STRONG";
+}
+
+export function modelCushionSubtext(item: HomeDecisionItem) {
+  const distance = getModelCushionDistance(item);
+  if (distance == null) {
+    return "Theoretical boundary data is unavailable for this matchup.";
+  }
+  return `Display-only model cushion from current line to theoretical boundary (${distance.toFixed(1)} pts).`;
 }
 
 export function formatProbabilityEdge(edge: number | null) {

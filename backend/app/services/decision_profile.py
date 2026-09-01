@@ -180,10 +180,10 @@ def build_spread_decision_boundaries(
     label_by_point = {
         start: "Current line",
         strong_to: "Strong Bet through",
-        recommended_to: "Official bet through",
+        recommended_to: "Theoretical model boundary",
         lean_at: "Lean starts",
         pass_at: "Pass starts",
-        boundary: "Mathematical EV boundary",
+        boundary: "Theoretical EV boundary",
     }
 
     stages: List[Dict[str, Any]] = []

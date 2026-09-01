@@ -646,10 +646,10 @@ export default function GameIntelligencePage() {
                   <p className="mt-1 text-xs text-zinc-400">{opportunity?.book ?? "No current quote"}</p>
                 </div>
                 <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                  <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Recommended Bet Range</p>
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Theoretical Model Boundary</p>
                   <p className="mt-2 text-base font-semibold text-zinc-100">{recommendedBoundaryLabel}</p>
-                  <p className="mt-1 text-xs text-zinc-500">SIA keeps this as an official BET/STRONG BET through this line.</p>
-                  <p className="mt-2 text-xs text-zinc-400">Mathematical EV boundary: {mathematicalBoundaryLabel}</p>
+                  <p className="mt-1 text-xs text-zinc-500">Research estimate only. Not an execution recommendation.</p>
+                  <p className="mt-2 text-xs text-zinc-400">Theoretical EV boundary: {mathematicalBoundaryLabel}</p>
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
                   <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
@@ -785,7 +785,7 @@ export default function GameIntelligencePage() {
                     <p>Market probability: {item.impliedProbability.toFixed(1)}%</p>
                     <p>Edge: {item.edge.toFixed(1)} pts</p>
                     <p>EV: {item.currentEV != null ? `${item.currentEV >= 0 ? "+" : ""}${item.currentEV.toFixed(3)}` : "Unavailable"}</p>
-                    <p>Playable-To: {formatTruePlayableTo(item)}</p>
+                    <p>Theoretical EV boundary: {formatTruePlayableTo(item)}</p>
                     <p>Qualification: {item.qualificationStatus ?? "UNKNOWN"}</p>
                   </div>
                 </div>
@@ -828,9 +828,10 @@ export default function GameIntelligencePage() {
               <p className="mt-2 text-lg font-semibold">{opportunity ? `${opportunity.pick} (${signed(opportunity.price)})` : "Unavailable"}</p>
             </div>
             <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Official Bet Through</p>
+              <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Theoretical Model Boundary</p>
               <p className="mt-2 text-lg font-semibold">{recommendedBoundaryLabel}</p>
-              <p className="mt-1 text-xs text-zinc-500">Mathematical EV boundary: {mathematicalBoundaryLabel}</p>
+              <p className="mt-1 text-xs text-zinc-500">Research estimate only. It assumes hypothetical pricing.</p>
+              <p className="mt-1 text-xs text-zinc-500">Theoretical EV boundary: {mathematicalBoundaryLabel}</p>
             </div>
           </div>
 
@@ -939,7 +940,7 @@ export default function GameIntelligencePage() {
                           </p>
                         ))}
                       </div>
-                      <p className="mt-3 text-xs text-zinc-500">Positive EV can persist past the official recommendation range, but SIA only publishes official bets through the qualified boundary.</p>
+                      <p className="mt-3 text-xs text-zinc-500">This is a model-simulated degradation path, not a guarantee of executable sportsbook quotes at each line.</p>
                     </div>
                   ) : null}
 
@@ -1034,9 +1035,9 @@ export default function GameIntelligencePage() {
               <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
                 <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Pricing Boundaries</p>
                 <p className="mt-2 text-sm text-zinc-300">Fair line: {opportunity?.fairLine != null ? signed(opportunity.fairLine) : "Unavailable"}</p>
-                <p className="mt-1 text-sm text-zinc-300">True Playable-To: {formatTruePlayableTo(opportunity)}</p>
+                <p className="mt-1 text-sm text-zinc-300">Theoretical EV boundary: {formatTruePlayableTo(opportunity)}</p>
                 <p className="mt-1 text-sm text-zinc-300">Worst currently available playable price: {opportunity?.worstObservedPlayablePrice != null ? signed(opportunity.worstObservedPlayablePrice) : "Unavailable"}</p>
-                <p className="mt-1 text-sm text-zinc-300">Playable-To EV floor: {opportunity?.minimumPlayableEV != null ? `${(opportunity.minimumPlayableEV * 100).toFixed(1)}%` : "Unavailable"}</p>
+                <p className="mt-1 text-sm text-zinc-300">Minimum EV floor for modeled boundary: {opportunity?.minimumPlayableEV != null ? `${(opportunity.minimumPlayableEV * 100).toFixed(1)}%` : "Unavailable"}</p>
               </div>
               <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
                 <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Market Intelligence</p>

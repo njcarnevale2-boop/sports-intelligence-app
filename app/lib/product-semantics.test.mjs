@@ -1,0 +1,34 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+function readWorkspaceFile(relativePath) {
+  return readFileSync(resolve(__dirname, "..", relativePath), "utf8");
+}
+
+test("home page uses current-bet and model-cushion semantics", () => {
+  const page = readWorkspaceFile("page.tsx");
+
+  assert.match(page, /BET RANGE/);
+  assert.match(page, /MODEL CUSHION/);
+  assert.match(page, /currently observed executable quote/i);
+  assert.doesNotMatch(page, /RECOMMENDED TO/);
+});
+
+test("advanced surfaces label model boundaries as theoretical", () => {
+  const gameIntel = readWorkspaceFile("games/[eventId]/page.tsx");
+  const opportunity = readWorkspaceFile("opportunities/[id]/page.tsx");
+
+  assert.match(gameIntel, /Theoretical Model Boundary/);
+  assert.match(gameIntel, /Research estimate only/);
+  assert.doesNotMatch(gameIntel, /Official Bet Through/);
+
+  assert.match(opportunity, /Theoretical Model Boundary/);
+  assert.match(opportunity, /Theoretical EV boundary/);
+  assert.doesNotMatch(opportunity, /Recommended To/);
+});

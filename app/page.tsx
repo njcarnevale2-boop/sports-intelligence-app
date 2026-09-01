@@ -10,8 +10,10 @@ import { fetchJson } from "./lib/api";
 import { trackAnalyticsEvent } from "./lib/analytics";
 import {
   buildLineStatusMessage,
+  formatBetRange,
+  formatModelCushion,
   formatProbabilityEdge,
-  formatRecommendedTo,
+  modelCushionSubtext,
   probabilityEdgeSubtext,
 } from "./lib/home-decision-clarity";
 
@@ -378,7 +380,8 @@ export default function Home() {
                 <div className="space-y-4">
                   <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                     <InfoTile label="BEST EXECUTABLE" value={executableQuote(primary)} />
-                    <InfoTile label="RECOMMENDED TO" value={formatRecommendedTo(primary)} subtext="SIA still recommends this bet at this line or better." />
+                    <InfoTile label="BET RANGE" value={formatBetRange(primary)} subtext="Based on the current observed executable line." />
+                    <InfoTile label="MODEL CUSHION" value={formatModelCushion(primary)} subtext={modelCushionSubtext(primary)} />
                     <InfoTile label="CONFIDENCE" value={primary.confidence != null ? `${primary.confidence}/100` : "Unavailable"} />
                     <InfoTile label="SIA VS MARKET" value={`${formatPercent(primary.modelProbability)} vs ${formatPercent(primary.marketImpliedProbability)}`} />
                     <InfoTile label="PROBABILITY EDGE" value={formatProbabilityEdge(primary.edge)} subtext={probabilityEdgeSubtext(primary)} />
@@ -401,7 +404,7 @@ export default function Home() {
                   <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">Verdict</p>
                   <p className="text-2xl font-semibold text-white">BET</p>
                   <p className="text-sm leading-6 text-zinc-300">
-                    SIA&apos;s best current wager is {primary.selection} at {primary.sportsbook || "an available book"}. The number is still inside SIA&apos;s playable range.
+                    SIA&apos;s best current wager is {primary.selection} at {primary.sportsbook || "an available book"}. This recommendation is anchored to the currently observed executable quote.
                   </p>
                   <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] p-4 text-sm text-zinc-300">
                     <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">Current Line Status</p>
@@ -468,9 +471,10 @@ export default function Home() {
 
                       <div className="mt-4 grid gap-3 sm:grid-cols-2">
                         <MiniStat label="BEST PRICE" value={executableQuote(item)} />
+                        <MiniStat label="BET RANGE" value={formatBetRange(item)} subtext="Based on the current observed executable line." />
+                        <MiniStat label="MODEL CUSHION" value={formatModelCushion(item)} subtext={modelCushionSubtext(item)} />
                         <MiniStat label="PROBABILITY EDGE" value={formatProbabilityEdge(item.edge)} subtext={probabilityEdgeSubtext(item)} />
                         <MiniStat label="CONFIDENCE" value={item.confidence != null ? `${item.confidence}/100` : "Unavailable"} />
-                        <MiniStat label="RECOMMENDED TO" value={formatRecommendedTo(item)} />
                       </div>
 
                       <div className="mt-3 rounded-xl border border-white/[0.08] bg-white/[0.03] p-3">

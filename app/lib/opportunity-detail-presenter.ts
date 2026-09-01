@@ -193,7 +193,7 @@ export function buildPrimaryDecisionSnapshot(
   const recommendedBoundaryValue = opp.recommendedPlayableTo;
   const hasRecommendedBoundary =
     recommendedBoundaryValue != null && Number.isFinite(recommendedBoundaryValue);
-  const recommendedTo =
+  const theoreticalModelBoundary =
     hasRecommendedBoundary
       ? `${team} ${formatLine(recommendedBoundaryValue)}`
       : "See Game Intelligence";
@@ -214,10 +214,10 @@ export function buildPrimaryDecisionSnapshot(
     bestSportsbook: opp.book,
     line,
     price: formatOdds(opp.price),
-    recommendedTo,
+    theoreticalModelBoundary,
     mathematicalBoundary,
     boundaryExplanation:
-      "SIA can still model positive EV beyond the official recommendation range, but official bets stop once recommendation quality degrades.",
+      "Research estimate only: this boundary assumes hypothetical pricing and is not an execution recommendation.",
     stakeRecommendation,
     marketConfirmation,
   };

@@ -52,7 +52,7 @@ test("primary decision snapshot preserves canonical values", () => {
   assert.equal(snapshot.siaWinProbability, 77.4);
   assert.equal(snapshot.marketImpliedProbability, 51.2);
   assert.equal(snapshot.bestSportsbook, "LowVig.ag");
-  assert.equal(snapshot.recommendedTo, "NO +3");
+  assert.equal(snapshot.theoreticalModelBoundary, "NO +3");
   assert.equal(snapshot.mathematicalBoundary, "NO -2");
   assert.equal(snapshot.stakeRecommendation, "Strong");
 });
@@ -246,7 +246,7 @@ test("market confirmation label mapping is user-friendly", () => {
   assert.equal(getMarketConfirmationLabel(3.2), "Weak");
 });
 
-test("primary decision emphasizes recommended boundary and preserves mathematical boundary", () => {
+test("primary decision preserves theoretical and mathematical boundaries", () => {
   const withStatusMissing = buildPrimaryDecisionSnapshot(
     {
       ...baseOpportunity,
@@ -260,7 +260,7 @@ test("primary decision emphasizes recommended boundary and preserves mathematica
     "Mixed"
   );
 
-  assert.equal(withStatusMissing.recommendedTo, "NO +5.5");
+  assert.equal(withStatusMissing.theoreticalModelBoundary, "NO +5.5");
   assert.equal(withStatusMissing.mathematicalBoundary, "NO +5.5");
 
   const withoutValue = buildPrimaryDecisionSnapshot(
@@ -276,6 +276,6 @@ test("primary decision emphasizes recommended boundary and preserves mathematica
     "Mixed"
   );
 
-  assert.equal(withoutValue.recommendedTo, "See Game Intelligence");
+  assert.equal(withoutValue.theoreticalModelBoundary, "See Game Intelligence");
   assert.equal(withoutValue.mathematicalBoundary, "Unavailable");
 });

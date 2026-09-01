@@ -200,7 +200,7 @@ def test_frontend_label_and_timezone_policy_regression_guards():
     assert "What's the biggest risk?" in games_intel_page
     assert "What would make SIA pass?" in games_intel_page
     assert "Why isn't SIA betting this?" in games_intel_page
-    assert "Playable-To EV floor:" in games_intel_page
+    assert "Minimum EV floor for modeled boundary:" in games_intel_page
     assert "What would make this a no-bet?" not in games_intel_page
     assert "Minimum required EV:" not in games_intel_page
     assert "America/New_York" in time_format

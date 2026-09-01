@@ -68,10 +68,10 @@ def test_recommended_boundary_separate_from_mathematical_boundary(monkeypatch):
     assert result.recommended_playable_to_status == "AVAILABLE"
     labels = [stage["label"] for stage in result.stages]
     assert "Current line" in labels
-    assert "Official bet through" in labels
+    assert "Theoretical model boundary" in labels
     assert "Lean starts" in labels
     assert "Pass starts" in labels
-    assert "Mathematical EV boundary" in labels
+    assert "Theoretical EV boundary" in labels
 
 
 def test_unavailable_context_returns_unavailable_status():

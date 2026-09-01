@@ -3,8 +3,11 @@ import assert from "node:assert/strict";
 
 import {
   buildLineStatusMessage,
+  formatBetRange,
+  formatModelCushion,
   formatProbabilityEdge,
-  formatRecommendedTo,
+  getModelCushionDistance,
+  modelCushionSubtext,
   probabilityEdgeSubtext,
 } from "./home-decision-clarity.ts";
 
@@ -20,16 +23,41 @@ const base = {
   sportsbook: "BookA",
 };
 
-test("recommended boundary uses canonical recommendedPlayableTo", () => {
-  assert.equal(formatRecommendedTo(base), "NO +3");
+test("bet range stays anchored to the current executable line", () => {
+  assert.equal(formatBetRange(base), "NO +7 or better");
+
+  const unavailable = {
+    ...base,
+    line: null,
+  };
+  assert.equal(formatBetRange(unavailable), "Unavailable");
+});
+
+test("model cushion is deterministic and display-only", () => {
+  assert.equal(getModelCushionDistance(base), 4);
+  assert.equal(formatModelCushion(base), "STRONG");
+  assert.match(modelCushionSubtext(base), /Display-only model cushion/);
+
+  assert.equal(formatModelCushion({ ...base, line: 3 }), "MINIMAL");
+  assert.equal(formatModelCushion({ ...base, line: 3.5 }), "LIMITED");
+  assert.equal(formatModelCushion({ ...base, line: 5 }), "MODERATE");
   assert.equal(
-    formatRecommendedTo({
-      ...base,
-      recommendedPlayableTo: null,
-      recommendedPlayableToStatus: "UNAVAILABLE",
-    }),
+    formatModelCushion({ ...base, recommendedPlayableToStatus: "UNAVAILABLE" }),
     "Unavailable",
   );
+});
+
+test("model cushion does not change with probability or EV fields", () => {
+  const baseline = formatModelCushion(base);
+  const changedMath = formatModelCushion({
+    ...base,
+    edge: -2.4,
+    modelProbability: 0.51,
+    marketImpliedProbability: 0.58,
+  });
+
+  assert.equal(baseline, "STRONG");
+  assert.equal(changedMath, baseline);
 });
 
 test("probability edge formatting is bettor-friendly", () => {
