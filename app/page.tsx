@@ -8,6 +8,12 @@ import { Button } from "@/components/ui/button";
 import FreshnessBadge from "@/components/ui/freshness-badge";
 import { fetchJson } from "./lib/api";
 import { trackAnalyticsEvent } from "./lib/analytics";
+import {
+  buildLineStatusMessage,
+  formatProbabilityEdge,
+  formatRecommendedTo,
+  probabilityEdgeSubtext,
+} from "./lib/home-decision-clarity";
 
 type QuoteWarnings = {
   isStale?: boolean;
@@ -25,6 +31,9 @@ type DecisionBoardItem = {
   bestAvailableLine: number | null;
   bestAvailablePrice: number | null;
   bestAvailableSportsbook: string | null;
+  recommendedPlayableTo: number | null;
+  recommendedPlayableToStatus?: string | null;
+  recommendedPlayableToReason?: string | null;
   playableTo: number | null;
   modelProbability: number | null;
   marketImpliedProbability: number | null;
@@ -34,6 +43,7 @@ type DecisionBoardItem = {
   marketDepth: string;
   quoteFreshness: string;
   gameStartTime: string;
+  quoteLastUpdated?: string | null;
   recommendationStatus: string;
   productionEligible: boolean;
   whySiaLikesIt: string;
@@ -129,10 +139,10 @@ function depthLabel(depth: string) {
 
 function freshnessLabel(freshness: string) {
   const normalized = String(freshness || "").toUpperCase();
-  if (normalized === "FRESH") return "FRESH";
+  if (normalized === "FRESH") return "CURRENT";
   if (normalized === "WARM") return "RECENT";
-  if (normalized === "STALE") return "STALE — VERIFY BEFORE BETTING";
-  return "QUOTE FRESHNESS UNKNOWN";
+  if (normalized === "STALE") return "CHECK CURRENT LINE";
+  return "CHECK CURRENT LINE";
 }
 
 function executableQuote(item: DecisionBoardItem) {
@@ -288,6 +298,9 @@ export default function Home() {
   const readLine = primary
     ? `SIA found ${items.length} production bet${items.length === 1 ? "" : "s"} worth acting on right now.`
     : board?.noBetState?.summary || "SIA does not currently see a production-quality edge worth taking.";
+  const primaryLineStatus = primary
+    ? buildLineStatusMessage(primary, primary.quoteFreshness, primary.quoteLastUpdated ?? board?.lastUpdated)
+    : null;
 
   if (loading) {
     return (
@@ -365,11 +378,11 @@ export default function Home() {
                 <div className="space-y-4">
                   <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                     <InfoTile label="BEST EXECUTABLE" value={executableQuote(primary)} />
-                    <InfoTile label="PLAYABLE TO" value={primary.playableTo != null ? formatSigned(primary.playableTo) : "Unavailable"} subtext="Current bet stays live through this number." />
+                    <InfoTile label="RECOMMENDED TO" value={formatRecommendedTo(primary)} subtext="SIA still recommends this bet at this line or better." />
                     <InfoTile label="CONFIDENCE" value={primary.confidence != null ? `${primary.confidence}/100` : "Unavailable"} />
                     <InfoTile label="SIA VS MARKET" value={`${formatPercent(primary.modelProbability)} vs ${formatPercent(primary.marketImpliedProbability)}`} />
-                    <InfoTile label="EDGE" value={primary.edge != null ? `${primary.edge.toFixed(1)} pts` : "Unavailable"} />
-                    <InfoTile label="QUOTE FRESHNESS" value={freshnessLabel(primary.quoteFreshness)} />
+                    <InfoTile label="PROBABILITY EDGE" value={formatProbabilityEdge(primary.edge)} subtext={probabilityEdgeSubtext(primary)} />
+                    <InfoTile label="CURRENT LINE STATUS" value={freshnessLabel(primary.quoteFreshness)} subtext={primaryLineStatus?.detail} />
                   </div>
 
                   <div className="grid gap-3 sm:grid-cols-2">
@@ -391,8 +404,9 @@ export default function Home() {
                     SIA&apos;s best current wager is {primary.selection} at {primary.sportsbook || "an available book"}. The number is still inside SIA&apos;s playable range.
                   </p>
                   <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] p-4 text-sm text-zinc-300">
-                    <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">Action</p>
-                    <p className="mt-2">Bet the best available line, then verify freshness before placing the ticket.</p>
+                    <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">Current Line Status</p>
+                    <p className="mt-2 text-white">{primaryLineStatus?.heading ?? "CHECK CURRENT LINE"}</p>
+                    <p className="mt-1">{primaryLineStatus?.detail ?? "This quote may be outdated. Confirm the current line and price before betting."}</p>
                   </div>
                   <div className="flex flex-wrap gap-2 pt-1">
                     <Link href={`/games/${primary.eventId}`}>
@@ -442,6 +456,7 @@ export default function Home() {
               <div className="mt-4 grid gap-4 lg:grid-cols-2">
                 {alsoWorthBetting.map((item) => {
                   const game = gameByEventId.get(item.eventId);
+                  const status = buildLineStatusMessage(item, item.quoteFreshness, item.quoteLastUpdated ?? board.lastUpdated);
                   return (
                     <article key={`${item.eventId}-${item.rank}`} className="rounded-2xl border border-white/[0.08] bg-black/20 p-5">
                       <div className="flex items-center justify-between gap-3">
@@ -453,9 +468,15 @@ export default function Home() {
 
                       <div className="mt-4 grid gap-3 sm:grid-cols-2">
                         <MiniStat label="BEST PRICE" value={executableQuote(item)} />
-                        <MiniStat label="EDGE" value={item.edge != null ? `${item.edge.toFixed(1)} pts` : "Unavailable"} />
+                        <MiniStat label="PROBABILITY EDGE" value={formatProbabilityEdge(item.edge)} subtext={probabilityEdgeSubtext(item)} />
                         <MiniStat label="CONFIDENCE" value={item.confidence != null ? `${item.confidence}/100` : "Unavailable"} />
-                        <MiniStat label="PLAYABLE TO" value={item.playableTo != null ? formatSigned(item.playableTo) : "Unavailable"} />
+                        <MiniStat label="RECOMMENDED TO" value={formatRecommendedTo(item)} />
+                      </div>
+
+                      <div className="mt-3 rounded-xl border border-white/[0.08] bg-white/[0.03] p-3">
+                        <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">Current Line Status</p>
+                        <p className="mt-2 text-sm text-white">{status.heading}</p>
+                        <p className="mt-1 text-sm leading-6 text-zinc-300">{status.detail}</p>
                       </div>
 
                       <div className="mt-4 rounded-xl border border-white/[0.08] bg-white/[0.03] p-3">
@@ -534,11 +555,12 @@ function InfoTile({ label, value, subtext }: { label: string; value: string; sub
   );
 }
 
-function MiniStat({ label, value }: { label: string; value: string }) {
+function MiniStat({ label, value, subtext }: { label: string; value: string; subtext?: string }) {
   return (
     <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] p-3">
       <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">{label}</p>
       <p className="mt-2 text-sm text-zinc-200">{value}</p>
+      {subtext ? <p className="mt-1 text-xs leading-5 text-zinc-500">{subtext}</p> : null}
     </div>
   );
 }

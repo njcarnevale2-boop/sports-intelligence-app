@@ -225,6 +225,9 @@ def build_decision_board_payload(
             "bestAvailableLine": best_market.get("point") if best_market.get("point") is not None else opp.get("bestAvailableLine"),
             "bestAvailablePrice": best_market.get("americanPrice") if best_market.get("americanPrice") is not None else opp.get("bestAvailablePrice"),
             "bestAvailableSportsbook": best_market.get("sportsbook") or opp.get("book"),
+            "recommendedPlayableTo": opp.get("recommendedPlayableTo"),
+            "recommendedPlayableToStatus": opp.get("recommendedPlayableToStatus"),
+            "recommendedPlayableToReason": opp.get("recommendedPlayableToReason"),
             "playableTo": opp.get("truePlayableTo") if opp.get("truePlayableTo") is not None else opp.get("playableTo"),
             "modelProbability": opp.get("currentWinProbability") if opp.get("currentWinProbability") is not None else opp.get("rawModelProbability"),
             "marketImpliedProbability": opp.get("marketNoVigProbability"),
@@ -242,6 +245,7 @@ def build_decision_board_payload(
             "marketValidationStatus": opp.get("marketValidationStatus"),
             "qualificationStatus": opp.get("qualificationStatus"),
             "playableToStatus": opp.get("truePlayableToStatus") or opp.get("playableToStatus"),
+            "quoteLastUpdated": opp.get("marketLastUpdated"),
             "quoteWarnings": {
                 "isStale": quote_freshness == "STALE",
                 "limitedDepth": market_depth_status in {"THIN", "SINGLE_BOOK", "NO_BOOKS"},
