@@ -194,18 +194,18 @@ def _build_base_context(event_id: str, snapshot_id: Optional[str]) -> Dict[str, 
 
 def _decision_summary(selection: str, inside_playable: Optional[bool], at_boundary: bool, ev_change: Optional[float]) -> str:
     if inside_playable is False:
-        return f"PASS - {selection} is beyond SIA's current playable range."
+        return f"MODEL NO LONGER QUALIFIES - Under current model assumptions, {selection} would classify as PASS at the assumed price."
 
     if inside_playable is True and at_boundary:
-        return f"YES - SIA would still play {selection} at the assumed price, and this sits exactly at the current playable boundary."
+        return f"MODEL THRESHOLD - Under current model assumptions, {selection} sits at the model's current theoretical qualification threshold at the assumed price."
 
     if inside_playable is True and ev_change is not None and ev_change <= -0.08:
-        return f"CAUTION - {selection} remains playable at the assumed price, but value has deteriorated materially."
+        return f"MODEL STILL QUALIFIES - Under current model assumptions, {selection} would still classify as a BET at the assumed price, but modeled value has deteriorated materially."
 
     if inside_playable is True:
-        return f"YES - SIA would still play {selection} at the assumed price."
+        return f"MODEL STILL QUALIFIES - Under current model assumptions, {selection} would still classify as a BET at the assumed price."
 
-    return "I don't have enough verified SIA data to determine playable status for this hypothetical line."
+    return "I don't have enough verified SIA data to determine model classification for this hypothetical line."
 
 
 def _decision_status(inside_playable: Optional[bool]) -> str:
@@ -352,7 +352,15 @@ def evaluate_move_the_line(
             "decisionStatus": _decision_status(inside_playable),
             "boundaryStatus": _boundary_status(at_boundary, inside_playable),
             "status": _decision_status(inside_playable),
-            "statusReason": "At SIA's current boundary." if at_boundary else ("Still inside SIA's current playable range." if inside_playable else "Outside SIA's current playable range."),
+            "statusReason": (
+                "At the model's current theoretical qualification threshold."
+                if at_boundary
+                else (
+                    "Inside the model's current theoretical qualification range."
+                    if inside_playable
+                    else "Outside the model's current theoretical qualification range."
+                )
+            ),
             "decisionSummary": _decision_summary(hypothetical_selection, inside_playable, at_boundary, ev_change),
             "recommendedPlayableTo": decision_profile.recommended_playable_to,
             "recommendedPlayableToStatus": decision_profile.recommended_playable_to_status,

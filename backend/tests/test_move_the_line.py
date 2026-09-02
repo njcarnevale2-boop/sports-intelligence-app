@@ -106,7 +106,7 @@ def test_half_point_beyond_playable_to(monkeypatch):
     assert result["hypothetical"]["decisionStatus"] == "PASS"
     assert result["hypothetical"]["boundaryStatus"] == "OUTSIDE"
     assert result["hypothetical"]["status"] == "PASS"
-    assert "Outside" in result["hypothetical"]["statusReason"]
+    assert "theoretical qualification range" in result["hypothetical"]["statusReason"]
 
 
 def test_canonical_decision_state_not_contradicted(monkeypatch):
@@ -326,8 +326,8 @@ def test_api_route_works(monkeypatch):
                 "qualificationStatus": "QUALIFIED",
                 "recommendation": "BET",
                 "status": "PLAYABLE",
-                "statusReason": "Still inside SIA's current playable range.",
-                "decisionSummary": "YES",
+                "statusReason": "Inside the model's current theoretical qualification range.",
+                "decisionSummary": "MODEL STILL QUALIFIES",
                 "priceDisclosure": "Move-the-Line holds the current price constant",
             },
             "valueChange": {},

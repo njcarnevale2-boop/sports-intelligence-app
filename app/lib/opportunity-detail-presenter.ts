@@ -170,9 +170,9 @@ export function buildDecisionBoxes(
   if (opp.truePlayableToStatus === "AVAILABLE" && opp.truePlayableTo != null) {
     const team = opp.pick.split(" ")[0];
     const playableTo = `${team} ${formatLine(opp.truePlayableTo)}`;
-    whatToWatch.push(`Whether the best line deteriorates toward ${playableTo}`);
+    whatToWatch.push(`Whether market movement pushes the line toward the model's theoretical EV threshold (${playableTo})`);
   } else {
-    whatToWatch.push("Whether the best available line deteriorates toward SIA's playable boundary");
+    whatToWatch.push("Whether market movement erodes model edge before kickoff");
   }
 
   return {

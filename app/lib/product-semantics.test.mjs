@@ -42,7 +42,11 @@ test("advanced surfaces label model boundaries as theoretical", () => {
 
   assert.match(gameIntel, /Theoretical Model Boundary/);
   assert.match(gameIntel, /Research estimate only/);
+  assert.match(gameIntel, /Model Simulation Notice/);
+  assert.match(gameIntel, /not an observed sportsbook quote and not an execution recommendation/i);
+  assert.match(gameIntel, /Would the model still qualify this if the line moved\?/);
   assert.doesNotMatch(gameIntel, /Official Bet Through/);
+  assert.doesNotMatch(gameIntel, /Is this still playable\?/);
 
   assert.match(opportunity, /Theoretical Model Boundary/);
   assert.match(opportunity, /Theoretical EV boundary/);

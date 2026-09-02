@@ -581,11 +581,24 @@ export default function GameIntelligencePage() {
     : [
         "Why does SIA like this?",
         "What's the biggest risk?",
-        "Is this still playable?",
+        "Would the model still qualify this if the line moved?",
         "Where should I bet it?",
         "What would make SIA pass?",
         "What is SIA seeing differently from the market?",
       ];
+
+  const modelDecisionLabel = moveResult
+    ? (moveResult.hypothetical.decisionStatus === "PLAYABLE"
+      ? "MODEL STILL QUALIFIES"
+      : "MODEL NO LONGER QUALIFIES")
+    : "";
+  const modelBoundaryLabel = moveResult
+    ? (moveResult.hypothetical.boundaryStatus === "AT_BOUNDARY"
+      ? "MODEL THRESHOLD"
+      : moveResult.hypothetical.boundaryStatus === "INSIDE"
+      ? "MODEL INSIDE RANGE"
+      : "MODEL OUTSIDE RANGE")
+    : "";
 
   return (
     <main className="min-h-screen bg-[#070A0F] text-white">
@@ -821,6 +834,12 @@ export default function GameIntelligencePage() {
         <section id="move-the-line" className="rounded-3xl border border-white/[0.08] bg-[#0B1119] p-6 md:p-8">
           <p className="text-xs uppercase tracking-[0.2em] text-zinc-600">Move The Line</p>
           <p className="mt-2 text-sm text-zinc-400">Test a hypothetical spread using SIA's existing probability engine while holding price constant.</p>
+          <div className="mt-4 rounded-2xl border border-amber-300/30 bg-amber-300/[0.08] p-4">
+            <p className="text-[10px] uppercase tracking-[0.18em] text-amber-200">Model Simulation Notice</p>
+            <p className="mt-2 text-sm text-amber-100">
+              Move-the-Line output is theoretical model simulation at assumed pricing. It is not an observed sportsbook quote and not an execution recommendation.
+            </p>
+          </div>
 
           <div className="mt-4 grid gap-3 md:grid-cols-2">
             <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
@@ -905,8 +924,8 @@ export default function GameIntelligencePage() {
                   <div className={`rounded-2xl border p-4 ${moveResult.hypothetical.decisionStatus === "PLAYABLE" ? "border-emerald-400/30 bg-emerald-400/[0.06]" : "border-rose-400/30 bg-rose-400/[0.06]"}`}>
                     <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Decision Summary</p>
                     <p className="mt-2 text-sm text-zinc-100">{moveResult.hypothetical.decisionSummary}</p>
-                    <p className="mt-2 text-xs text-zinc-300">Decision: {moveResult.hypothetical.decisionStatus}</p>
-                    <p className="mt-1 text-xs text-zinc-300">Boundary: {moveResult.hypothetical.boundaryStatus}</p>
+                    <p className="mt-2 text-xs text-zinc-300">Decision: {modelDecisionLabel}</p>
+                    <p className="mt-1 text-xs text-zinc-300">Boundary: {modelBoundaryLabel}</p>
                     <p className="mt-1 text-xs text-zinc-300">{moveResult.hypothetical.statusReason}</p>
                   </div>
 
@@ -950,9 +969,9 @@ export default function GameIntelligencePage() {
                       <button
                         type="button"
                         className="rounded-full border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs text-zinc-300 transition hover:bg-white/[0.08]"
-                        onClick={() => void submitAsk("Why is this still playable?", moveResult)}
+                        onClick={() => void submitAsk("Why does the model still like this at this line?", moveResult)}
                       >
-                        Why is this still playable?
+                        Why does the model still like this at this line?
                       </button>
                       <button
                         type="button"

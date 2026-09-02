@@ -71,8 +71,14 @@ def classify_intent(question: str) -> str:
         return "BEST_SPORTSBOOK"
     if "value" in q and ("lost" in q or "lose" in q):
         return "VALUE_LOST"
-    if "why is this still playable" in q or "why still playable" in q:
+    if "why is this still playable" in q or "why still playable" in q or "why does the model still" in q:
         return "WHY_STILL_PLAYABLE"
+    if "how far can i bet this down" in q or "what is the worst line i should take" in q:
+        return "PLAYABLE_BOUNDARY"
+    if "what if this moves to" in q or "if the line moves" in q or "line movement" in q:
+        return "PLAYABLE_CHECK"
+    if "when does the model stop qualifying" in q or "model stop qualifying" in q:
+        return "PASS_CONDITION"
     if "why aren" in q and ("bet" in q or "betting" in q or "wager" in q):
         return "NO_BET_REASON"
     if "why no bet" in q or "why not bet" in q or "why isn" in q and "bet" in q:
@@ -293,6 +299,13 @@ def _format_playable_to_with_selection(selection: str, playable_to: Optional[flo
     return f"{team} {playable_to:+g}"
 
 
+def _selection_at_hypothetical(selection: str, hypothetical: Optional[float]) -> str:
+    team = str(selection or "").split(" ")[0] or "Selection"
+    if hypothetical is None:
+        return team
+    return f"{team} {hypothetical:+g}"
+
+
 def _is_qualified_pick(item: Dict[str, Any]) -> bool:
     q = str(item.get("qualificationStatus") or "").upper()
     if q:
@@ -474,7 +487,10 @@ def _decision_boundary_text(context: Dict[str, Any]) -> str:
     decision_degradation = context.get("decisionDegradation") if isinstance(context.get("decisionDegradation"), dict) else {}
     stages = decision_degradation.get("stages") if isinstance(decision_degradation, dict) else []
     if recommended_playable_to is None and playable_to is None:
-        return "I don't have enough verified SIA data to compute a Playable-To boundary right now."
+        return (
+            "SIA does not currently publish an execution-validated worst line for this recommendation. "
+            "The current executable recommendation is tied to the observed sportsbook quote."
+        )
 
     team = str(selection or "").split(" ")[0] or "Selection"
     if recommended_playable_to is not None and playable_to is not None:
@@ -486,17 +502,22 @@ def _decision_boundary_text(context: Dict[str, Any]) -> str:
                 if rec and rec not in ordered:
                     ordered.append(rec)
             if ordered:
-                transition_text = f" Conviction typically degrades as {' -> '.join(ordered)} as the line worsens."
+                transition_text = f" Model classification typically degrades as {' -> '.join(ordered)} as hypothetical lines worsen."
         return (
-            f"SIA's official bet range currently holds to {team} {recommended_playable_to:+g}. "
-            f"Modeled EV can remain positive down to {team} {playable_to:+g}, but beyond the official range the recommendation degrades.{transition_text}"
+            f"The current executable recommendation is {selection} at the observed sportsbook quote. "
+            f"SIA can simulate a theoretical model boundary near {team} {recommended_playable_to:+g} and a theoretical EV boundary near {team} {playable_to:+g}. "
+            f"Those boundaries are model simulations, not execution recommendations and not observed sportsbook quotes.{transition_text}"
         )
     if recommended_playable_to is not None:
-        return f"SIA's official bet range currently holds to {team} {recommended_playable_to:+g}."
+        return (
+            f"The current executable recommendation is {selection} at the observed sportsbook quote. "
+            f"SIA can simulate a theoretical model boundary near {team} {recommended_playable_to:+g}, but that is not an execution recommendation."
+        )
 
     return (
-        f"SIA would move this to PASS if {selection} moved beyond its current Playable-To of {_format_playable_to_with_selection(selection, playable_to)}, "
-        "or if updated probability/price caused the opportunity to fail SIA's qualification policy."
+        f"The current executable recommendation is {selection} at the observed sportsbook quote. "
+        f"SIA can simulate a theoretical EV boundary near {_format_playable_to_with_selection(selection, playable_to)}, "
+        "but that boundary is not execution-validated betting advice."
     )
 
 
@@ -649,26 +670,40 @@ def _build_structured_explanation(
     if move_summary and intent == "WHY_STILL_PLAYABLE":
         if move_summary.get("inside"):
             selection_line = str(move_summary.get("selection") or selection)
-            answer = f"{selection_line} is still PLAYABLE because it remains inside SIA's current Playable-To boundary."
+            answer = (
+                f"SIA currently recommends {selection} at the observed quote. "
+                f"At hypothetical {selection_line}, the model would still classify this as BET under current assumptions. "
+                "That result is a model simulation, not an execution recommendation."
+            )
             why = [
-                f"Status is PLAYABLE via canonical boundary check against {_format_playable_to_with_selection(selection_line, _to_float(move_summary.get('playableTo')))}.",
+                "Move-the-Line evaluates hypothetical spreads under a constant-price assumption.",
                 f"Line-specific win probability is {(_to_float(move_summary.get('hypoWin')) or 0.0) * 100:.1f}% and push-aware EV is {(_to_float(move_summary.get('hypoEv')) or 0.0):+.3f} per $1.",
             ]
-            what_changes = "It becomes PASS once the line moves beyond the current Playable-To boundary."
+            what_changes = "If the hypothetical line worsens enough, the model eventually reclassifies from BET to LEAN/PASS under the same assumptions."
         else:
-            answer = "This line is currently PASS, not playable, based on SIA's canonical boundary."
-            why = ["Deterministic status for the selected hypothetical line is PASS."]
+            answer = (
+                f"SIA currently recommends {selection} at the observed quote. "
+                "At this hypothetical line, the model no longer classifies the setup as a BET under current assumptions. "
+                "That is a simulation output, not sportsbook execution guidance."
+            )
+            why = ["Deterministic model-classification status for the selected hypothetical line is PASS."]
         primary_reason = "Move-the-Line deterministic boundary check."
 
     elif move_summary and intent == "WHY_PASS":
         if move_summary.get("inside"):
-            answer = "This hypothetical line is currently PLAYABLE, not PASS, under SIA's canonical boundary."
-            why = ["Deterministic status is PLAYABLE for this line at the assumed price."]
+            answer = (
+                "At this hypothetical line, the model still classifies the setup as BET under current assumptions. "
+                "That does not confirm a currently available sportsbook quote."
+            )
+            why = ["Deterministic model-classification status is BET for this line at the assumed price."]
         else:
-            answer = f"It becomes PASS because the hypothetical line is outside SIA's current playable range ({move_summary.get('statusReason')})."
+            answer = (
+                "At this hypothetical line, the model no longer qualifies the setup under current assumptions. "
+                "The executable recommendation remains the observed sportsbook quote."
+            )
             why = [
-                f"SIA Playable-To boundary: {_format_playable_to_with_selection(selection, _to_float(move_summary.get('playableTo')))}.",
-                "Status is determined directly from canonical inside/outside boundary semantics.",
+                "Status is determined directly from model simulation at the selected hypothetical spread and assumed price.",
+                "Hypothetical classification is not execution-validated betting advice.",
             ]
         primary_reason = "Move-the-Line deterministic PASS status."
 
@@ -684,7 +719,7 @@ def _build_structured_explanation(
             "These deltas come from canonical Move-the-Line engine outputs at the selected hypothetical spread and assumed odds.",
             f"Deterministic status remains {move_summary.get('status') or 'UNKNOWN'} for this line.",
         ]
-        what_changes = "As the line worsens, probability/edge/EV can deteriorate until the Playable-To boundary is crossed."
+        what_changes = "As the hypothetical line worsens, model probability/edge/EV can deteriorate until the model no longer qualifies the setup."
         primary_reason = "Move-the-Line value deterioration metrics."
 
     elif intent == "WHY":
@@ -713,7 +748,7 @@ def _build_structured_explanation(
             team = selection.split(" ")[0] if selection else "Selection"
             if recommended_playable_to is not None and current_point is not None:
                 why.append(
-                    f"Spread cushion: SIA's official recommendation holds through {team} {recommended_playable_to:+g}, and this pick is currently better than that boundary."
+                    f"Model simulation: a theoretical model boundary is near {team} {recommended_playable_to:+g}, but executable recommendations are based on observed sportsbook quotes."
                 )
             if len(why) < 2 and calibrated_prob is not None and implied_prob is not None:
                 why.append(f"SIA probability remains above market implied probability for this selection.")
@@ -730,7 +765,7 @@ def _build_structured_explanation(
         else:
             answer = "No major game-specific risk is currently verified."
             why = [
-                "The primary measurable risk is price deterioration beyond SIA's playable range.",
+                "The primary measurable risk is model-value deterioration as the line and price move away from the observed quote.",
             ]
         primary_reason = "Risk concentration"
 
@@ -738,18 +773,33 @@ def _build_structured_explanation(
         if move_summary:
             inside = move_summary.get("inside")
             selection_line = str(move_summary.get("selection") or selection)
+            current_selection = str(context.get("selection") or selection)
             if inside is True:
-                answer = f"Yes — {selection_line} remains playable."
+                answer = (
+                    f"SIA currently recommends {current_selection} at the observed sportsbook quote. "
+                    f"At hypothetical {selection_line}, the model would still classify this as BET under current assumptions. "
+                    "That is model simulation output, not an execution recommendation."
+                )
             elif inside is False:
-                answer = f"No — {selection_line} is outside SIA's current playable range."
+                answer = (
+                    f"SIA currently recommends {current_selection} at the observed sportsbook quote. "
+                    f"At hypothetical {selection_line}, the model would no longer classify this as BET under current assumptions. "
+                    "That is model simulation output, not an execution recommendation."
+                )
             else:
                 answer = "I don't have enough verified SIA data to answer that yet."
             why = [
-                f"Current recommendation: {context.get('selection')}",
-                f"SIA Playable-To: {_format_playable_to_with_selection(str(context.get('selection') or selection), _to_float(move_summary.get('playableTo')))}",
+                f"Current observed executable recommendation: {current_selection}",
+                "Move-the-Line uses a hypothetical spread with constant assumed price to isolate model behavior.",
             ]
-            what_changes = str(move_summary.get("statusReason") or what_changes)
-            primary_reason = "Deterministic playable-to boundary check."
+            what_changes = (
+                "Model still qualifies this hypothetical line under current assumptions."
+                if inside is True
+                else "Model no longer qualifies this hypothetical line under current assumptions."
+                if inside is False
+                else "Model classification changes as hypothetical lines and pricing assumptions worsen."
+            )
+            primary_reason = "Deterministic model-classification check."
             missing_data = _missing_messages_for_intent(intent, context)
             snapshot_note = _snapshot_note(snapshot_context=snapshot_context, live_context=context)
 
@@ -797,34 +847,50 @@ def _build_structured_explanation(
         if playable is None:
             answer = "I don't have enough verified SIA data to answer that yet."
         else:
-            answer = f"Yes — {selection.split(' ')[0]} {hypo:+g} remains playable." if playable else f"No — {selection.split(' ')[0]} {hypo:+g} is outside SIA's current playable range."
+            hypothetical_selection = _selection_at_hypothetical(selection, hypo)
+            if playable:
+                answer = (
+                    f"SIA currently recommends {selection} at the observed sportsbook quote. "
+                    f"At hypothetical {hypothetical_selection}, the model would still classify this as BET under current assumptions. "
+                    "That is model simulation output, not an execution recommendation."
+                )
+            else:
+                answer = (
+                    f"SIA currently recommends {selection} at the observed sportsbook quote. "
+                    f"At hypothetical {hypothetical_selection}, the model would no longer classify this as BET under current assumptions. "
+                    "That is model simulation output, not an execution recommendation."
+                )
             why = [
-                f"Current recommendation: {selection}",
-                f"SIA Playable-To: {_format_playable_to_with_selection(selection, true_playable_to)}",
+                f"Current observed executable recommendation: {selection}",
+                "Hypothetical line checks describe model behavior under current assumptions, not sportsbook quote availability.",
             ]
-            what_changes = f"{hypo:+g} remains {'inside' if playable else 'outside'} SIA's current playable range."
-        primary_reason = "Deterministic playable-to boundary check."
+            what_changes = f"At hypothetical {hypothetical_selection}, the model is {'inside' if playable else 'outside'} the current theoretical qualification range."
+        primary_reason = "Deterministic model-classification check."
 
     elif intent == "PLAYABLE_BOUNDARY":
-        if true_playable_to is None:
-            answer = "I don't have enough verified SIA data to identify the playable boundary right now."
-            why = ["The current game context does not expose a verified Playable-To boundary."]
-        else:
-            boundary_text = _format_playable_to_with_selection(selection, true_playable_to)
-            answer = f"SIA treats {selection} as too expensive once the line moves beyond its Playable-To boundary of Playable-To {boundary_text}."
-            why = [
-                f"Canonical Playable-To boundary: {boundary_text}.",
-                "That boundary comes from SIA's existing playable-range calculation.",
-            ]
-        primary_reason = "Canonical playable boundary lookup."
+        answer = (
+            "SIA does not currently publish an execution-validated worst line for this bet. "
+            f"The current executable recommendation is {selection} at the observed sportsbook quote. "
+            "SIA can simulate model behavior at hypothetical lines, but those outputs are theoretical and not execution recommendations."
+        )
+        why = [
+            "Observed sportsbook quotes determine executable recommendations.",
+            "Theoretical boundaries are model diagnostics and are not validated as executable line advice.",
+        ]
+        what_changes = "If the market line/price changes, SIA must observe and re-evaluate that quote before treating it as executable guidance."
+        primary_reason = "Execution recommendation is observed-quote-only for Week 1."
 
     elif intent == "PASS_CONDITION":
-        answer = decision_boundary
+        answer = (
+            f"The current executable recommendation is {selection} at the observed sportsbook quote. "
+            "If line/price conditions worsen, model simulation can shift from BET to LEAN/PASS, but hypothetical thresholds are not execution recommendations."
+        )
         why = [
             f"CURRENT BET: {selection}",
-            f"PLAYABLE THROUGH: {_format_playable_to_with_selection(selection, true_playable_to)}" if true_playable_to is not None else "PLAYABLE THROUGH: Unavailable",
+            "Model simulation can estimate where classification weakens under current assumptions.",
         ]
-        primary_reason = "Boundary and value deterioration."
+        what_changes = "SIA only treats an observed sportsbook quote as executable after re-evaluating that exact line and price."
+        primary_reason = "Observed execution vs theoretical simulation distinction."
 
     elif intent == "MARKET_VS_MODEL":
         answer = "SIA is above market because the calibrated model probability is higher than implied market probability."
@@ -903,12 +969,17 @@ def _build_structured_explanation(
         primary_reason = "Social intelligence availability check."
 
     elif intent == "PLAYABLE_TO_MEANING":
-        answer = "Playable-To is SIA's current boundary where value remains acceptable for this exact recommendation."
+        answer = (
+            "SIA does not currently publish an execution-validated Playable-To number. "
+            "The executable recommendation is tied to the observed sportsbook quote. "
+            "Boundary-style outputs are theoretical model simulations used for research."
+        )
         why = [
-            "It is derived from the validated push-aware EV framework.",
-            "If market price/line moves outside this boundary, the recommendation should be treated as PASS.",
+            "The model can simulate hypothetical spreads and prices under current assumptions.",
+            "A simulated boundary is not an observed sportsbook quote and not execution guidance.",
         ]
-        primary_reason = "Playable-To semantics."
+        what_changes = "Execution guidance changes only when SIA observes and re-evaluates the updated sportsbook quote."
+        primary_reason = "Week 1 execution-safety semantics."
 
     elif intent == "BEST_SPORTSBOOK":
         sportsbook = best_available_sportsbook or context.get("sportsbook")

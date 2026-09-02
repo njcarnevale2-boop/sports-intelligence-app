@@ -220,6 +220,8 @@ test("decision boxes do not fabricate risk when no risk signals are present", ()
   assert.ok(boxes.whyBetIt.length > 0);
   assert.deepEqual(boxes.whatCouldGoWrong, ["No material risk signal is currently elevated"]);
   assert.ok(boxes.whatToWatch.some((line) => line.includes("Line movement before kickoff")));
+  assert.ok(boxes.whatToWatch.some((line) => line.includes("theoretical EV threshold")));
+  assert.ok(boxes.whatToWatch.every((line) => !line.toLowerCase().includes("playable boundary")));
 });
 
 test("opportunity detail page keeps advanced disclosure and removes repetitive headers", () => {

@@ -189,7 +189,7 @@ def test_why_answer_includes_hesitation_and_degradation_context():
     assert "official bet standards" in result["answer"]
     assert 2 <= len(result["why"]) <= 4
     assert result["biggestReasonToHesitate"] is not None
-    assert "official bet range" in result["whatChangesDecision"]
+    assert "observed sportsbook quote" in result["whatChangesDecision"]
 
 
 def test_biggest_risk_question():
@@ -218,9 +218,9 @@ def test_playable_to_inside_threshold_underdog_direction():
         live_context=context,
     )
     assert result["intent"] == "PLAYABLE_CHECK"
-    assert result["answer"].startswith("Yes")
-    assert "Current recommendation: NO +7" in result["why"]
-    assert "Playable-To" in result["why"][1]
+    assert "SIA currently recommends NO +7 at the observed sportsbook quote" in result["answer"]
+    assert "model would still classify" in result["answer"]
+    assert "Current observed executable recommendation: NO +7" in result["why"]
     assert result["missingData"] == []
 
 
@@ -230,7 +230,7 @@ def test_playable_to_exact_threshold_is_playable():
         question="Would SIA still bet this at -5?",
         live_context=_base_live_context(),
     )
-    assert result["answer"].startswith("Yes")
+    assert "model would still classify" in result["answer"]
 
 
 def test_playable_to_outside_threshold_is_pass():
@@ -239,7 +239,7 @@ def test_playable_to_outside_threshold_is_pass():
         question="Would SIA still bet this at -5.5?",
         live_context=_base_live_context(),
     )
-    assert result["answer"].startswith("No")
+    assert "model would no longer classify" in result["answer"]
 
 
 def test_playable_to_favorite_direction():
@@ -260,8 +260,8 @@ def test_playable_to_favorite_direction():
         live_context=context,
     )
 
-    assert inside["answer"].startswith("Yes")
-    assert outside["answer"].startswith("No")
+    assert "model would still classify" in inside["answer"]
+    assert "model would no longer classify" in outside["answer"]
 
 
 def test_best_sportsbook_deterministic_answer():
@@ -479,9 +479,9 @@ def test_what_changes_the_bet_uses_canonical_playable_to():
         question="What changes the bet?",
         live_context=_base_live_context(),
     )
-    assert "official bet range currently holds" in result["answer"]
-    assert "NO +3" in result["answer"]
-    assert "NO -5" in result["answer"]
+    assert "observed sportsbook quote" in result["answer"]
+    assert "model simulation can shift from BET to LEAN/PASS" in result["answer"]
+    assert "execution recommendations" in result["answer"]
     assert "CURRENT BET: NO +7" in result["why"]
 
 
@@ -548,7 +548,7 @@ def test_move_the_line_why_still_playable_is_deterministic():
         "hypothetical": {
             "selection": "NO +2",
             "status": "PLAYABLE",
-            "statusReason": "Still inside SIA's current playable range.",
+            "statusReason": "Inside the model's current theoretical qualification range.",
             "insidePlayableRange": True,
             "atPlayableBoundary": False,
             "truePlayableTo": -5.0,
@@ -566,7 +566,8 @@ def test_move_the_line_why_still_playable_is_deterministic():
         move_the_line=move,
     )
     assert result["intent"] == "WHY_STILL_PLAYABLE"
-    assert "still PLAYABLE" in result["answer"]
+    assert "model would still classify this as BET" in result["answer"]
+    assert "not an execution recommendation" in result["answer"]
 
 
 def test_move_the_line_why_pass_is_deterministic():
@@ -575,7 +576,7 @@ def test_move_the_line_why_pass_is_deterministic():
         "hypothetical": {
             "selection": "NO -5.5",
             "status": "PASS",
-            "statusReason": "Outside SIA's current playable range.",
+            "statusReason": "Outside the model's current theoretical qualification range.",
             "insidePlayableRange": False,
             "atPlayableBoundary": False,
             "truePlayableTo": -5.0,
@@ -593,7 +594,7 @@ def test_move_the_line_why_pass_is_deterministic():
         move_the_line=move,
     )
     assert result["intent"] == "WHY_PASS"
-    assert "outside SIA's current playable range" in result["answer"]
+    assert "model no longer qualifies" in result["answer"]
 
 
 def test_move_the_line_value_lost_is_deterministic():
@@ -665,8 +666,42 @@ def test_playable_boundary_question_uses_canonical_boundary():
     )
 
     assert result["intent"] == "PLAYABLE_BOUNDARY"
-    assert "Playable-To" in result["answer"]
-    assert "NO -5" in result["answer"]
+    assert "does not currently publish an execution-validated worst line" in result["answer"]
+    assert "observed sportsbook quote" in result["answer"]
+
+
+def test_representative_boundary_questions_use_model_simulation_guardrails():
+    context = _base_live_context()
+
+    questions = [
+        "How far can I bet this down?",
+        "What is this playable to?",
+        "Would you still bet this at +2?",
+        "What if this moves to +2?",
+        "What is the worst line I should take?",
+        "Should I bet this if the line moves?",
+        "Why does the model still like this at +2?",
+        "When does the model stop qualifying?",
+    ]
+
+    for q in questions:
+        result = ask_sia.answer_from_context(
+            event_id="evt-1",
+            question=q,
+            live_context=context,
+        )
+        text = " ".join(
+            [
+                str(result.get("answer") or ""),
+                " ".join(result.get("why") or []),
+                str(result.get("whatChangesDecision") or ""),
+            ]
+        ).lower()
+        assert "observed sportsbook quote" in text
+        assert "model" in text
+        assert "official bet range" not in text
+        assert "playable-through" not in text
+        assert "playable through" not in text
 
 
 def test_best_sportsbook_marks_stale_quote():
