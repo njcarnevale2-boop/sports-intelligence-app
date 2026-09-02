@@ -44,6 +44,8 @@ type DecisionBoardItem = {
   expectedValue: number | null;
   confidence: number | null;
   marketDepth: string;
+  marketCoverageBookCount?: number | null;
+  marketCoverageStatus?: string | null;
   quoteFreshness: string;
   gameStartTime: string;
   quoteLastUpdated?: string | null;
@@ -126,12 +128,22 @@ function formatSigned(value: number | null | undefined) {
   return value > 0 ? `+${value}` : `${value}`;
 }
 
-function depthLabel(depth: string) {
-  const normalized = String(depth || "").toUpperCase();
-  if (normalized === "DEEP") return "DEEP MARKET DEPTH";
-  if (normalized === "MODERATE") return "MODERATE MARKET DEPTH";
-  if (normalized === "THIN" || normalized === "SINGLE_BOOK") return "LIMITED MARKET DEPTH";
-  return "MARKET DATA LIMITED";
+function coverageStatusLabel(status: string | null | undefined) {
+  const normalized = String(status || "").toUpperCase();
+  if (normalized === "DEEP") return "BROAD COVERAGE";
+  if (normalized === "MODERATE") return "MODERATE COVERAGE";
+  if (normalized === "THIN") return "LIMITED COVERAGE";
+  if (normalized === "SINGLE_BOOK") return "SINGLE BOOK";
+  return "NO COVERAGE";
+}
+
+function marketCoverageValue(item: DecisionBoardItem) {
+  const count = item.marketCoverageBookCount;
+  if (count == null) {
+    return coverageStatusLabel(item.marketCoverageStatus || item.marketDepth);
+  }
+  if (count <= 0) return "NO COVERAGE";
+  return `${count} ${count === 1 ? "SPORTSBOOK" : "SPORTSBOOKS"}`;
 }
 
 function freshnessLabel(freshness: string) {
@@ -382,7 +394,11 @@ export default function Home() {
                       value={modelAdvantageLabel(primary)}
                       subtext={modelAdvantageSubtext(primary)}
                     />
-                    <InfoTile label="MARKET DEPTH" value={depthLabel(primary.marketDepth)} />
+                    <InfoTile
+                      label="MARKET COVERAGE"
+                      value={marketCoverageValue(primary)}
+                      subtext={coverageStatusLabel(primary.marketCoverageStatus || primary.marketDepth)}
+                    />
                     <InfoTile label="QUOTE FRESHNESS" value={freshnessLabel(primary.quoteFreshness)} />
                   </div>
 
@@ -477,7 +493,11 @@ export default function Home() {
                           subtext={modelAdvantageSubtext(item)}
                         />
                         <MiniStat label="QUOTE FRESHNESS" value={freshnessLabel(item.quoteFreshness)} />
-                        <MiniStat label="MARKET DEPTH" value={depthLabel(item.marketDepth)} />
+                        <MiniStat
+                          label="MARKET COVERAGE"
+                          value={marketCoverageValue(item)}
+                          subtext={coverageStatusLabel(item.marketCoverageStatus || item.marketDepth)}
+                        />
                       </div>
 
                       <div className="mt-3 rounded-xl border border-white/[0.08] bg-white/[0.03] p-3">

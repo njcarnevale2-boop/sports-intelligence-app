@@ -60,6 +60,30 @@ def _safe_float(value: Any) -> Optional[float]:
         return None
 
 
+def _safe_int(value: Any) -> int:
+    try:
+        if value is None:
+            return 0
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _resolve_market_coverage(opp: dict[str, Any], shopping: dict[str, Any]) -> tuple[int, str, str]:
+    line_shopping_count = _safe_int((shopping.get("marketDepth") or {}).get("bookCount"))
+    line_shopping_status = str((shopping.get("marketDepth") or {}).get("marketDepthStatus") or "").upper()
+    canonical_count = _safe_int(opp.get("booksTracked"))
+
+    if line_shopping_count > 0:
+        status = line_shopping_status or _derive_market_depth(line_shopping_count)
+        return line_shopping_count, status, "LINE_SHOPPING"
+
+    if canonical_count > 0:
+        return canonical_count, _derive_market_depth(canonical_count), "CANONICAL_FALLBACK"
+
+    return 0, "NO_BOOKS", "NO_COVERAGE"
+
+
 def _why_sia_likes_it(opp: dict[str, Any]) -> str:
     pick = str(opp.get("pick") or "This position")
     model_prob = _safe_float(opp.get("currentWinProbability"))
@@ -203,10 +227,10 @@ def build_decision_board_payload(
 
         best_market = shopping.get("bestMarketQuote") or {}
         best_playable = shopping.get("bestPlayableQuote") or best_market
-        market_depth_status = str((shopping.get("marketDepth") or {}).get("marketDepthStatus") or _derive_market_depth(opp.get("booksTracked")))
+        market_coverage_count, market_coverage_status, market_coverage_source = _resolve_market_coverage(opp, shopping)
         quote_freshness = str(best_playable.get("quoteFreshness") or best_market.get("quoteFreshness") or _derive_quote_freshness(opp.get("marketLastUpdated"), now_utc=now))
 
-        risk_factors = _risk_factors(opp, quote_freshness, market_depth_status)
+        risk_factors = _risk_factors(opp, quote_freshness, market_coverage_status)
 
         recommendation = {
             "rank": index,
@@ -228,7 +252,10 @@ def build_decision_board_payload(
             "edge": opp.get("edge"),
             "expectedValue": opp.get("currentEV") if opp.get("currentEV") is not None else opp.get("evPerDollar"),
             "confidence": opp.get("confidence"),
-            "marketDepth": market_depth_status,
+            "marketDepth": market_coverage_status,
+            "marketCoverageBookCount": market_coverage_count,
+            "marketCoverageStatus": market_coverage_status,
+            "marketCoverageSource": market_coverage_source,
             "quoteFreshness": quote_freshness,
             "gameStartTime": opp.get("commenceTime"),
             "recommendationStatus": opp.get("recommendation"),
@@ -242,7 +269,7 @@ def build_decision_board_payload(
             "quoteLastUpdated": opp.get("marketLastUpdated"),
             "quoteWarnings": {
                 "isStale": quote_freshness == "STALE",
-                "limitedDepth": market_depth_status in {"THIN", "SINGLE_BOOK", "NO_BOOKS"},
+                "limitedDepth": market_coverage_status in {"THIN", "SINGLE_BOOK", "NO_BOOKS"},
             },
         }
         recommendations.append(recommendation)

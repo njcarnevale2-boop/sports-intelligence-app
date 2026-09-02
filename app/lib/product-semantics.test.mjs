@@ -17,8 +17,11 @@ test("home page uses current-bet and model-cushion semantics", () => {
   assert.match(page, /BET RANGE/);
   assert.match(page, /MODEL CUSHION/);
   assert.match(page, /MODEL ADVANTAGE/);
+  assert.match(page, /MARKET COVERAGE/);
   assert.match(page, /currently observed executable quote/i);
   assert.match(page, /Current Line/);
+  assert.doesNotMatch(page, /MARKET DEPTH/);
+  assert.doesNotMatch(page, /MARKET DATA LIMITED/);
   assert.doesNotMatch(page, /SIA VS MARKET/);
   assert.doesNotMatch(page, /PROBABILITY EDGE/);
   assert.doesNotMatch(page, /CONFIDENCE\"/);

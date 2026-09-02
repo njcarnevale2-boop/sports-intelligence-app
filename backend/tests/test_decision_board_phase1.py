@@ -155,6 +155,122 @@ def test_stale_quote_and_limited_depth_warnings():
     assert row["quoteWarnings"]["limitedDepth"] is True
 
 
+def test_market_coverage_uses_line_shopping_depth_when_available():
+    opportunities = [_base_opp(booksTracked=10)]
+
+    def fake_line_shopping(_opp):
+        return {
+            "bestMarketQuote": {
+                "point": -3.5,
+                "americanPrice": -105,
+                "sportsbook": "FanDuel",
+                "quoteFreshness": "FRESH",
+            },
+            "bestPlayableQuote": {
+                "point": -3.0,
+                "americanPrice": -110,
+                "sportsbook": "DraftKings",
+                "quoteFreshness": "FRESH",
+            },
+            "marketDepth": {"marketDepthStatus": "DEEP", "bookCount": 7},
+            "status": "OK",
+        }
+
+    payload = build_decision_board_payload(opportunities, line_shopping_fn=fake_line_shopping)
+    row = payload["decisionBoard"][0]
+
+    assert row["marketCoverageBookCount"] == 7
+    assert row["marketCoverageStatus"] == "DEEP"
+    assert row["marketCoverageSource"] == "LINE_SHOPPING"
+    assert row["marketDepth"] == "DEEP"
+
+
+def test_market_coverage_falls_back_to_canonical_books_when_line_shopping_has_no_books():
+    opportunities = [_base_opp(booksTracked=10)]
+
+    def no_books_line_shopping(_opp):
+        return {
+            "bestMarketQuote": None,
+            "bestPlayableQuote": None,
+            "marketDepth": {"marketDepthStatus": "NO_BOOKS", "bookCount": 0},
+            "status": "NO_QUOTES",
+        }
+
+    payload = build_decision_board_payload(opportunities, line_shopping_fn=no_books_line_shopping)
+    row = payload["decisionBoard"][0]
+
+    assert row["marketCoverageBookCount"] == 10
+    assert row["marketCoverageStatus"] == "DEEP"
+    assert row["marketCoverageSource"] == "CANONICAL_FALLBACK"
+    assert row["marketDepth"] == "DEEP"
+
+
+def test_stale_quotes_can_still_show_broad_coverage_when_books_exist():
+    opportunities = [_base_opp(booksTracked=10, marketLastUpdated="2026-09-10T10:00:00+00:00")]
+
+    def no_books_line_shopping(_opp):
+        return {
+            "bestMarketQuote": None,
+            "bestPlayableQuote": None,
+            "marketDepth": {"marketDepthStatus": "NO_BOOKS", "bookCount": 0},
+            "status": "NO_QUOTES",
+        }
+
+    payload = build_decision_board_payload(
+        opportunities,
+        now_utc=datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc),
+        line_shopping_fn=no_books_line_shopping,
+    )
+    row = payload["decisionBoard"][0]
+
+    assert row["quoteFreshness"] == "STALE"
+    assert row["marketCoverageBookCount"] == 10
+    assert row["marketCoverageStatus"] == "DEEP"
+    assert row["quoteWarnings"]["isStale"] is True
+    assert row["quoteWarnings"]["limitedDepth"] is False
+
+
+def test_market_coverage_fallback_does_not_change_best_executable_fields():
+    opportunities = [_base_opp(booksTracked=10, point=-3.5, price=-105, book="FanDuel")]
+
+    def no_books_line_shopping(_opp):
+        return {
+            "bestMarketQuote": None,
+            "bestPlayableQuote": None,
+            "marketDepth": {"marketDepthStatus": "NO_BOOKS", "bookCount": 0},
+            "status": "NO_QUOTES",
+        }
+
+    payload = build_decision_board_payload(opportunities, line_shopping_fn=no_books_line_shopping)
+    row = payload["decisionBoard"][0]
+
+    assert row["line"] == -3.5
+    assert row["price"] == -105
+    assert row["sportsbook"] == "FanDuel"
+    assert row["marketCoverageBookCount"] == 10
+    assert row["marketCoverageSource"] == "CANONICAL_FALLBACK"
+
+
+def test_no_prospective_and_no_canonical_books_reports_no_coverage():
+    opportunities = [_base_opp(booksTracked=0)]
+
+    def no_books_line_shopping(_opp):
+        return {
+            "bestMarketQuote": None,
+            "bestPlayableQuote": None,
+            "marketDepth": {"marketDepthStatus": "NO_BOOKS", "bookCount": 0},
+            "status": "NO_QUOTES",
+        }
+
+    payload = build_decision_board_payload(opportunities, line_shopping_fn=no_books_line_shopping)
+    row = payload["decisionBoard"][0]
+
+    assert row["marketCoverageBookCount"] == 0
+    assert row["marketCoverageStatus"] == "NO_BOOKS"
+    assert row["marketCoverageSource"] == "NO_COVERAGE"
+    assert row["quoteWarnings"]["limitedDepth"] is True
+
+
 def test_playable_to_and_optional_fields_do_not_crash():
     opportunities = [
         _base_opp(
