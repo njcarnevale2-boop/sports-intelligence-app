@@ -10,11 +10,12 @@ import { fetchJson } from "./lib/api";
 import { trackAnalyticsEvent } from "./lib/analytics";
 import {
   buildLineStatusMessage,
+  conciseWhySiaLikesIt,
   formatBetRange,
   formatModelCushion,
-  formatProbabilityEdge,
+  modelAdvantageLabel,
+  modelAdvantageSubtext,
   modelCushionSubtext,
-  probabilityEdgeSubtext,
 } from "./lib/home-decision-clarity";
 
 type QuoteWarnings = {
@@ -123,12 +124,6 @@ type WatchlistItem = {
 function formatSigned(value: number | null | undefined) {
   if (value == null) return "Unavailable";
   return value > 0 ? `+${value}` : `${value}`;
-}
-
-function formatPercent(value: number | null | undefined) {
-  if (value == null) return "Unavailable";
-  const pct = value <= 1.0 ? value * 100 : value;
-  return `${pct.toFixed(1)}%`;
 }
 
 function depthLabel(depth: string) {
@@ -382,15 +377,19 @@ export default function Home() {
                     <InfoTile label="BEST EXECUTABLE" value={executableQuote(primary)} />
                     <InfoTile label="BET RANGE" value={formatBetRange(primary)} subtext="Based on the current observed executable line." />
                     <InfoTile label="MODEL CUSHION" value={formatModelCushion(primary)} subtext={modelCushionSubtext(primary)} />
-                    <InfoTile label="CONFIDENCE" value={primary.confidence != null ? `${primary.confidence}/100` : "Unavailable"} />
-                    <InfoTile label="SIA VS MARKET" value={`${formatPercent(primary.modelProbability)} vs ${formatPercent(primary.marketImpliedProbability)}`} />
-                    <InfoTile label="PROBABILITY EDGE" value={formatProbabilityEdge(primary.edge)} subtext={probabilityEdgeSubtext(primary)} />
+                    <InfoTile
+                      label="MODEL ADVANTAGE"
+                      value={modelAdvantageLabel(primary)}
+                      subtext={modelAdvantageSubtext(primary)}
+                    />
+                    <InfoTile label="MARKET DEPTH" value={depthLabel(primary.marketDepth)} />
+                    <InfoTile label="QUOTE FRESHNESS" value={freshnessLabel(primary.quoteFreshness)} />
                   </div>
 
                   <div className="grid gap-3 sm:grid-cols-2">
                     <div className="rounded-2xl border border-white/[0.08] bg-black/20 p-4">
                       <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">Why SIA Likes It</p>
-                      <p className="mt-2 text-sm leading-6 text-zinc-300">{primary.whySiaLikesIt}</p>
+                      <p className="mt-2 text-sm leading-6 text-zinc-300">{conciseWhySiaLikesIt(primary)}</p>
                     </div>
                     <div className="rounded-2xl border border-amber-400/20 bg-amber-400/[0.05] p-4">
                       <p className="text-[10px] uppercase tracking-[0.16em] text-amber-300">Biggest Risk</p>
@@ -406,7 +405,7 @@ export default function Home() {
                     SIA&apos;s best current wager is {primary.selection} at {primary.sportsbook || "an available book"}. This recommendation is anchored to the currently observed executable quote.
                   </p>
                   <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] p-4 text-sm text-zinc-300">
-                    <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">Current Line Status</p>
+                    <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">Current Line</p>
                     <p className="mt-2 text-white">{primaryLineStatus?.heading ?? "CHECK CURRENT LINE"}</p>
                     <p className="mt-1">{primaryLineStatus?.detail ?? "This quote may be outdated. Confirm the current line and price before betting."}</p>
                   </div>
@@ -472,19 +471,24 @@ export default function Home() {
                         <MiniStat label="BEST PRICE" value={executableQuote(item)} />
                         <MiniStat label="BET RANGE" value={formatBetRange(item)} subtext="Based on the current observed executable line." />
                         <MiniStat label="MODEL CUSHION" value={formatModelCushion(item)} subtext={modelCushionSubtext(item)} />
-                        <MiniStat label="PROBABILITY EDGE" value={formatProbabilityEdge(item.edge)} subtext={probabilityEdgeSubtext(item)} />
-                        <MiniStat label="CONFIDENCE" value={item.confidence != null ? `${item.confidence}/100` : "Unavailable"} />
+                        <MiniStat
+                          label="MODEL ADVANTAGE"
+                          value={modelAdvantageLabel(item)}
+                          subtext={modelAdvantageSubtext(item)}
+                        />
+                        <MiniStat label="QUOTE FRESHNESS" value={freshnessLabel(item.quoteFreshness)} />
+                        <MiniStat label="MARKET DEPTH" value={depthLabel(item.marketDepth)} />
                       </div>
 
                       <div className="mt-3 rounded-xl border border-white/[0.08] bg-white/[0.03] p-3">
-                        <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">Current Line Status</p>
+                        <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">Current Line</p>
                         <p className="mt-2 text-sm text-white">{status.heading}</p>
                         <p className="mt-1 text-sm leading-6 text-zinc-300">{status.detail}</p>
                       </div>
 
                       <div className="mt-4 rounded-xl border border-white/[0.08] bg-white/[0.03] p-3">
                         <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">Why SIA Likes It</p>
-                        <p className="mt-2 text-sm leading-6 text-zinc-300">{item.whySiaLikesIt}</p>
+                        <p className="mt-2 text-sm leading-6 text-zinc-300">{conciseWhySiaLikesIt(item)}</p>
                       </div>
 
                       <div className="mt-3 rounded-xl border border-amber-400/20 bg-amber-400/[0.04] p-3">

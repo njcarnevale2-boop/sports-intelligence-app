@@ -8,17 +8,14 @@ type HomeDecisionItem = {
   marketImpliedProbability: number | null;
   price: number | null;
   sportsbook: string | null;
+  recommendationStatus?: string | null;
+  qualificationStatus?: string | null;
+  rank?: number | null;
 };
 
 function formatSigned(value: number | null | undefined) {
   if (value == null) return "Unavailable";
   return value > 0 ? `+${value}` : `${value}`;
-}
-
-function formatPercent(value: number | null | undefined) {
-  if (value == null) return "Unavailable";
-  const pct = value <= 1.0 ? value * 100 : value;
-  return `${pct.toFixed(1)}%`;
 }
 
 function teamFromSelection(selection: string) {
@@ -59,14 +56,39 @@ export function modelCushionSubtext(item: HomeDecisionItem) {
   return "Model cushion is unavailable for this matchup.";
 }
 
-export function formatProbabilityEdge(edge: number | null) {
-  if (edge == null) return "Unavailable";
-  const sign = edge >= 0 ? "+" : "";
-  return `${sign}${edge.toFixed(1)}%`;
+export function modelAdvantageLabel(item: HomeDecisionItem) {
+  const recommendation = String(item.recommendationStatus || "").toUpperCase();
+  const qualified = String(item.qualificationStatus || "").toUpperCase() === "QUALIFIED";
+  if (!qualified) return "SMALL";
+  if (recommendation.includes("STRONG")) return "STRONG";
+  if (recommendation.includes("BET")) return "MODERATE";
+  if ((item.rank ?? 9999) <= 1) return "MODERATE";
+  return "SMALL";
 }
 
-export function probabilityEdgeSubtext(item: HomeDecisionItem) {
-  return `SIA ${formatPercent(item.modelProbability)} vs market ${formatPercent(item.marketImpliedProbability)}`;
+export function modelAdvantageSubtext(item: HomeDecisionItem) {
+  const label = modelAdvantageLabel(item);
+  if (label === "STRONG") {
+    return "SIA rates this as one of the strongest current opportunities on its board.";
+  }
+  if (label === "MODERATE") {
+    return "SIA rates this as a qualified opportunity with moderate relative strength.";
+  }
+  return "SIA sees only a small current advantage at this quote.";
+}
+
+export function conciseWhySiaLikesIt(item: HomeDecisionItem) {
+  const recommendation = String(item.recommendationStatus || "").toUpperCase();
+  if (recommendation.includes("STRONG")) {
+    return "SIA ranks this as a strong qualified spread opportunity at the currently observed quote.";
+  }
+  if (recommendation.includes("BET")) {
+    return "SIA ranks this as a qualified spread opportunity at the currently observed quote.";
+  }
+  if (recommendation.includes("LEAN")) {
+    return "SIA sees a lean, but the current quote is not yet a full-conviction bet.";
+  }
+  return "SIA is waiting for a stronger setup before elevating this opportunity.";
 }
 
 export function formatExecutableQuote(line: number | null, price: number | null, sportsbook: string | null) {
@@ -104,20 +126,20 @@ export function buildLineStatusMessage(
 
   if (age) {
     return {
-      heading: freshness === "FRESH" ? "LINE APPEARS CURRENT" : "CHECK CURRENT LINE",
+      heading: freshness === "FRESH" ? "LINE LOOKS CURRENT" : "CHECK BEFORE BETTING",
       detail: `SIA last saw ${quote} ${age}. Confirm the line and price are still available before betting.`,
     };
   }
 
   if (freshness === "STALE" || freshness === "UNKNOWN") {
     return {
-      heading: "CHECK CURRENT LINE",
+      heading: "CHECK BEFORE BETTING",
       detail: "This quote may be outdated. Confirm the current line and price before betting.",
     };
   }
 
   return {
-    heading: "CHECK CURRENT LINE",
+    heading: "CHECK BEFORE BETTING",
     detail: `SIA last saw ${quote}. Confirm the line and price are still available before betting.`,
   };
 }

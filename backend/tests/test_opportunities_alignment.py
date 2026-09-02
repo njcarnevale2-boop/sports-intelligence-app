@@ -205,6 +205,23 @@ def test_opportunities_rank_by_calibrated_edge_and_emit_snapshot_metadata(tmp_pa
     assert opps[0]["rawRank"] == 2
     assert opps[1]["eventId"] == "evt-1"
 
+    # Advanced probability and boundary fields remain exposed for deep analytics.
+    required_fields = [
+        "rawModelProbability",
+        "calibratedProbability",
+        "currentWinProbability",
+        "currentPushProbability",
+        "currentLossProbability",
+        "currentEV",
+        "edge",
+        "calibratedEdge",
+        "fairLine",
+        "truePlayableTo",
+        "recommendedPlayableTo",
+    ]
+    for field in required_fields:
+        assert field in opps[0]
+
 
 def test_opportunity_qualification_and_si_inputs_use_push_aware_semantics(tmp_path, monkeypatch):
     rows = [
