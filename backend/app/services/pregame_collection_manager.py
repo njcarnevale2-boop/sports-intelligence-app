@@ -66,6 +66,7 @@ class ManagerConfig:
     opening_window_hours: int
     closing_window_hours: int
     prop_allowlist: tuple[str, ...]
+    player_prop_collection_enabled: bool
 
 
 def _utc_now() -> datetime:
@@ -88,6 +89,18 @@ def _to_float(value: Any) -> Optional[float]:
         return float(str(value).strip())
     except (TypeError, ValueError):
         return None
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = str(raw).strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 def _parse_commence(value: Any) -> Optional[datetime]:
@@ -156,6 +169,7 @@ def _resolve_config(
         opening_window_hours=int(os.getenv("PREGAME_OPENING_WINDOW_HOURS", "24")),
         closing_window_hours=int(os.getenv("PREGAME_CLOSING_WINDOW_HOURS", "2")),
         prop_allowlist=_resolve_prop_allowlist(prop_allowlist),
+        player_prop_collection_enabled=_env_bool("PLAYER_PROP_COLLECTION_ENABLED", False),
     )
 
 
@@ -578,19 +592,26 @@ def build_pregame_collection_plan(
         player_prop_due += 1
         player_prop_due_event_ids.append(event_id)
 
-    planned_requests = player_prop_due
-    estimate_contract = _estimate_credits_for_request_shape(
-        endpoint_type=PLAYER_PROP_ENDPOINT_TYPE,
-        region=PLAYER_PROP_REGION,
-        markets=list(config.prop_allowlist),
-    )
-    estimated_credits_per_request = estimate_contract.get("creditsPerRequest")
-    estimated_credits_status = str(estimate_contract.get("status") or "UNKNOWN")
-    estimated_credits = (
-        float(round(float(estimated_credits_per_request) * planned_requests, 4))
-        if estimated_credits_per_request is not None
-        else None
-    )
+    player_prop_collection_enabled = bool(config.player_prop_collection_enabled)
+    player_prop_skip_reason = None if player_prop_collection_enabled else "PLAYER_PROP_COLLECTION_DISABLED"
+    planned_requests = player_prop_due if player_prop_collection_enabled else 0
+    if player_prop_collection_enabled:
+        estimate_contract = _estimate_credits_for_request_shape(
+            endpoint_type=PLAYER_PROP_ENDPOINT_TYPE,
+            region=PLAYER_PROP_REGION,
+            markets=list(config.prop_allowlist),
+        )
+        estimated_credits_per_request = estimate_contract.get("creditsPerRequest")
+        estimated_credits_status = str(estimate_contract.get("status") or "UNKNOWN")
+        estimated_credits = (
+            float(round(float(estimated_credits_per_request) * planned_requests, 4))
+            if estimated_credits_per_request is not None
+            else None
+        )
+    else:
+        estimated_credits_per_request = None
+        estimated_credits_status = "DISABLED"
+        estimated_credits = 0.0
 
     api_today = _api_usage_today()
     skip_reasons: list[str] = []
@@ -616,6 +637,8 @@ def build_pregame_collection_plan(
         "manager": "SIA_PREGAME_DATA_COLLECTION_MANAGER_V1",
         "week": resolved_week,
         "dryRun": config.dry_run,
+        "playerPropCollectionEnabled": player_prop_collection_enabled,
+        "playerPropCollectionSkipReason": player_prop_skip_reason,
         "eventsFound": len(games),
         "eventsEvaluated": events_evaluated,
         "snapshotsDue": {
@@ -656,6 +679,8 @@ def build_pregame_collection_plan(
             "known": estimated_credits is not None,
         },
         "playerProp": {
+            "collectionEnabled": player_prop_collection_enabled,
+            "collectionSkipReason": player_prop_skip_reason,
             "endpointType": PLAYER_PROP_ENDPOINT_TYPE,
             "region": PLAYER_PROP_REGION,
             "allowlistProviderMarkets": list(config.prop_allowlist),
@@ -810,6 +835,10 @@ def run_pregame_collection_manager(
 
     due_prop_events = list(plan["playerProp"].get("dueEventIds") or [])
     allowlist = list(plan["playerProp"].get("allowlistProviderMarkets") or [])
+    player_prop_collection_enabled = bool(plan.get("playerPropCollectionEnabled"))
+    player_prop_skip_reason = plan.get("playerPropCollectionSkipReason")
+    if not player_prop_collection_enabled:
+        due_prop_events = []
 
     if plan.get("estimatedCredits") is None and due_prop_events and not bool(plan.get("allowUnknownCreditCost")):
         _record_telemetry(
@@ -952,7 +981,11 @@ def run_pregame_collection_manager(
             "last": None,
         },
     }
-    player_prop_ingestion = shadow_markets.ingest_player_prop_market_snapshots(discovery=discovery)
+    player_prop_ingestion = (
+        {"status": "DISABLED", "skipReason": str(player_prop_skip_reason or "PLAYER_PROP_COLLECTION_DISABLED")}
+        if not player_prop_collection_enabled
+        else shadow_markets.ingest_player_prop_market_snapshots(discovery=discovery)
+    )
 
     return {
         "runId": run_id,
@@ -964,6 +997,8 @@ def run_pregame_collection_manager(
             "actualRequests": requests_made,
             "coreCapture": core_capture,
             "playerPropIngestion": player_prop_ingestion,
+            "playerPropCollectionEnabled": player_prop_collection_enabled,
+            "playerPropCollectionSkipReason": player_prop_skip_reason,
             "actualCreditsConsumed": round(actual_credits_total, 4) if actual_credits_seen else None,
             "creditCostEstimateMismatch": credit_cost_estimate_mismatch,
             "quotaRemaining": last_quota_remaining,
@@ -1017,6 +1052,7 @@ def pregame_collection_status_report(*, week: Optional[int] = None) -> dict[str,
     return {
         "manager": "SIA_PREGAME_DATA_COLLECTION_MANAGER_V1",
         "week": resolved_week,
+        "playerPropCollectionEnabled": _env_bool("PLAYER_PROP_COLLECTION_ENABLED", False),
         "eventsTracked": len([g for g in games if str(g.get("eventId") or "")]),
         "markets": {
             "spread": spread,
@@ -1331,7 +1367,7 @@ def build_pregame_collection_schedule_v1(
                             "captured": prop_captured,
                             "capturedAtUTC": prop_meta.get("capturedAtUTC"),
                             "bookDepth": prop_meta.get("bookDepth"),
-                            "providerRequestRequired": "YES" if prop_status == "DUE" else "NO",
+                            "providerRequestRequired": "YES" if prop_status == "DUE" and bool(config.player_prop_collection_enabled) else "NO",
                         }
                     },
                 },
@@ -1346,6 +1382,10 @@ def build_pregame_collection_schedule_v1(
     verified_status = str(estimate_contract.get("status") or "UNKNOWN")
     verified_per_request = _to_float(estimate_contract.get("creditsPerRequest"))
     verified_credits_due = float(player_prop_due * verified_per_request) if verified_per_request is not None else None
+    if not bool(config.player_prop_collection_enabled):
+        verified_status = "DISABLED"
+        verified_per_request = None
+        verified_credits_due = 0.0
 
     grading = _grading_workflow_status(now_utc=now)
     season_projection = _regular_season_player_prop_credit_projection()
@@ -1365,6 +1405,7 @@ def build_pregame_collection_schedule_v1(
         "manager": "SIA_PREGAME_COLLECTION_SCHEDULE_V1",
         "generatedAtUTC": now.replace(microsecond=0).isoformat(),
         "week": resolved_week,
+        "playerPropCollectionEnabled": bool(config.player_prop_collection_enabled),
         "eventsTracked": len(events_out),
         "policy": {
             "windows": {
@@ -1420,9 +1461,9 @@ def build_pregame_collection_schedule_v1(
             "playerPropDueByState": player_prop_due_by_state,
             "nextCollectionWindow": next_collection_window,
             "plannedStandardProviderRequests": 0,
-            "plannedPlayerPropProviderRequests": player_prop_due,
+            "plannedPlayerPropProviderRequests": player_prop_due if bool(config.player_prop_collection_enabled) else 0,
             "standardProviderRequestsRequired": 0,
-            "playerPropProviderRequestsRequired": player_prop_due,
+            "playerPropProviderRequestsRequired": player_prop_due if bool(config.player_prop_collection_enabled) else 0,
             "standardProviderRequestsByState": standard_provider_requests_by_state,
             "standardProviderVerifiedCreditCost": "ZERO",
             "playerPropVerifiedCreditCostStatus": verified_status,
@@ -1449,6 +1490,7 @@ def build_pregame_collection_schedule_v1(
             "firstHalfRecommendations": "DISABLED",
             "crossMarketComparable": False,
             "universalSIA3": "DISABLED",
+            "playerPropCollectionEnabled": bool(config.player_prop_collection_enabled),
             "livePolling": "NO",
             "productionSpreadEngineChanged": "NO",
             "qualificationThresholdsChanged": "NO",

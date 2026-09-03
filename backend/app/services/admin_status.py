@@ -116,6 +116,7 @@ class AdminStatusService:
             "quotaSafety": odds_status.get("quotaSafety"),
             # Scheduler fields
             "scheduler": refresh_status,
+            "playerPropCollectionEnabled": bool(refresh_status.get("playerPropCollectionEnabled")),
             # CLV / closing line fields
             "closingCaptureLastRun": refresh_status.get("closingCaptureLastRun"),
             "closingLinesCapturedThisRun": refresh_status.get("closingLinesCapturedThisRun", 0),

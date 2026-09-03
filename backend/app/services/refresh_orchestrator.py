@@ -8,9 +8,9 @@ state is persisted to a JSON file so the admin dashboard survives restarts.
 
 Environment variables (all optional – defaults shown):
   ODDS_REFRESH_OFFSEASON_MINS   360   far from any game
-  ODDS_REFRESH_GAMEWEEK_MINS    120   Mon-Sat during season, no games today
-  ODDS_REFRESH_GAMEDAY_MINS      30   a game is scheduled today
-  ODDS_REFRESH_NEARKICKOFF_MINS  15   within 3 h of any scheduled kickoff
+    ODDS_REFRESH_GAMEWEEK_MINS    180   Mon-Sat during season, no games today
+    ODDS_REFRESH_GAMEDAY_MINS      60   a game is scheduled today
+    ODDS_REFRESH_NEARKICKOFF_MINS  20   within 3 h of any scheduled kickoff
   ODDS_QUOTA_PAUSE_THRESHOLD     20   stop refreshing below this
   ODDS_QUOTA_REDUCE_THRESHOLD    50   floor cadence at GAMEWEEK interval
   ODDS_QUOTA_SLOW_THRESHOLD     100   floor cadence at OFFSEASON interval
@@ -60,20 +60,20 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 MINS_OFFSEASON    = lambda: _env_int("ODDS_REFRESH_OFFSEASON_MINS",    360)
-MINS_GAMEWEEK     = lambda: _env_int("ODDS_REFRESH_GAMEWEEK_MINS",     120)
-MINS_GAMEDAY      = lambda: _env_int("ODDS_REFRESH_GAMEDAY_MINS",       30)
-MINS_NEARKICKOFF  = lambda: _env_int("ODDS_REFRESH_NEARKICKOFF_MINS",   15)
+MINS_GAMEWEEK     = lambda: _env_int("ODDS_REFRESH_GAMEWEEK_MINS",     180)
+MINS_GAMEDAY      = lambda: _env_int("ODDS_REFRESH_GAMEDAY_MINS",       60)
+MINS_NEARKICKOFF  = lambda: _env_int("ODDS_REFRESH_NEARKICKOFF_MINS",   20)
 QUOTA_PAUSE       = lambda: _env_int("ODDS_QUOTA_PAUSE_THRESHOLD",      20)
 QUOTA_REDUCE      = lambda: _env_int("ODDS_QUOTA_REDUCE_THRESHOLD",     50)
 QUOTA_SLOW        = lambda: _env_int("ODDS_QUOTA_SLOW_THRESHOLD",      100)
 NEAR_KICKOFF_HRS  = lambda: _env_int("ODDS_NEARKICKOFF_HOURS",           3)
 ODDS_REFRESH_AUTOMATION_ENABLED = lambda: _env_bool("ODDS_REFRESH_AUTOMATION_ENABLED", False)
 PREGAME_AUTOMATION_ENABLED = lambda: _env_bool("PREGAME_AUTOMATION_ENABLED", False)
+PLAYER_PROP_COLLECTION_ENABLED = lambda: _env_bool("PLAYER_PROP_COLLECTION_ENABLED", False)
 
 
-def _determine_base_cadence_minutes() -> int:
+def _determine_base_cadence_minutes_at(now_utc: datetime) -> int:
     """Return cadence based on scheduled games in the projections CSV."""
-    now_utc = datetime.now(timezone.utc)
     today = now_utc.date()
 
     try:
@@ -107,6 +107,10 @@ def _determine_base_cadence_minutes() -> int:
         log.warning("Could not read schedule for cadence: %s", exc)
 
     return MINS_OFFSEASON()
+
+
+def _determine_base_cadence_minutes() -> int:
+    return _determine_base_cadence_minutes_at(datetime.now(timezone.utc))
 
 
 def _quota_cap(base_minutes: int, quota: Optional[int]) -> Optional[int]:
@@ -176,6 +180,7 @@ def _run_pregame_automation_tick() -> Dict[str, Any]:
         "skipReason": "PREGAME_AUTOMATION_DISABLED",
         "providerRequests": 0,
         "verifiedCredits": 0.0,
+        "playerPropCollectionEnabled": bool(PLAYER_PROP_COLLECTION_ENABLED()),
         "lifecycleState": None,
         "nextCollectionState": None,
         "nextCollectionTime": None,
@@ -298,6 +303,7 @@ _EMPTY_STATE: Dict[str, Any] = {
     "pregameLastSkipReason": "PREGAME_AUTOMATION_DISABLED",
     "pregameLastProviderRequests": 0,
     "pregameLastVerifiedCredits": 0.0,
+    "playerPropCollectionEnabled": False,
     "pregameLastLifecycleState": None,
     "pregameNextCollectionState": None,
     "pregameNextCollectionTime": None,
@@ -729,6 +735,7 @@ def _run_once(request_provenance: str = "SCHEDULER_AUTOMATION") -> bool:
         state["pregameLastSkipReason"] = pregame_tick.get("skipReason")
         state["pregameLastProviderRequests"] = int(pregame_tick.get("providerRequests") or 0)
         state["pregameLastVerifiedCredits"] = pregame_tick.get("verifiedCredits")
+        state["playerPropCollectionEnabled"] = bool(pregame_tick.get("playerPropCollectionEnabled"))
         state["pregameLastLifecycleState"] = pregame_tick.get("lifecycleState")
         state["pregameNextCollectionState"] = pregame_tick.get("nextCollectionState")
         state["pregameNextCollectionTime"] = pregame_tick.get("nextCollectionTime")
@@ -965,6 +972,7 @@ def trigger_now(request_provenance: str = "MANUAL_REFRESH") -> Dict[str, Any]:
         "pregameLastSkipReason": state.get("pregameLastSkipReason"),
         "pregameLastProviderRequests": int(state.get("pregameLastProviderRequests") or 0),
         "pregameLastVerifiedCredits": state.get("pregameLastVerifiedCredits"),
+        "playerPropCollectionEnabled": bool(state.get("playerPropCollectionEnabled", PLAYER_PROP_COLLECTION_ENABLED())),
         "pregameLastLifecycleState": state.get("pregameLastLifecycleState"),
         "pregameNextCollectionState": state.get("pregameNextCollectionState"),
         "pregameNextCollectionTime": state.get("pregameNextCollectionTime"),
@@ -1038,6 +1046,7 @@ def get_refresh_status() -> Dict[str, Any]:
         "lastWeatherError":          state.get("lastWeatherError"),
         "weatherDataStatus":         state.get("weatherDataStatus", "MOCK"),
         "pregameAutomationEnabled": bool(state.get("pregameAutomationEnabled")),
+        "playerPropCollectionEnabled": bool(state.get("playerPropCollectionEnabled", PLAYER_PROP_COLLECTION_ENABLED())),
         "pregameLastAttemptAt": state.get("pregameLastAttemptAt"),
         "pregameLastSuccessAt": state.get("pregameLastSuccessAt"),
         "pregameLastStatus": state.get("pregameLastStatus"),

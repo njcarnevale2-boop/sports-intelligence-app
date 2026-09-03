@@ -12,6 +12,7 @@ from app.services import shadow_markets
 @pytest.fixture
 def shadow_db(monkeypatch, tmp_path):
     db = tmp_path / "pregame_manager_test.sqlite"
+    monkeypatch.setenv("PLAYER_PROP_COLLECTION_ENABLED", "1")
     monkeypatch.setattr(shadow_markets, "_DB_PATH", db)
     mgr._ensure_manager_schema()
     return db
@@ -984,3 +985,98 @@ def test_state_telemetry_marks_captured_without_reschedule(shadow_db, monkeypatc
     assert event["spread"]["GAME_DAY"] == "CAPTURED"
     assert event["stateTelemetry"]["SPREAD"]["GAME_DAY"]["status"] == "CAPTURED"
     assert out["totals"]["gameDayDue"] == 2
+
+
+def test_player_prop_collection_disabled_by_default(shadow_db, monkeypatch):
+    monkeypatch.delenv("PLAYER_PROP_COLLECTION_ENABLED", raising=False)
+    cfg = mgr._resolve_config(dry_run=True)
+    assert cfg.player_prop_collection_enabled is False
+
+
+def test_plan_excludes_prop_requests_when_collection_disabled(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setenv("PLAYER_PROP_COLLECTION_ENABLED", "0")
+    monkeypatch.setattr(mgr, "_load_week_events", lambda week=None: (1, _n_games(now, count=16, hours_to_kickoff=10)))
+    monkeypatch.setattr(mgr, "_load_line_board_market_presence", lambda: _full_standard_presence(_n_games(now, count=16, hours_to_kickoff=10)))
+    monkeypatch.setattr(mgr, "_state_exists_for_market", lambda event_id, family, state: False)
+    monkeypatch.setattr(mgr, "_state_exists_for_player_prop_event", lambda event_id, state: False)
+
+    plan = mgr.build_pregame_collection_plan(dry_run=True, now_utc=now)
+    assert plan["playerPropCollectionEnabled"] is False
+    assert plan["playerPropCollectionSkipReason"] == "PLAYER_PROP_COLLECTION_DISABLED"
+    assert plan["snapshotsDue"]["playerProp"] == 16
+    assert plan["plannedRequests"] == 0
+    assert plan["estimatedRequests"] == 0
+    assert plan["estimatedCreditsStatus"] == "DISABLED"
+    assert plan["estimatedCredits"] == 0.0
+    assert plan["playerProp"]["collectionEnabled"] is False
+    assert plan["playerProp"]["collectionSkipReason"] == "PLAYER_PROP_COLLECTION_DISABLED"
+
+
+def test_schedule_excludes_prop_provider_requests_when_collection_disabled(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setenv("PLAYER_PROP_COLLECTION_ENABLED", "0")
+    games = _n_games(now, count=2, hours_to_kickoff=10)
+    out = _build_schedule(monkeypatch, now, games)
+
+    assert out["playerPropCollectionEnabled"] is False
+    assert out["totals"]["playerPropSnapshotsDue"] == 2
+    assert out["totals"]["plannedPlayerPropProviderRequests"] == 0
+    assert out["totals"]["playerPropProviderRequestsRequired"] == 0
+    assert out["totals"]["playerPropVerifiedCreditCostStatus"] == "DISABLED"
+    assert out["totals"]["verifiedPlayerPropCreditsDue"] == 0.0
+    assert out["weeklyCostModel"]["projectedWeekCredits"] == 0.0
+    assert out["firewalls"]["playerPropCollectionEnabled"] is False
+    assert out["events"][0]["stateTelemetry"]["PLAYER_PROPS"]["GAME_DAY"]["providerRequestRequired"] == "NO"
+
+
+def test_run_manager_supports_pregame_true_with_props_disabled(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setenv("PLAYER_PROP_COLLECTION_ENABLED", "0")
+    monkeypatch.setattr(mgr, "_utc_now", lambda: now)
+    games = _games(now)
+    monkeypatch.setattr(mgr, "_load_week_events", lambda week=None: (1, games))
+    monkeypatch.setattr(mgr, "_load_line_board_market_presence", lambda: _full_standard_presence(games))
+    monkeypatch.setattr(mgr, "_state_exists_for_market", lambda event_id, family, state: False)
+    monkeypatch.setattr(mgr, "_state_exists_for_player_prop_event", lambda event_id, state: False)
+
+    capture_args = {}
+    ingest_called = {"count": 0}
+
+    def _capture(week=None, season=None):
+        capture_args["week"] = week
+        capture_args["season"] = season
+        return {"rowsReceived": 9}
+
+    def _ingest(*args, **kwargs):
+        ingest_called["count"] += 1
+        raise AssertionError("player prop ingestion should not run when collection is disabled")
+
+    monkeypatch.setattr(shadow_markets, "capture_prospective_from_line_board", _capture)
+    monkeypatch.setattr(shadow_markets, "ingest_player_prop_market_snapshots", _ingest)
+
+    out = mgr.run_pregame_collection_manager(dry_run=False, allow_unknown_weekly_usage=True)
+    assert out["status"] == "COMPLETED"
+    assert out["execution"]["providerRequests"] == 0
+    assert out["execution"]["playerPropCollectionEnabled"] is False
+    assert out["execution"]["playerPropCollectionSkipReason"] == "PLAYER_PROP_COLLECTION_DISABLED"
+    assert out["execution"]["playerPropIngestion"]["status"] == "DISABLED"
+    assert out["execution"]["playerPropIngestion"]["skipReason"] == "PLAYER_PROP_COLLECTION_DISABLED"
+    assert capture_args["week"] == 1
+    assert ingest_called["count"] == 0
+
+
+def test_prop_planning_restored_when_collection_enabled(shadow_db, monkeypatch):
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setenv("PLAYER_PROP_COLLECTION_ENABLED", "1")
+    games = _n_games(now, count=16, hours_to_kickoff=10)
+    monkeypatch.setattr(mgr, "_load_week_events", lambda week=None: (1, games))
+    monkeypatch.setattr(mgr, "_load_line_board_market_presence", lambda: _full_standard_presence(games))
+    monkeypatch.setattr(mgr, "_state_exists_for_market", lambda event_id, family, state: False)
+    monkeypatch.setattr(mgr, "_state_exists_for_player_prop_event", lambda event_id, state: False)
+
+    plan = mgr.build_pregame_collection_plan(dry_run=True, now_utc=now)
+    assert plan["playerPropCollectionEnabled"] is True
+    assert plan["plannedRequests"] == 16
+    assert plan["estimatedCreditsStatus"] == "VERIFIED"
+    assert plan["estimatedCredits"] == 96.0

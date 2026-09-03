@@ -62,11 +62,13 @@ def test_admin_status_endpoint_returns_metrics():
     assert "backendInstanceId" in payload
     # Scheduler fields
     assert "scheduler" in payload
+    assert "playerPropCollectionEnabled" in payload
     sched = payload["scheduler"]
     assert "isRunning" in sched
     assert "cadenceMinutes" in sched
     assert "quotaRemaining" in sched
     assert "quotaPaused" in sched
+    assert "playerPropCollectionEnabled" in sched
 
 
 def test_admin_refresh_status_endpoint():
@@ -77,6 +79,7 @@ def test_admin_refresh_status_endpoint():
     assert "cadenceMinutes" in payload
     assert "provider" in payload
     assert payload["provider"] == "The Odds API"
+    assert "playerPropCollectionEnabled" in payload
 
 
 def test_admin_refresh_endpoint_returns_summary():
@@ -178,6 +181,7 @@ def test_api_health_stays_healthy_when_automation_intentionally_disabled():
             "oddsRefreshAutomationEnabled": False,
             "oddsRefreshAutomationState": "DISABLED",
             "pregameAutomationEnabled": False,
+            "playerPropCollectionEnabled": False,
             "pregameLastStatus": "DISABLED",
             "pregameLastSkipReason": "PREGAME_AUTOMATION_DISABLED",
             "pregameLastProviderRequests": 0,
@@ -260,3 +264,5 @@ def test_api_health_stays_healthy_when_automation_intentionally_disabled():
 
     assert payload["databaseStatus"] == "connected"
     assert payload["apiHealth"] == "healthy"
+    assert payload["scheduler"]["playerPropCollectionEnabled"] is False
+    assert payload["playerPropCollectionEnabled"] is False

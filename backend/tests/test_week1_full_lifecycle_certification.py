@@ -450,6 +450,7 @@ def run_week1_full_lifecycle_certification(monkeypatch: pytest.MonkeyPatch, tmp_
     closing_db = tmp_path / "week1_closing.duckdb"
 
     monkeypatch.setenv("PREGAME_AUTOMATION_ENABLED", "1")
+    monkeypatch.setenv("PLAYER_PROP_COLLECTION_ENABLED", "1")
     monkeypatch.setattr(shadow_markets, "_DB_PATH", shadow_db)
     monkeypatch.setattr(dl, "_DB_PATH", ledger_db)
     monkeypatch.setattr(closing_line, "_DB_PATH", closing_db)
@@ -773,6 +774,7 @@ def test_week1_full_lifecycle_certification_end_to_end(certification_summary):
 
 def test_provider_unavailable_during_game_day_isolated(monkeypatch, tmp_path: Path):
     shadow_db = tmp_path / "provider_failure.sqlite"
+    monkeypatch.setenv("PLAYER_PROP_COLLECTION_ENABLED", "1")
     monkeypatch.setattr(shadow_markets, "_DB_PATH", shadow_db)
     shadow_markets._ensure_schema()
     mgr._ensure_manager_schema()
@@ -817,6 +819,7 @@ def test_provider_unavailable_during_game_day_isolated(monkeypatch, tmp_path: Pa
 
 def test_unknown_cost_request_budget_and_credit_budget_fail_safe(monkeypatch, tmp_path: Path):
     shadow_db = tmp_path / "budget_guard.sqlite"
+    monkeypatch.setenv("PLAYER_PROP_COLLECTION_ENABLED", "1")
     monkeypatch.setattr(shadow_markets, "_DB_PATH", shadow_db)
     shadow_markets._ensure_schema()
     mgr._ensure_manager_schema()

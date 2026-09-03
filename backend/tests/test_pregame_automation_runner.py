@@ -139,6 +139,37 @@ def test_pregame_automation_closing_due_standard_only_zero_player_prop_provider(
     assert out["providerRequests"] == 0
 
 
+def test_pregame_automation_supports_enabled_with_props_disabled(monkeypatch):
+    monkeypatch.setenv("PREGAME_AUTOMATION_ENABLED", "1")
+    monkeypatch.setenv("PLAYER_PROP_COLLECTION_ENABLED", "0")
+    with (
+        patch("app.services.pregame_collection_manager.build_pregame_collection_schedule_v1", return_value=_schedule(standard_due=3, prop_due=2, next_state="GAME_DAY")),
+        patch(
+            "app.services.pregame_collection_manager.run_pregame_collection_manager",
+            return_value={
+                "status": "COMPLETED",
+                "plan": {
+                    "playerPropCollectionEnabled": False,
+                    "playerPropCollectionSkipReason": "PLAYER_PROP_COLLECTION_DISABLED",
+                    "estimatedCreditsStatus": "DISABLED",
+                    "estimatedCredits": 0.0,
+                },
+                "execution": {
+                    "providerRequests": 0,
+                    "playerPropCollectionEnabled": False,
+                    "playerPropCollectionSkipReason": "PLAYER_PROP_COLLECTION_DISABLED",
+                },
+            },
+        ),
+    ):
+        out = orch._run_pregame_automation_tick()
+
+    assert out["status"] == "COMPLETED"
+    assert out["providerRequests"] == 0
+    assert out["verifiedCredits"] is None
+    assert out["playerPropCollectionEnabled"] is False
+
+
 def test_pregame_automation_post_kickoff_zero_provider_requests(monkeypatch):
     monkeypatch.setenv("PREGAME_AUTOMATION_ENABLED", "1")
     with (

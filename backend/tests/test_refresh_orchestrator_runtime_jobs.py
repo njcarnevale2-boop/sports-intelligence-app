@@ -408,3 +408,96 @@ def test_instrumented_orchestrator_run_makes_no_direct_provider_request(tmp_path
 
         assert orch._run_once() is True
         request_get.assert_not_called()
+
+
+def test_base_cadence_defaults_match_balanced_week1_policy():
+    assert orch.MINS_OFFSEASON() == 360
+    assert orch.MINS_GAMEWEEK() == 180
+    assert orch.MINS_GAMEDAY() == 60
+    assert orch.MINS_NEARKICKOFF() == 20
+
+
+def test_determine_base_cadence_minutes_at_uses_balanced_windows(tmp_path, monkeypatch):
+    runtime_root = tmp_path / "runtime"
+    outputs = runtime_root / "outputs"
+    outputs.mkdir(parents=True)
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+
+    pd.DataFrame(
+        [
+            {"api_event_id": "evt-1", "commence_time": "2026-09-10T00:15:00+00:00", "away_team": "NE", "home_team": "SEA"},
+            {"api_event_id": "evt-2", "commence_time": "2026-09-13T17:00:00+00:00", "away_team": "NO", "home_team": "ATL"},
+        ]
+    ).to_csv(outputs / "current_game_projections.csv", index=False)
+
+    assert orch._determine_base_cadence_minutes_at(datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)) == 360
+    assert orch._determine_base_cadence_minutes_at(datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)) == 180
+    assert orch._determine_base_cadence_minutes_at(datetime(2026, 9, 10, 10, 0, tzinfo=timezone.utc)) == 60
+    assert orch._determine_base_cadence_minutes_at(datetime(2026, 9, 9, 22, 0, tzinfo=timezone.utc)) == 20
+
+
+def test_week1_balanced_cadence_cost_regression(tmp_path, monkeypatch):
+    runtime_root = tmp_path / "runtime"
+    outputs = runtime_root / "outputs"
+    outputs.mkdir(parents=True)
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+
+    kickoffs = [
+        "2026-09-10T00:15:00+00:00",
+        "2026-09-11T00:15:00+00:00",
+        "2026-09-13T17:00:00+00:00",
+        "2026-09-13T17:00:00+00:00",
+        "2026-09-13T17:00:00+00:00",
+        "2026-09-13T17:00:00+00:00",
+        "2026-09-13T17:00:00+00:00",
+        "2026-09-13T17:00:00+00:00",
+        "2026-09-13T17:00:00+00:00",
+        "2026-09-13T17:00:00+00:00",
+        "2026-09-13T20:05:00+00:00",
+        "2026-09-13T20:25:00+00:00",
+        "2026-09-13T20:25:00+00:00",
+        "2026-09-13T20:25:00+00:00",
+        "2026-09-14T00:20:00+00:00",
+        "2026-09-15T00:15:00+00:00",
+    ]
+    rows = [
+        {"api_event_id": f"evt-{idx}", "commence_time": kickoff, "away_team": f"A{idx}", "home_team": f"H{idx}"}
+        for idx, kickoff in enumerate(kickoffs, start=1)
+    ]
+    pd.DataFrame(rows).to_csv(outputs / "current_game_projections.csv", index=False)
+
+    start = datetime(2026, 9, 3, 22, 9, 26, 555699, tzinfo=timezone.utc)
+    end = datetime(2026, 9, 15, 4, 30, tzinfo=timezone.utc)
+    now = start
+    runs: list[datetime] = []
+    while now < end:
+        cadence = orch._determine_base_cadence_minutes_at(now)
+        runs.append(now)
+        now += timedelta(minutes=cadence)
+
+    max_runs_in_seven_days = 0
+    left = 0
+    for right, current in enumerate(runs):
+        while runs[left] < current - timedelta(days=7):
+            left += 1
+        max_runs_in_seven_days = max(max_runs_in_seven_days, right - left + 1)
+
+    assert len(runs) == 181
+    assert len(runs) * 3 == 543
+    assert max_runs_in_seven_days == 159
+    assert max_runs_in_seven_days * 3 == 477
+
+
+def test_refresh_status_surfaces_player_prop_collection_enabled(tmp_path, monkeypatch):
+    runtime_root = tmp_path / "runtime"
+    (runtime_root / "logs").mkdir(parents=True)
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+    monkeypatch.setenv("PLAYER_PROP_COLLECTION_ENABLED", "0")
+
+    state_file = runtime_root / "logs" / "refresh_state.json"
+    state_file.write_text(json.dumps({"pregameAutomationEnabled": True}))
+
+    with patch.object(orch, "_STATE_FILE", state_file):
+        status = orch.get_refresh_status()
+
+    assert status["playerPropCollectionEnabled"] is False
