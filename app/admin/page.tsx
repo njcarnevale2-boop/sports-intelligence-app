@@ -1,8 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { fetchJson } from "../lib/api";
+import {
+  applyOfficialPreview,
+  beginOfficialPublish,
+  buildOfficialPublishRequestBody,
+  canPublishOfficialFromWorkflow,
+  clearOfficialPreview,
+  createOfficialPublishWorkflowState,
+  markOfficialPublishFailed,
+  markOfficialPublishSucceeded,
+  toOfficialPublishFailureMessage,
+} from "../lib/official-publication-workflow";
 import { Button } from "@/components/ui/button";
 
 type SchedulerStatus = {
@@ -131,6 +142,7 @@ type OfficialPreviewSlot = {
 };
 
 type OfficialPreview = {
+  snapshotId?: string | null;
   publishedAtUTC: string;
   season: number;
   week: number;
@@ -170,6 +182,7 @@ const metricCard = (label: string, value: string | number, accent = "text-white"
 );
 
 export default function AdminPage() {
+  const publishClickLock = useRef(false);
   const [status, setStatus] = useState<AdminStatus | null>(null);
   const [socialCoverage, setSocialCoverage] = useState<SocialCoverageResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -179,8 +192,7 @@ export default function AdminPage() {
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [publishingOfficial, setPublishingOfficial] = useState(false);
   const [publishMessage, setPublishMessage] = useState<string>("");
-  const [overrideStale, setOverrideStale] = useState(false);
-  const [overrideMissingLinkage, setOverrideMissingLinkage] = useState(false);
+  const [officialPublishWorkflow, setOfficialPublishWorkflow] = useState(createOfficialPublishWorkflowState);
 
   const loadStatus = async () => {
     try {
@@ -255,22 +267,44 @@ export default function AdminPage() {
         },
       });
       setOfficialPreview(preview);
+      setOfficialPublishWorkflow((current) => applyOfficialPreview(current, preview));
+      if (!preview.snapshotId) {
+        setPublishMessage("Preview loaded without a snapshot id. Preview again before publishing.");
+      }
     } catch (error) {
       const msg = error instanceof Error ? error.message : "Unable to load official preview";
       setPublishMessage(msg);
       setOfficialPreview(null);
+      setOfficialPublishWorkflow((current) => clearOfficialPreview(current));
     } finally {
       setLoadingPreview(false);
     }
   };
 
   const handlePublishOfficial = async () => {
+    if (publishClickLock.current) {
+      return;
+    }
     if (!adminToken.trim()) {
       setPublishMessage("Admin token required.");
       return;
     }
+    const started = beginOfficialPublish(officialPublishWorkflow);
+    if (!started.allowed) {
+      setPublishMessage(started.reason);
+      return;
+    }
+
+    const payload = buildOfficialPublishRequestBody(started.state);
+    if (!payload) {
+      setPublishMessage("Preview Official SIA 3 first so a valid snapshot can be published.");
+      return;
+    }
+
+    setOfficialPublishWorkflow(started.state);
     setPublishMessage("");
     setPublishingOfficial(true);
+    publishClickLock.current = true;
     try {
       const result = await fetchJson<{ publication: { publicationId: string } }>(
         "/api/admin/ledger/official-sia3/publish",
@@ -280,19 +314,19 @@ export default function AdminPage() {
             "Content-Type": "application/json",
             "x-admin-token": adminToken.trim(),
           },
-          body: JSON.stringify({
-            overrideStaleOdds: overrideStale,
-            overrideMissingSnapshotLinkage: overrideMissingLinkage,
-          }),
+          body: JSON.stringify(payload),
         }
       );
+      setOfficialPublishWorkflow((current) => markOfficialPublishSucceeded(current));
       setPublishMessage(`Official SIA 3 published: ${result.publication.publicationId}`);
       await Promise.all([loadStatus(), handlePreviewOfficial()]);
     } catch (error) {
-      const msg = error instanceof Error ? error.message : "Publish failed";
+      const msg = toOfficialPublishFailureMessage(error instanceof Error ? error.message : "Publish failed");
+      setOfficialPublishWorkflow((current) => markOfficialPublishFailed(current));
       setPublishMessage(msg);
     } finally {
       setPublishingOfficial(false);
+      publishClickLock.current = false;
     }
   };
 
@@ -578,22 +612,20 @@ export default function AdminPage() {
                     <Button onClick={handlePreviewOfficial} disabled={loadingPreview} className="h-10 bg-white px-4 text-black hover:bg-zinc-200">
                       {loadingPreview ? "Loading..." : "Preview Official SIA 3"}
                     </Button>
-                    <Button onClick={handlePublishOfficial} disabled={publishingOfficial || !officialPreview} variant="outline" className="h-10 border-emerald-400/30 bg-emerald-400/10 px-4 text-emerald-300 hover:bg-emerald-400/15">
+                    <Button
+                      onClick={handlePublishOfficial}
+                      disabled={publishingOfficial || !canPublishOfficialFromWorkflow(officialPublishWorkflow)}
+                      variant="outline"
+                      className="h-10 border-emerald-400/30 bg-emerald-400/10 px-4 text-emerald-300 hover:bg-emerald-400/15"
+                    >
                       {publishingOfficial ? "Publishing..." : "Publish Official SIA 3"}
                     </Button>
                   </div>
                 </div>
 
-                <div className="mt-3 flex flex-wrap gap-3 text-xs text-zinc-400">
-                  <label className="inline-flex items-center gap-2">
-                    <input type="checkbox" checked={overrideStale} onChange={(e) => setOverrideStale(e.target.checked)} />
-                    Override stale odds block
-                  </label>
-                  <label className="inline-flex items-center gap-2">
-                    <input type="checkbox" checked={overrideMissingLinkage} onChange={(e) => setOverrideMissingLinkage(e.target.checked)} />
-                    Override missing snapshot linkage block
-                  </label>
-                </div>
+                <p className="mt-3 text-xs text-zinc-500">
+                  Publish uses the exact snapshot from the latest successful preview and remains fail-closed on stale or missing linkage safeguards.
+                </p>
 
                 {publishMessage && <p className="mt-2 text-xs text-amber-400">{publishMessage}</p>}
 
