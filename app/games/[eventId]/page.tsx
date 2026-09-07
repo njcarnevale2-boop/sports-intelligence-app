@@ -118,11 +118,32 @@ type Opportunity = {
   decisionDegradation?: DecisionDegradation;
 };
 
+type OpportunityLifecycle = {
+  eventId: string;
+  lifecycleState: string;
+  summary: string;
+  comparison: {
+    qualificationChanged?: boolean;
+    productionEligibilityChanged?: boolean;
+    lineChanged?: boolean;
+    priceChanged?: boolean;
+    currentQualificationStatus?: string;
+    previousQualificationStatus?: string;
+    currentProductionEligible?: boolean;
+    previousProductionEligible?: boolean;
+    currentRecommendation?: string;
+    previousRecommendation?: string;
+  };
+  readOnly: boolean;
+  executionRestriction: string;
+};
+
 type GameOpportunityResponse = {
   opportunity: Opportunity | null;
   bestByMarket?: Record<string, Opportunity>;
   intelligenceReport?: IntelligenceReport;
   snapshotId?: string;
+  lifecycle?: OpportunityLifecycle;
 };
 
 type IntelligenceReport = {
@@ -360,6 +381,7 @@ export default function GameIntelligencePage() {
   const [moveLoading, setMoveLoading] = useState(false);
   const [moveError, setMoveError] = useState("");
   const [canonicalSnapshotId, setCanonicalSnapshotId] = useState<string | undefined>(undefined);
+  const [lifecycle, setLifecycle] = useState<OpportunityLifecycle | null>(null);
 
   useEffect(() => {
     if (!eventId) return;
@@ -384,6 +406,7 @@ export default function GameIntelligencePage() {
         if (oppResult.status === "fulfilled") {
           setOpportunity(oppResult.value.opportunity);
           setBestByMarket(oppResult.value.bestByMarket ?? {});
+          setLifecycle(oppResult.value.lifecycle ?? null);
           setCanonicalSnapshotId(resolveAnalysisSnapshotId(oppResult.value.snapshotId, snapshotIdFromUrl));
           if (oppResult.value.intelligenceReport) setIntelligenceReport(oppResult.value.intelligenceReport);
           if (oppResult.value.opportunity?.market === "spread") {
@@ -699,6 +722,38 @@ export default function GameIntelligencePage() {
           </div>
           {addToCardNotice ? <p className="mt-3 text-sm text-zinc-400">{addToCardNotice}</p> : null}
         </section>
+
+        {lifecycle ? (
+          <section className="rounded-3xl border border-white/[0.08] bg-[#0B1119] p-6 md:p-8">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs uppercase tracking-[0.2em] text-zinc-600">Opportunity Lifecycle</p>
+              <span className="rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 text-[10px] uppercase tracking-[0.18em] text-zinc-300">
+                {lifecycle.lifecycleState}
+              </span>
+            </div>
+            <p className="mt-3 text-sm leading-6 text-zinc-300">{lifecycle.summary}</p>
+            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Qualification</p>
+                <p className="mt-2 text-sm font-medium text-white">{lifecycle.comparison.currentQualificationStatus ?? "UNKNOWN"}</p>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Production</p>
+                <p className="mt-2 text-sm font-medium text-white">{lifecycle.comparison.currentProductionEligible ? "ELIGIBLE" : "WATCH ONLY"}</p>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Line</p>
+                <p className="mt-2 text-sm font-medium text-white">{lifecycle.comparison.lineChanged ? "Changed" : "Stable"}</p>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Price</p>
+                <p className="mt-2 text-sm font-medium text-white">{lifecycle.comparison.priceChanged ? "Changed" : "Stable"}</p>
+              </div>
+            </div>
+            <p className="mt-4 text-xs uppercase tracking-[0.16em] text-zinc-600">Execution restriction</p>
+            <p className="mt-2 text-sm text-zinc-400">{lifecycle.executionRestriction}</p>
+          </section>
+        ) : null}
 
         <section id="ask-sia" className="rounded-3xl border border-white/[0.08] bg-[#0B1119] p-6 md:p-8">
           <p className="text-xs uppercase tracking-[0.2em] text-zinc-600">Ask SIA</p>

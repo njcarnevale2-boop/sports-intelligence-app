@@ -193,6 +193,114 @@ def _qualification_from_recommendation(recommendation: str | None) -> tuple[str,
     return "QUALIFIED", ["Current model edge and confidence meet SIA qualification thresholds."]
 
 
+def _safe_float(value: Any) -> float | None:
+    if value is None or pd.isna(value):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _opportunity_lifecycle_state(opportunity: dict[str, Any] | None, previous_snapshot: dict[str, Any] | None = None) -> str:
+    if opportunity is None:
+        if previous_snapshot is not None:
+            prior_status = str(previous_snapshot.get("qualificationStatus") or "").upper()
+            prior_recommendation = str(previous_snapshot.get("recommendation") or "").upper()
+            if prior_status == "QUALIFIED" or "STRONG" in prior_recommendation or "BET" in prior_recommendation:
+                return "NO_LONGER_QUALIFIED"
+        return "WATCH"
+
+    qualification = str(opportunity.get("qualificationStatus") or "").upper()
+    recommendation = str(opportunity.get("recommendation") or "").upper()
+    production_eligible = bool(opportunity.get("productionEligible"))
+
+    if previous_snapshot is not None:
+        previous_qualification = str(previous_snapshot.get("qualificationStatus") or "").upper()
+        previous_recommendation = str(previous_snapshot.get("recommendation") or "").upper()
+        if previous_qualification == "QUALIFIED" and current_qualification != "QUALIFIED":
+            return "NO_LONGER_QUALIFIED"
+        if previous_qualification in {"QUALIFIED", "STRONG BET"} and previous_recommendation in {"QUALIFIED", "STRONG BET"} and recommendation in {"WATCH", "LEAN"}:
+            return "SUPERSEDED"
+
+    if str(opportunity.get("market") or "").lower() == "spread" and production_eligible and qualification == "QUALIFIED":
+        return "QUALIFIED"
+    if recommendation.startswith("PASS") or qualification == "NOT_QUALIFIED":
+        return "NO_LONGER_QUALIFIED"
+    if "WATCH" in recommendation or "LEAN" in recommendation or not production_eligible:
+        return "WATCH"
+    return "QUALIFIED"
+
+
+def _build_opportunity_lifecycle(event_id: str, opportunity: dict[str, Any] | None, previous_snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
+    previous_snapshot_available = previous_snapshot is not None
+
+    current_point = _safe_float((opportunity or {}).get("point"))
+    current_price = _safe_float((opportunity or {}).get("price"))
+    current_qualification = str((opportunity or {}).get("qualificationStatus") or "").upper() or "WATCH"
+    current_production_eligible = bool((opportunity or {}).get("productionEligible"))
+    current_recommendation = str((opportunity or {}).get("recommendation") or "").upper() or "WATCH"
+
+    previous_point = _safe_float((previous_snapshot or {}).get("point"))
+    previous_price = _safe_float((previous_snapshot or {}).get("price"))
+    previous_qualification = str((previous_snapshot or {}).get("qualificationStatus") or "").upper() or "WATCH"
+    previous_production_eligible = bool((previous_snapshot or {}).get("productionEligible"))
+    previous_recommendation = str((previous_snapshot or {}).get("recommendation") or "").upper() or "WATCH"
+
+    qualification_changed = previous_snapshot_available and previous_qualification != current_qualification
+    production_eligibility_changed = previous_snapshot_available and previous_production_eligible != current_production_eligible
+    line_changed = previous_snapshot_available and previous_point is not None and current_point is not None and abs(previous_point - current_point) > 0.001
+    price_changed = previous_snapshot_available and previous_price is not None and current_price is not None and abs(previous_price - current_price) > 0.001
+
+    lifecycle_state = _opportunity_lifecycle_state(opportunity, previous_snapshot=previous_snapshot)
+
+    summary = "No prior snapshot was available, so this lifecycle is based only on the current opportunity snapshot."
+    if opportunity is None and not previous_snapshot_available:
+        summary = "No current opportunity is present and no prior snapshot is available, so the lifecycle remains unavailable-to-compare."
+    elif previous_snapshot_available:
+        if lifecycle_state == "NO_LONGER_QUALIFIED":
+            summary = "A previously qualified opportunity is no longer present or qualified in the current snapshot."
+        elif lifecycle_state == "SUPERSEDED":
+            summary = "The current snapshot superseded the earlier qualified recommendation without any execution path being enabled."
+        elif lifecycle_state == "QUALIFIED":
+            summary = "The current snapshot remains qualified and production-eligible for spread-only processing."
+        elif lifecycle_state == "WATCH":
+            summary = "The current snapshot remains watch-only and no prior transition was inferred from unavailable history."
+    elif opportunity:
+        if lifecycle_state == "QUALIFIED":
+            summary = "Current selection is qualified and production-eligible for spread execution."
+        elif lifecycle_state == "WATCH":
+            summary = "Current selection is under watch and not yet production-qualified from the current snapshot."
+        elif lifecycle_state == "NO_LONGER_QUALIFIED":
+            summary = "Current selection has fallen out of the qualified band and is no longer production-eligible."
+
+    return {
+        "eventId": event_id,
+        "lifecycleState": lifecycle_state,
+        "summary": summary,
+        "previousSnapshotAvailable": previous_snapshot_available,
+        "comparison": {
+            "qualificationChanged": qualification_changed,
+            "productionEligibilityChanged": production_eligibility_changed,
+            "lineChanged": line_changed,
+            "priceChanged": price_changed,
+            "currentPoint": current_point,
+            "currentPrice": current_price,
+            "previousPoint": previous_point,
+            "previousPrice": previous_price,
+            "currentQualificationStatus": current_qualification,
+            "previousQualificationStatus": previous_qualification,
+            "currentProductionEligible": current_production_eligible,
+            "previousProductionEligible": previous_production_eligible,
+            "currentRecommendation": current_recommendation,
+            "previousRecommendation": previous_recommendation,
+            "previousSnapshotAvailable": previous_snapshot_available,
+        },
+        "readOnly": True,
+        "executionRestriction": "No individual publication or execution is enabled in Phase 1; this lifecycle is informational only.",
+    }
+
+
 MARKET_QUALIFICATION_POLICY = {
     "spread": {"minEdge": 0.0, "minEV": float(settings.MIN_PLAYABLE_EV), "minConfidence": 60.0},
     "moneyline": {"minEdge": 0.015, "minEV": max(0.01, float(settings.MIN_PLAYABLE_EV)), "minConfidence": 60.0},
@@ -1870,7 +1978,19 @@ def _get_game_best_opportunity_payload(event_id: str, *, include_best_by_market:
 @router.get("/games/{event_id}/opportunity")
 def get_game_best_opportunity(event_id: str):
     """Return the top-ranked SIA opportunity for this game, or null if none qualifies."""
-    return _get_game_best_opportunity_payload(event_id, include_best_by_market=True)
+    payload = _get_game_best_opportunity_payload(event_id, include_best_by_market=True)
+    opportunity = payload.get("opportunity")
+    payload["lifecycle"] = _build_opportunity_lifecycle(event_id, opportunity)
+    return payload
+
+
+@router.get("/games/{event_id}/opportunity/lifecycle")
+def get_game_opportunity_lifecycle(event_id: str):
+    """Return a read-only opportunity lifecycle summary and comparison for this event."""
+    payload = _get_game_best_opportunity_payload(event_id, include_best_by_market=True)
+    opportunity = payload.get("opportunity")
+    previous_snapshot = None
+    return _build_opportunity_lifecycle(event_id, opportunity, previous_snapshot)
 
 
 @router.get(

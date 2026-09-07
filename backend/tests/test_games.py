@@ -153,3 +153,73 @@ def test_game_opportunity_endpoint_always_returns_intelligence_report() -> None:
     assert isinstance(report.get("qualificationReasons", []), list)
     assert report.get("betTrigger", {}).get("available") is False
     assert report.get("betTrigger", {}).get("message") == "Actionable price not currently available"
+
+
+def test_game_opportunity_lifecycle_contract_is_exposed_read_only() -> None:
+    games_response = client.get("/api/games")
+    assert games_response.status_code == 200
+
+    event_id = games_response.json()["games"][0]["eventId"]
+    response = client.get(f"/api/games/{event_id}/opportunity")
+    assert response.status_code == 200
+
+    payload = response.json()
+    assert "lifecycle" in payload
+    lifecycle = payload["lifecycle"]
+    assert lifecycle["eventId"] == event_id
+    assert lifecycle["lifecycleState"] in {"WATCH", "QUALIFIED", "NO_LONGER_QUALIFIED", "SUPERSEDED"}
+    assert "summary" in lifecycle
+    assert "comparison" in lifecycle
+    compare = lifecycle["comparison"]
+    assert "qualificationChanged" in compare
+    assert "productionEligibilityChanged" in compare
+    assert "lineChanged" in compare
+    assert "priceChanged" in compare
+    assert compare["qualificationChanged"] is False
+    assert compare["productionEligibilityChanged"] is False
+    assert compare["lineChanged"] is False
+    assert compare["priceChanged"] is False
+    assert lifecycle["previousSnapshotAvailable"] is False
+
+    lifecycle_response = client.get(f"/api/games/{event_id}/opportunity/lifecycle")
+    assert lifecycle_response.status_code == 200
+    assert lifecycle_response.json()["eventId"] == event_id
+    assert lifecycle_response.json()["lifecycleState"] == lifecycle["lifecycleState"]
+
+
+def test_lifecycle_missing_history_is_explicitly_unavailable() -> None:
+    from app.routes.opportunities import _build_opportunity_lifecycle
+
+    current = {
+        "market": "spread",
+        "qualificationStatus": "QUALIFIED",
+        "recommendation": "STRONG BET",
+        "productionEligible": True,
+        "point": 2.5,
+        "price": -110,
+    }
+
+    lifecycle = _build_opportunity_lifecycle("evt-test", current)
+    assert lifecycle["previousSnapshotAvailable"] is False
+    assert lifecycle["comparison"]["qualificationChanged"] is False
+    assert lifecycle["comparison"]["lineChanged"] is False
+    assert lifecycle["comparison"]["priceChanged"] is False
+    assert lifecycle["lifecycleState"] == "QUALIFIED"
+
+
+def test_lifecycle_represented_when_qualified_history_disappears() -> None:
+    from app.routes.opportunities import _build_opportunity_lifecycle
+
+    previous = {
+        "market": "spread",
+        "qualificationStatus": "QUALIFIED",
+        "recommendation": "STRONG BET",
+        "productionEligible": True,
+        "point": 2.5,
+        "price": -110,
+    }
+
+    lifecycle = _build_opportunity_lifecycle("evt-test", None, previous)
+    assert lifecycle["previousSnapshotAvailable"] is True
+    assert lifecycle["lifecycleState"] == "NO_LONGER_QUALIFIED"
+    assert lifecycle["comparison"]["qualificationChanged"] is True
