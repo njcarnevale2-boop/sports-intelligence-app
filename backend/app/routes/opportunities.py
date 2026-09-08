@@ -23,6 +23,11 @@ from app.services.fair_price import build_fair_price_result
 from app.services.decision_profile import build_spread_decision_boundaries
 from app.services.calibration import apply_guarded_isotonic, calibration_info
 from app.services.decision_board import build_decision_board_payload
+from app.services.opportunity_history import (
+    build_history_snapshot_from_opportunity,
+    latest_history_for_opportunity,
+    record_history_snapshot,
+)
 from app.services.probability_engine import (
     ev_per_dollar_with_push,
     fair_price_from_win_push,
@@ -232,7 +237,71 @@ def _opportunity_lifecycle_state(opportunity: dict[str, Any] | None, previous_sn
     return "QUALIFIED"
 
 
+def _opportunity_history_snapshot(history: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not history:
+        return None
+    return {
+        "eventId": history.get("eventId"),
+        "market": history.get("market"),
+        "side": history.get("side"),
+        "sportsbook": history.get("sportsbook"),
+        "point": history.get("point"),
+        "price": history.get("price"),
+        "qualificationStatus": history.get("qualificationStatus"),
+        "recommendation": history.get("recommendation"),
+        "productionEligible": history.get("productionEligible"),
+        "sourceSnapshotId": history.get("sourceSnapshotId"),
+        "modelVersion": history.get("modelVersion"),
+        "probabilityEngineVersion": history.get("probabilityEngineVersion"),
+        "calibrationVersion": history.get("calibrationVersion"),
+        "rankingVersion": history.get("rankingVersion"),
+        "qualificationPolicyVersion": history.get("qualificationPolicyVersion"),
+        "gitCommitHash": history.get("gitCommitHash"),
+    }
+
+
+def _get_previous_persisted_opportunity_snapshot(event_id: str, opportunity: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not opportunity:
+        return None
+    market = str(opportunity.get("market") or "").strip()
+    side = str(opportunity.get("side") or "").strip()
+    if not event_id or not market or not side:
+        return None
+    history = latest_history_for_opportunity(event_id, market, side)
+    if history is None:
+        return None
+    if history.get("currentState") == "QUALIFIED" and str(opportunity.get("qualificationStatus") or "").upper() == "QUALIFIED":
+        return _opportunity_history_snapshot(history)
+    if history.get("currentState") in {"WATCH", "NO_LONGER_QUALIFIED", "QUALIFIED"}:
+        return _opportunity_history_snapshot(history)
+    return None
+
+
+def _record_history_for_snapshot(snapshot_id: str | None, opportunities: list[dict[str, Any]] | None, *, observed_at_utc: str | None = None) -> list[dict[str, Any]]:
+    if not snapshot_id:
+        return []
+    if not opportunities:
+        return []
+
+    records: list[dict[str, Any]] = []
+    for opportunity in opportunities:
+        if not opportunity:
+            continue
+        try:
+            payload = build_history_snapshot_from_opportunity(
+                opportunity,
+                source_snapshot_id=snapshot_id,
+                observed_at_utc=observed_at_utc,
+            )
+        except ValueError:
+            continue
+        records.append(record_history_snapshot(payload))
+    return records
+
+
 def _build_opportunity_lifecycle(event_id: str, opportunity: dict[str, Any] | None, previous_snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
+    if previous_snapshot is None and opportunity is not None:
+        previous_snapshot = _get_previous_persisted_opportunity_snapshot(event_id, opportunity)
     previous_snapshot_available = previous_snapshot is not None
 
     current_point = _safe_float((opportunity or {}).get("point"))
@@ -1576,6 +1645,12 @@ def get_opportunities(
     for item in best_rows:
         item["snapshotId"] = snapshot_id
         item["snapshotTimestamp"] = market_meta.get("lastUpdated")
+
+    _record_history_for_snapshot(
+        snapshot_id,
+        best_rows,
+        observed_at_utc=str(market_meta.get("lastUpdated") or ""),
+    )
 
     return {
         "count": len(best_rows),

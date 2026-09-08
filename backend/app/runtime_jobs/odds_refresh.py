@@ -13,6 +13,7 @@ import pandas as pd
 import requests
 
 from app.runtime_paths import runtime_paths
+from app.services.opportunity_history import build_history_snapshot_from_opportunity, record_history_snapshot
 
 
 log = logging.getLogger("runtime_jobs.odds_refresh")
@@ -568,6 +569,99 @@ def _core_request_params(signature: dict[str, Any], *, api_key: str) -> dict[str
     return params
 
 
+def _history_snapshot_from_persisted_row(row: dict[str, Any], *, source_snapshot_id: str) -> dict[str, Any] | None:
+    event_id = str(row.get("api_event_id") or row.get("event_id") or "").strip()
+    market_key = str(row.get("market_key") or row.get("market") or "").strip().lower()
+    outcome_code = str(row.get("outcome_code") or row.get("side") or "").strip().lower()
+    if not event_id or not market_key:
+        return None
+
+    market_by_key = {
+        "h2h": "moneyline",
+        "spreads": "spread",
+        "totals": "total",
+    }
+    market = market_by_key.get(market_key, market_key)
+    side = outcome_code if outcome_code else "home"
+    bookmaker = str(row.get("bookmaker_title") or row.get("bookmaker_key") or "the_odds_api").strip() or "the_odds_api"
+    observed_at = row.get("fetched_at")
+    if observed_at is not None and hasattr(observed_at, "isoformat"):
+        observed_at_str = observed_at.isoformat()
+    else:
+        observed_at_str = str(observed_at or datetime.now(timezone.utc).isoformat())
+
+    opportunity = {
+        "eventId": event_id,
+        "market": market,
+        "side": side,
+        "sportsbook": bookmaker,
+        "point": row.get("point"),
+        "price": row.get("price"),
+        "qualificationStatus": None,
+        "recommendation": None,
+        "productionEligible": False,
+    }
+    return build_history_snapshot_from_opportunity(opportunity, source_snapshot_id=source_snapshot_id, observed_at_utc=observed_at_str)
+
+
+def _record_history_from_persisted_snapshot(con: duckdb.DuckDBPyConnection, *, source_snapshot_id: str, fetched_at: datetime | None = None) -> list[dict[str, Any]]:
+    if not source_snapshot_id:
+        return []
+
+    def _normalize_snapshot_time(value: Any) -> str | None:
+        if value is None:
+            return None
+        if hasattr(value, "isoformat"):
+            dt = value
+        elif isinstance(value, str):
+            txt = value.strip().replace("Z", "+00:00")
+            try:
+                dt = datetime.fromisoformat(txt)
+            except ValueError:
+                return None
+        else:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt.isoformat().replace("+00:00", "Z")
+
+    fetched_at = fetched_at or datetime.now(timezone.utc).replace(tzinfo=None)
+    current_iso = _normalize_snapshot_time(fetched_at)
+    columns = [str(item[0]) for item in con.execute("DESCRIBE odds_snapshots").fetchall()]
+    rows = con.execute(
+        "SELECT * FROM odds_snapshots ORDER BY api_event_id, bookmaker_key, market_key, outcome_code"
+    ).fetchall()
+
+    records: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str, str, str]] = set()
+    for raw_row in rows:
+        row = dict(zip(columns, raw_row))
+        if current_iso is not None:
+            row_fetched_at = row.get("fetched_at")
+            if row_fetched_at is not None:
+                row_iso = _normalize_snapshot_time(row_fetched_at)
+                if row_iso != current_iso:
+                    continue
+        payload = _history_snapshot_from_persisted_row(row, source_snapshot_id=source_snapshot_id)
+        if payload is None:
+            continue
+        identity = (
+            str(payload.get("eventId") or ""),
+            str(payload.get("market") or ""),
+            str(payload.get("side") or ""),
+            str(payload.get("sportsbook") or ""),
+            str(payload.get("point") if payload.get("point") is not None else ""),
+            str(payload.get("price") if payload.get("price") is not None else ""),
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        records.append(record_history_snapshot(payload))
+    return records
+
+
 def _execute_core_request(signature: dict[str, Any], *, api_key: str) -> requests.Response:
     params = _core_request_params(signature, api_key=api_key)
     url = f"{BASE}/sports/{SPORT}/odds"
@@ -837,6 +931,13 @@ def run_refresh() -> dict[str, Any]:
                 "INSERT INTO odds_snapshots VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 rows,
             )
+
+        refresh_snapshot_id = f"odds-refresh:{fetched_at.isoformat()}Z"
+        _record_history_from_persisted_snapshot(
+            con,
+            source_snapshot_id=refresh_snapshot_id,
+            fetched_at=fetched_at,
+        )
 
         warning_code = None
         if provider_events_returned > 0 and len(rows) == 0:
