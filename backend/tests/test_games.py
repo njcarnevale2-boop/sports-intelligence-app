@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.routes.opportunities import build_intelligence_report
 
 
 client = TestClient(app)
@@ -152,8 +153,33 @@ def test_game_opportunity_endpoint_always_returns_intelligence_report() -> None:
     assert report["betStatus"] in {"STRONG BET", "QUALIFIED", "LEAN", "NO QUALIFIED BET", "INSUFFICIENT DATA"}
     assert "qualificationStatus" in report
     assert isinstance(report.get("qualificationReasons", []), list)
-    assert report.get("betTrigger", {}).get("available") is False
-    assert report.get("betTrigger", {}).get("message") == "Actionable price not currently available"
+    assert report.get("betTrigger", {}).get("message") != "Actionable price not currently available"
+
+
+def test_build_intelligence_report_qualified_opportunity_reports_current_observed_quote() -> None:
+    opportunity = {
+        "recommendation": "STRONG BET",
+        "market": "spread",
+        "pick": "NO",
+        "point": 7.0,
+        "price": -105,
+        "book": "LowVig.ag",
+        "confidence": 86,
+    }
+
+    report = build_intelligence_report("evt-quoted", opportunity, None, {"booksTracked": 2})
+
+    assert report["qualificationStatus"] == "QUALIFIED"
+    assert report["betTrigger"]["available"] is True
+    assert report["betTrigger"]["message"] == "Current observed quote available at LowVig.ag: NO +7 (-105)."
+
+
+def test_build_intelligence_report_no_opportunity_uses_neutral_message() -> None:
+    report = build_intelligence_report("evt-empty", None, None, {"booksTracked": 0})
+
+    assert report["qualificationStatus"] == "INSUFFICIENT_DATA"
+    assert report["betTrigger"]["available"] is False
+    assert report["betTrigger"]["message"] == "No current actionable quote is available for this matchup."
 
 
 def test_game_opportunity_lifecycle_contract_is_exposed_read_only() -> None:

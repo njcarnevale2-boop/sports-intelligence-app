@@ -720,8 +720,33 @@ def build_intelligence_report(
     if consensus_total is None and game_row is not None:
         consensus_total = safe_float(game_row.get("market_total"))
 
+    neutral_message = "No current actionable quote is available for this matchup."
+
+    def _observed_quote_message(opportunity_row: dict | None) -> tuple[bool, str]:
+        if opportunity_row is None:
+            return False, neutral_message
+
+        pick = str(opportunity_row.get("pick") or "").strip()
+        market = str(opportunity_row.get("market") or "").strip()
+        price = safe_float(opportunity_row.get("price"))
+        point = safe_float(opportunity_row.get("point"))
+        book = str(opportunity_row.get("book") or opportunity_row.get("sportsbook") or "current market").strip() or "current market"
+
+        if not pick or price is None:
+            return False, neutral_message
+
+        if market in {"spread", "total"} and point is not None:
+            point_label = f"{point:+g}"
+            return True, f"Current observed quote available at {book}: {pick} {point_label} ({int(price):+d})."
+
+        if market == "moneyline":
+            return True, f"Current observed quote available at {book}: {pick} ({int(price):+d})."
+
+        return True, f"Current observed quote available at {book}: {pick} ({int(price):+d})."
+
     if opportunity is not None:
         recommendation = opportunity.get("recommendation")
+        available, trigger_message = _observed_quote_message(opportunity)
         return {
             "eventId": event_id,
             "betStatus": classify_bet_status(recommendation),
@@ -737,8 +762,8 @@ def build_intelligence_report(
             },
             "whySummary": "SIA identified a qualified edge based on model probability, price, and confidence.",
             "betTrigger": {
-                "available": False,
-                "message": "Actionable price not currently available",
+                "available": available,
+                "message": trigger_message,
                 "monitor": None,
                 "qualifiedAt": None,
             },
@@ -761,7 +786,7 @@ def build_intelligence_report(
             "whySummary": "SIA cannot determine a qualified bet without a complete game projection.",
             "betTrigger": {
                 "available": False,
-                "message": "Actionable price not currently available",
+                "message": neutral_message,
                 "monitor": None,
                 "qualifiedAt": None,
             },
@@ -784,7 +809,7 @@ def build_intelligence_report(
             "whySummary": "SIA has not received enough market coverage to publish a qualified bet recommendation.",
             "betTrigger": {
                 "available": False,
-                "message": "Actionable price not currently available",
+                "message": neutral_message,
                 "monitor": None,
                 "qualifiedAt": None,
             },
@@ -806,7 +831,7 @@ def build_intelligence_report(
         "whySummary": "SIA analyzed this game but no market/side currently qualifies as an actionable bet.",
         "betTrigger": {
             "available": False,
-            "message": "Actionable price not currently available",
+            "message": neutral_message,
             "monitor": None,
             "qualifiedAt": None,
         },
