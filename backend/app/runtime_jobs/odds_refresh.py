@@ -627,17 +627,57 @@ def _record_history_from_persisted_snapshot(con: duckdb.DuckDBPyConnection, *, s
             dt = dt.astimezone(timezone.utc)
         return dt.isoformat().replace("+00:00", "Z")
 
-    fetched_at = fetched_at or datetime.now(timezone.utc).replace(tzinfo=None)
-    current_iso = _normalize_snapshot_time(fetched_at)
-    columns = [str(item[0]) for item in con.execute("DESCRIBE odds_snapshots").fetchall()]
-    rows = con.execute(
-        "SELECT * FROM odds_snapshots ORDER BY api_event_id, bookmaker_key, market_key, outcome_code"
+    if fetched_at is None:
+        return []
+
+    if isinstance(fetched_at, datetime):
+        selected_fetched_at = fetched_at
+    elif isinstance(fetched_at, str):
+        txt = fetched_at.strip().replace("Z", "+00:00")
+        try:
+            selected_fetched_at = datetime.fromisoformat(txt)
+        except ValueError:
+            return []
+    else:
+        return []
+
+    if selected_fetched_at.tzinfo is not None:
+        selected_fetched_at = selected_fetched_at.astimezone(timezone.utc).replace(tzinfo=None)
+
+    current_iso = _normalize_snapshot_time(selected_fetched_at)
+    selected_columns = [
+        "fetched_at",
+        "api_event_id",
+        "commence_time",
+        "home_team",
+        "away_team",
+        "home_code",
+        "away_code",
+        "bookmaker_key",
+        "bookmaker_title",
+        "market_key",
+        "outcome_name",
+        "outcome_code",
+        "point",
+        "price",
+        "implied_prob",
+        "snapshot_type",
+        "source",
+    ]
+    raw_rows = con.execute(
+        f"""
+        SELECT {", ".join(selected_columns)}
+        FROM odds_snapshots
+        WHERE fetched_at = ? OR fetched_at IS NULL
+        ORDER BY api_event_id, bookmaker_key, market_key, outcome_code
+        """,
+        [selected_fetched_at],
     ).fetchall()
+    rows = [dict(zip(selected_columns, raw_row)) for raw_row in raw_rows]
 
     records: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str, str, str, str]] = set()
-    for raw_row in rows:
-        row = dict(zip(columns, raw_row))
+    for row in rows:
         if current_iso is not None:
             row_fetched_at = row.get("fetched_at")
             if row_fetched_at is not None:

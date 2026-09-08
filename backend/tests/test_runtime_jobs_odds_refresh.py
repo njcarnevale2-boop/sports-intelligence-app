@@ -651,3 +651,179 @@ def test_run_refresh_quota_denial_blocks_provider_call(monkeypatch, tmp_path, qu
     assert bool(telemetry[2]) is True
     assert bool(telemetry[3]) is False
     assert telemetry[4] == expected_reason
+
+
+def _make_history_con():
+    con = duckdb.connect(":memory:")
+    con.execute(
+        """
+        CREATE TABLE odds_snapshots (
+            fetched_at TIMESTAMP,
+            api_event_id VARCHAR,
+            commence_time TIMESTAMP,
+            home_team VARCHAR,
+            away_team VARCHAR,
+            home_code VARCHAR,
+            away_code VARCHAR,
+            bookmaker_key VARCHAR,
+            bookmaker_title VARCHAR,
+            market_key VARCHAR,
+            outcome_name VARCHAR,
+            outcome_code VARCHAR,
+            point DOUBLE,
+            price DOUBLE,
+            implied_prob DOUBLE,
+            snapshot_type VARCHAR,
+            source VARCHAR,
+            extra_payload VARCHAR
+        )
+        """
+    )
+    return con
+
+
+def _insert_history_row(con, *, fetched_at, event_id, side, point=3.5, price=-110):
+    con.execute(
+        """
+        INSERT INTO odds_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            fetched_at,
+            event_id,
+            datetime(2026, 9, 7, 18, 0),
+            "TeamA",
+            "TeamB",
+            "TEAMA",
+            "TEAMB",
+            "draftkings",
+            "DraftKings",
+            "spreads",
+            "TeamA",
+            side,
+            point,
+            price,
+            0.52,
+            "current",
+            "the_odds_api",
+            "x" * 1024,
+        ],
+    )
+
+
+def test_record_history_query_is_bounded_sql_only(monkeypatch):
+    class _RecordingConnection:
+        def __init__(self, wrapped):
+            self._wrapped = wrapped
+            self.calls = []
+
+        def execute(self, query, params=None):
+            self.calls.append((query, params))
+            if params is None:
+                return self._wrapped.execute(query)
+            return self._wrapped.execute(query, params)
+
+    con = _make_history_con()
+    target = datetime(2026, 9, 7, 0, 0, 0)
+    _insert_history_row(con, fetched_at=target, event_id="evt-target", side="home")
+
+    wrapped = _RecordingConnection(con)
+    monkeypatch.setattr(odds_refresh, "record_history_snapshot", lambda payload: payload)
+    records = odds_refresh._record_history_from_persisted_snapshot(
+        wrapped,
+        source_snapshot_id="odds-refresh:test",
+        fetched_at=target,
+    )
+
+    assert len(records) == 1
+    sql, params = wrapped.calls[0]
+    assert "WHERE fetched_at = ? OR fetched_at IS NULL" in sql
+    assert "SELECT *" not in sql
+    assert params == [target]
+
+
+def test_record_history_excludes_unrelated_timestamps_and_keeps_null_parity(monkeypatch):
+    con = _make_history_con()
+    target = datetime(2026, 9, 7, 0, 0, 0)
+    _insert_history_row(con, fetched_at=target, event_id="evt-target", side="home")
+    _insert_history_row(con, fetched_at=datetime(2026, 9, 6, 0, 0, 0), event_id="evt-old", side="home")
+    _insert_history_row(con, fetched_at=None, event_id="evt-null", side="away")
+
+    monkeypatch.setattr(odds_refresh, "record_history_snapshot", lambda payload: payload)
+    records = odds_refresh._record_history_from_persisted_snapshot(
+        con,
+        source_snapshot_id="odds-refresh:test",
+        fetched_at=target,
+    )
+
+    assert [rec["eventId"] for rec in records] == ["evt-null", "evt-target"]
+
+
+def test_record_history_matches_microsecond_precision(monkeypatch):
+    con = _make_history_con()
+    target = datetime(2026, 9, 7, 0, 0, 0, 123456)
+    _insert_history_row(con, fetched_at=target, event_id="evt-a", side="home")
+    _insert_history_row(con, fetched_at=datetime(2026, 9, 7, 0, 0, 0, 123457), event_id="evt-b", side="away")
+
+    monkeypatch.setattr(odds_refresh, "record_history_snapshot", lambda payload: payload)
+    records = odds_refresh._record_history_from_persisted_snapshot(
+        con,
+        source_snapshot_id="odds-refresh:test",
+        fetched_at=target,
+    )
+
+    assert [rec["eventId"] for rec in records] == ["evt-a"]
+
+
+def test_record_history_accepts_timezone_equivalent_timestamp(monkeypatch):
+    con = _make_history_con()
+    target_utc = datetime(2026, 9, 7, 0, 0, 0, 123456)
+    _insert_history_row(con, fetched_at=target_utc, event_id="evt-tz", side="home")
+
+    monkeypatch.setattr(odds_refresh, "record_history_snapshot", lambda payload: payload)
+    records = odds_refresh._record_history_from_persisted_snapshot(
+        con,
+        source_snapshot_id="odds-refresh:test",
+        fetched_at="2026-09-06T19:00:00.123456-05:00",
+    )
+
+    assert [rec["eventId"] for rec in records] == ["evt-tz"]
+
+
+def test_record_history_preserves_dedupe_behavior(monkeypatch):
+    con = _make_history_con()
+    target = datetime(2026, 9, 7, 0, 0, 0)
+    _insert_history_row(con, fetched_at=target, event_id="evt-dup", side="home")
+    _insert_history_row(con, fetched_at=target, event_id="evt-dup", side="home")
+    _insert_history_row(con, fetched_at=target, event_id="evt-dup", side="away")
+
+    monkeypatch.setattr(odds_refresh, "record_history_snapshot", lambda payload: payload)
+    records = odds_refresh._record_history_from_persisted_snapshot(
+        con,
+        source_snapshot_id="odds-refresh:test",
+        fetched_at=target,
+    )
+
+    assert len(records) == 2
+    assert [(rec["eventId"], rec["side"]) for rec in records] == [
+        ("evt-dup", "away"),
+        ("evt-dup", "home"),
+    ]
+
+
+def test_record_history_invalid_timestamp_fails_closed_without_query():
+    class _NoQueryConnection:
+        def __init__(self):
+            self.called = False
+
+        def execute(self, query, params=None):
+            self.called = True
+            raise AssertionError("execute should not be called for invalid fetched_at")
+
+    con = _NoQueryConnection()
+    records = odds_refresh._record_history_from_persisted_snapshot(
+        con,
+        source_snapshot_id="odds-refresh:test",
+        fetched_at="not-a-timestamp",
+    )
+    assert records == []
+    assert con.called is False
