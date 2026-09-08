@@ -221,6 +221,59 @@ def test_sia3_publication_slots_and_rank_order_preserved(tmp_path, monkeypatch):
     assert repeat.json()["publicationId"] == body["publicationId"]
 
 
+def test_publication_route_rejects_lowvig_alias_and_accepts_control_case(tmp_path, monkeypatch):
+    import app.services.decision_ledger as dl
+
+    monkeypatch.setattr(dl, "_DB_PATH", tmp_path / "ledger.db")
+
+    blocked_decision = _decision_payload("evt-route-lowvig")
+    blocked_decision["sportsbook"] = "LOW-VIG.AG"
+    blocked_payload = {
+        "publicationType": "SIA_3",
+        "publishedAtUTC": "2026-09-13T16:00:00+00:00",
+        "season": 2026,
+        "week": 1,
+        "isOfficial": True,
+        "slots": [
+            {
+                "decision": blocked_decision,
+                "slotLabel": "BET",
+                "qualificationStatus": "QUALIFIED",
+            },
+            {"slotLabel": "WATCH", "qualificationStatus": "NOT_QUALIFIED"},
+            {"slotLabel": "WATCH", "qualificationStatus": "NOT_QUALIFIED"},
+        ],
+    }
+
+    blocked = client.post("/api/admin/ledger/publications/sia3", headers=ADMIN_HEADERS, json=blocked_payload)
+    assert blocked.status_code == 400
+    assert "excluded sportsbook" in blocked.json()["detail"].lower()
+
+    control_payload = {
+        "publicationType": "SIA_3",
+        "publishedAtUTC": "2026-09-13T16:00:00+00:00",
+        "season": 2026,
+        "week": 1,
+        "isOfficial": True,
+        "slots": [
+            {
+                "decision": _decision_payload("evt-route-control"),
+                "slotLabel": "BET",
+                "qualificationStatus": "QUALIFIED",
+            },
+            {"slotLabel": "WATCH", "qualificationStatus": "NOT_QUALIFIED"},
+            {"slotLabel": "WATCH", "qualificationStatus": "NOT_QUALIFIED"},
+        ],
+    }
+
+    allowed = client.post("/api/admin/ledger/publications/sia3", headers=ADMIN_HEADERS, json=control_payload)
+    assert allowed.status_code == 200
+    body = allowed.json()
+    assert body["isOfficial"] is True
+    assert body["rank1DecisionId"] is not None
+    assert body["slots"][0]["qualificationStatus"] == "QUALIFIED"
+
+
 def test_publication_supports_zero_to_three_qualified(tmp_path, monkeypatch):
     import app.services.decision_ledger as dl
 

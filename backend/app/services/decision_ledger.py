@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from app.config import settings
 from app.services.closing_line import calculate_clv, get_closing_line
 from app.services.market_data import market_data_service, normalize_market, normalize_side
+from app.services.sportsbook_policy import is_current_market_sportsbook_allowed
 
 
 def _utc_now_iso() -> str:
@@ -728,6 +729,17 @@ def _is_production_eligible_market(market: Any) -> bool:
     return normalize_market(str(market or "")) == "spread"
 
 
+def _decision_publication_sportsbook(value: Any) -> Any:
+    if isinstance(value, dict):
+        return value.get("sportsbook") if value.get("sportsbook") is not None else value.get("book")
+    return value
+
+
+def _reject_excluded_publication_quote(value: Any) -> None:
+    if not is_current_market_sportsbook_allowed(_decision_publication_sportsbook(value)):
+        raise ValueError("SIA 3 publication rejects excluded sportsbook quotations.")
+
+
 def _opportunity_production_eligible(opportunity: Dict[str, Any]) -> bool:
     explicit = opportunity.get("productionEligible")
     if explicit is not None:
@@ -988,7 +1000,7 @@ def build_official_sia3_preview(
     threshold = max_odds_age_minutes if max_odds_age_minutes is not None else settings.OFFICIAL_PUBLICATION_MAX_ODDS_AGE_MINUTES
     published_at_utc = _utc_now_iso()
 
-    eligible = [o for o in opportunities if _opportunity_production_eligible(o)]
+    eligible = [o for o in opportunities if _opportunity_production_eligible(o) and is_current_market_sportsbook_allowed(o.get("book"))]
     top_three = eligible[:3]
     slots = []
     stale_count = 0
@@ -1061,6 +1073,8 @@ def publish_official_sia3_from_preview(preview: Dict[str, Any], *, override_stal
         decision = slot.get("decision") or {}
         if decision and not _is_production_eligible_market(decision.get("market")):
             raise ValueError("Official SIA 3 publication rejects non-production market families.")
+        if decision:
+            _reject_excluded_publication_quote(decision)
         slots_payload.append(
             {
                 "slotLabel": slot.get("slotLabel"),
@@ -1097,9 +1111,8 @@ def publish_sia3(payload: Dict[str, Any]) -> Dict[str, Any]:
     if len(slots) > 3:
         raise ValueError("Only three SIA slots are supported")
 
-    normalized_slots: List[Dict[str, Any]] = []
-    con = _connect()
-
+    prepared_slots: List[Dict[str, Any]] = []
+    validation_con = _connect()
     try:
         for idx in range(3):
             rank = idx + 1
@@ -1107,11 +1120,47 @@ def publish_sia3(payload: Dict[str, Any]) -> Dict[str, Any]:
             slot_label = source.get("slotLabel") or ("WATCH" if source.get("decision") is None and source.get("decisionId") is None else "BET")
             qualification_status = source.get("qualificationStatus")
             decision_id = source.get("decisionId")
+            decision_payload = None
 
-            if decision_id is None and source.get("decision") is not None:
+            if source.get("decision") is not None:
                 decision_payload = dict(source["decision"])
                 if is_official and not _is_production_eligible_market(decision_payload.get("market")):
                     raise ValueError("Official SIA 3 publication rejects non-production market families.")
+                _reject_excluded_publication_quote(decision_payload)
+
+            if decision_id is not None:
+                drow = _fetch_decision_row(validation_con, decision_id)
+                if drow is None:
+                    raise ValueError(f"Unknown decisionId: {decision_id}")
+                if is_official and not _is_production_eligible_market(drow["market"]):
+                    raise ValueError("Official SIA 3 publication rejects non-production market families.")
+                _reject_excluded_publication_quote({"sportsbook": drow["sportsbook"]})
+
+            prepared_slots.append(
+                {
+                    "rank": rank,
+                    "slotLabel": slot_label,
+                    "qualificationStatus": qualification_status,
+                    "decisionId": decision_id,
+                    "decision": decision_payload,
+                }
+            )
+    finally:
+        validation_con.close()
+
+    normalized_slots: List[Dict[str, Any]] = []
+    con = _connect()
+
+    try:
+        for prepared in prepared_slots:
+            rank = int(prepared["rank"])
+            slot_label = prepared["slotLabel"]
+            qualification_status = prepared["qualificationStatus"]
+            decision_id = prepared["decisionId"]
+            decision_payload = prepared["decision"]
+
+            if decision_id is None and decision_payload is not None:
+                decision_payload = dict(decision_payload)
                 decision_payload.setdefault("publishedAtUTC", published_at_utc)
                 decision_payload.setdefault("season", season)
                 decision_payload.setdefault("week", week)

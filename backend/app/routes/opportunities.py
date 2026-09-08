@@ -23,6 +23,7 @@ from app.services.fair_price import build_fair_price_result
 from app.services.decision_profile import build_spread_decision_boundaries
 from app.services.calibration import apply_guarded_isotonic, calibration_info
 from app.services.decision_board import build_decision_board_payload
+from app.services.sportsbook_policy import filter_current_market_sportsbook_rows
 from app.services.opportunity_history import (
     build_history_snapshot_from_opportunity,
     read_history_for_event,
@@ -1185,6 +1186,7 @@ def _build_generated_multimarket_candidates(
     df["sportsbook"] = df.get("sportsbook")
     df["price"] = pd.to_numeric(df.get("americanOdds"), errors="coerce")
     df["point"] = pd.to_numeric(df.get("point"), errors="coerce")
+    df = filter_current_market_sportsbook_rows(df)
 
     grouped = df.groupby(["api_event_id", "market", "side"], dropna=False, sort=False)
     selected_rows: list[pd.Series] = []
@@ -1193,6 +1195,8 @@ def _build_generated_multimarket_candidates(
 
     for _, group in grouped:
         selected = best_line_for_group(group)
+        if selected is None:
+            continue
         selected_rows.append(selected)
         group_map[id(selected)] = group.copy()
         price = safe_float(selected.get("price"))
@@ -1334,6 +1338,8 @@ def make_alternate_books(
 ):
     alternates = []
 
+    group = filter_current_market_sportsbook_rows(group)
+
     selected_point = safe_float(selected_row.get("point"))
     selected_price = safe_float(selected_row.get("price"))
 
@@ -1398,6 +1404,7 @@ def make_alternate_books(
 
 
 def make_all_available_books(group, selected_row):
+    group = filter_current_market_sportsbook_rows(group)
     selected_entry = {
         "book": str(selected_row.get("sportsbook")),
         "point": safe_float(selected_row.get("point")),
@@ -1443,6 +1450,7 @@ def get_opportunities(
     market_meta = market_data_service.metadata()
     if RANKED_BET_BOARD.exists():
         df = pd.read_csv(RANKED_BET_BOARD)
+        df = filter_current_market_sportsbook_rows(df)
     else:
         df = pd.DataFrame()
 
@@ -1531,6 +1539,8 @@ def get_opportunities(
 
         for _, group in grouped:
             selected = best_line_for_group(group)
+            if selected is None:
+                continue
             group_min_rank = int(group["rank"].min()) if "rank" in group.columns else 9999
             model_prob = _unit_probability(safe_float(selected.get("model_prob")))
             implied_prob = _unit_probability(safe_float(selected.get("implied_prob_raw")))
@@ -1801,6 +1811,14 @@ def get_opportunity_analysis(
         )
     )
 
+    if selected is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No eligible current quote is available for this opportunity"
+            ),
+        )
+
     alternates = (
         make_alternate_books(
             match,
@@ -1928,6 +1946,14 @@ def get_opportunity_timeline(
         )
     )
 
+    if selected is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No eligible current quote is available for this opportunity"
+            ),
+        )
+
     opportunity = (
         row_to_opportunity(
             selected,
@@ -1990,6 +2016,14 @@ def get_opportunity(
             match
         )
     )
+
+    if selected is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No eligible current quote is available for this opportunity"
+            ),
+        )
 
     alternates = (
         make_alternate_books(

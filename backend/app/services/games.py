@@ -11,6 +11,7 @@ from app.runtime_paths import runtime_paths
 from app.services.market_data import market_data_service, select_best_line_row
 from app.services.market_intelligence import build_market_intelligence_lookup, normalize_market
 from app.services.sports_intelligence_score import calculate_sports_intelligence_score
+from app.services.sportsbook_policy import filter_current_market_sportsbook_rows
 
 
 MODEL_ROOT = runtime_paths.root
@@ -427,6 +428,7 @@ class GamesService:
         board_df = board_df.copy()
         board_df["api_event_id"] = board_df["api_event_id"].astype(str)
         board_df = board_df[board_df["market"].astype(str).str.strip().str.lower().isin(["spread", "spreads"])]
+        board_df = filter_current_market_sportsbook_rows(board_df)
         if event_ids is not None:
             event_ids = {str(event_id) for event_id in event_ids}
             board_df = board_df[board_df["api_event_id"].isin(event_ids)]
@@ -446,6 +448,8 @@ class GamesService:
                 & group["side"].astype(str).str.strip().str.lower().eq(side)
             ]
             best = select_best_line_row(selected_group if not selected_group.empty else group)
+            if best is None:
+                continue
 
             best_rows_by_event.append((event_id, best, group))
             selection_keys.add((str(event_id), market, side))
@@ -502,6 +506,7 @@ class GamesService:
         return output
 
     def _extract_moneyline(self, event_rows: pd.DataFrame) -> Optional[Dict[str, float]]:
+        event_rows = filter_current_market_sportsbook_rows(event_rows)
         moneyline_rows = event_rows[event_rows["market"].astype(str).str.lower().isin(["moneyline", "h2h"])]
         if moneyline_rows.empty:
             return None

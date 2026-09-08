@@ -9,6 +9,7 @@ import pandas as pd
 
 from app.providers.provider_manager import ProviderManager
 from app.runtime_paths import runtime_paths
+from app.services.sportsbook_policy import filter_current_market_sportsbook_rows
 
 
 MODEL_ROOT = runtime_paths.root
@@ -84,30 +85,34 @@ def normalize_event_id(event_id: Any) -> str:
     return str(event_id or "").strip()
 
 
-def select_best_line_row(group: pd.DataFrame) -> pd.Series:
-    market = normalize_market(group.iloc[0].get("market"))
-    side = normalize_side(group.iloc[0].get("side"))
+def select_best_line_row(group: pd.DataFrame) -> pd.Series | None:
+    eligible_group = filter_current_market_sportsbook_rows(group)
+    if eligible_group.empty:
+        return None
+
+    market = normalize_market(eligible_group.iloc[0].get("market"))
+    side = normalize_side(eligible_group.iloc[0].get("side"))
 
     if market == "spread":
-        best_point = group["point"].max()
-        candidates = group[group["point"] == best_point]
+        best_point = eligible_group["point"].max()
+        candidates = eligible_group[eligible_group["point"] == best_point]
         best_price = candidates["price"].max()
         return candidates[candidates["price"] == best_price].iloc[0]
 
     if market == "total":
         if side == "over":
-            best_point = group["point"].min()
-            candidates = group[group["point"] == best_point]
+            best_point = eligible_group["point"].min()
+            candidates = eligible_group[eligible_group["point"] == best_point]
             best_price = candidates["price"].max()
             return candidates[candidates["price"] == best_price].iloc[0]
 
         if side == "under":
-            best_point = group["point"].max()
-            candidates = group[group["point"] == best_point]
+            best_point = eligible_group["point"].max()
+            candidates = eligible_group[eligible_group["point"] == best_point]
             best_price = candidates["price"].max()
             return candidates[candidates["price"] == best_price].iloc[0]
 
-    return group.sort_values(["price"], ascending=[False]).iloc[0]
+    return eligible_group.sort_values(["price"], ascending=[False]).iloc[0]
 
 
 @dataclass
@@ -201,6 +206,12 @@ class MarketDataService:
         df["side"] = df["side"].fillna("").astype(str).str.lower()
         df["away_team"] = df["away_team"].fillna("").astype(str)
         df["home_team"] = df["home_team"].fillna("").astype(str)
+        df = filter_current_market_sportsbook_rows(df).reset_index(drop=True)
+
+        if df.empty:
+            self._normalized_rows_cache = []
+            self._normalized_rows_cache_mtime = modified_time
+            return []
 
         last_seen = pd.to_datetime(df["last_seen"], utc=True, errors="coerce")
         first_seen = pd.to_datetime(df["first_seen"], utc=True, errors="coerce")
