@@ -138,6 +138,33 @@ type OpportunityLifecycle = {
   executionRestriction: string;
 };
 
+type OpportunityHistoryRow = {
+  historyId: string;
+  eventId: string;
+  market: string;
+  side: string;
+  sportsbook: string | null;
+  point: number | null;
+  price: number | null;
+  qualificationStatus: string | null;
+  recommendation: string | null;
+  productionEligible: boolean;
+  currentState: string;
+  transitionReason: string;
+  observedAtUTC: string;
+  createdAtUTC: string;
+  previousSnapshotAvailable: boolean;
+};
+
+type OpportunityHistoryResponse = {
+  eventId: string;
+  count: number;
+  limit: number;
+  history: OpportunityHistoryRow[];
+  readOnly: boolean;
+  executionRestriction: string;
+};
+
 type GameOpportunityResponse = {
   opportunity: Opportunity | null;
   bestByMarket?: Record<string, Opportunity>;
@@ -272,6 +299,19 @@ function formatProbabilityUnit(probability: number | null | undefined) {
   return `${(probability * 100).toFixed(1)}%`;
 }
 
+function formatHistoryTimestamp(value: string | null | undefined) {
+  if (!value) return "Unknown";
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return "Unknown";
+  return dt.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
+}
+
 function formatEv(value: number | null | undefined) {
   if (value == null) return "Unavailable";
   const sign = value >= 0 ? "+" : "";
@@ -382,6 +422,8 @@ export default function GameIntelligencePage() {
   const [moveError, setMoveError] = useState("");
   const [canonicalSnapshotId, setCanonicalSnapshotId] = useState<string | undefined>(undefined);
   const [lifecycle, setLifecycle] = useState<OpportunityLifecycle | null>(null);
+  const [lifecycleHistory, setLifecycleHistory] = useState<OpportunityHistoryRow[]>([]);
+  const [historyNotice, setHistoryNotice] = useState<string>("");
 
   useEffect(() => {
     if (!eventId) return;
@@ -394,12 +436,13 @@ export default function GameIntelligencePage() {
         const proj = await fetchJson<GameProjection>(`/api/games/${eventId}`);
         setProjection(proj);
 
-        const [ctxResult, oppResult, weatherResult, injuryResult, socialResult] = await Promise.allSettled([
+        const [ctxResult, oppResult, weatherResult, injuryResult, socialResult, historyResult] = await Promise.allSettled([
           fetchJson<ScheduleContext>(`/api/games/${eventId}/context`),
           fetchJson<GameOpportunityResponse>(`/api/games/${eventId}/opportunity`),
           fetchJson<WeatherStatus>(`/api/games/${eventId}/weather`),
           fetchJson<{ injuryContext: InjuryContext }>(`/api/games/${eventId}/injuries`),
           fetchJson<SocialGameContext>(`/api/games/${eventId}/social-intelligence`),
+          fetchJson<OpportunityHistoryResponse>(`/api/games/${eventId}/opportunity/history?limit=5`),
         ]);
 
         if (ctxResult.status === "fulfilled") setContext(ctxResult.value);
@@ -419,6 +462,13 @@ export default function GameIntelligencePage() {
         if (weatherResult.status === "fulfilled") setWeather(weatherResult.value);
         if (injuryResult.status === "fulfilled") setInjury(injuryResult.value.injuryContext);
         if (socialResult.status === "fulfilled") setSocial(socialResult.value);
+        if (historyResult.status === "fulfilled") {
+          setLifecycleHistory(historyResult.value.history ?? []);
+          setHistoryNotice(historyResult.value.executionRestriction || "Historical lifecycle context only.");
+        } else {
+          setLifecycleHistory([]);
+          setHistoryNotice("Lifecycle history is unavailable right now.");
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : "";
         setError(msg.includes("404") ? "Game not found." : "Unable to load game intelligence.");
@@ -754,6 +804,40 @@ export default function GameIntelligencePage() {
             <p className="mt-2 text-sm text-zinc-400">{lifecycle.executionRestriction}</p>
           </section>
         ) : null}
+
+        <section className="rounded-3xl border border-white/[0.08] bg-[#0B1119] p-6 md:p-8">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs uppercase tracking-[0.2em] text-zinc-600">Lifecycle History</p>
+            <span className="rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 text-[10px] uppercase tracking-[0.18em] text-zinc-300">
+              Read only
+            </span>
+          </div>
+          <p className="mt-3 text-sm text-zinc-400">Recent historical lifecycle observations for this event. This is context only and does not indicate current executability.</p>
+
+          {lifecycleHistory.length > 0 ? (
+            <div className="mt-4 space-y-3">
+              {lifecycleHistory.map((row) => (
+                <div key={row.historyId} className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-xs uppercase tracking-[0.16em] text-zinc-500">{formatHistoryTimestamp(row.observedAtUTC)}</p>
+                    <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[10px] uppercase tracking-[0.16em] text-zinc-300">
+                      {row.currentState}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-sm text-zinc-200">{row.market.toUpperCase()} · {row.side.toUpperCase()} · {row.sportsbook || "Unknown book"}</p>
+                  <p className="mt-1 text-xs text-zinc-400">
+                    Line {row.point == null ? "N/A" : row.point} · Price {row.price == null ? "N/A" : (row.price > 0 ? `+${row.price}` : `${row.price}`)} · {row.transitionReason}
+                  </p>
+                  <p className="mt-1 text-xs text-zinc-500">Qualification: {row.qualificationStatus || "Unknown"} · Recommendation: {row.recommendation || "Unknown"}</p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-4 text-sm text-zinc-500">No lifecycle history has been recorded for this event yet.</p>
+          )}
+
+          <p className="mt-4 text-xs text-zinc-500">{historyNotice}</p>
+        </section>
 
         <section id="ask-sia" className="rounded-3xl border border-white/[0.08] bg-[#0B1119] p-6 md:p-8">
           <p className="text-xs uppercase tracking-[0.2em] text-zinc-600">Ask SIA</p>

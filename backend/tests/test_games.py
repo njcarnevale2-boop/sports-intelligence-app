@@ -675,3 +675,163 @@ def test_opportunity_history_disappeared_opportunity_is_not_forced_into_current_
     assert disappear_record["previousHistoryId"] == prior_record["historyId"]
     assert disappear_record["currentState"] == "NO_LONGER_QUALIFIED"
     assert disappear_record["transitionReason"] == "QUALIFIED_TO_NO_LONGER_QUALIFIED"
+
+
+def test_game_opportunity_history_endpoint_empty_history(tmp_path, monkeypatch) -> None:
+    import app.services.opportunity_history as oh
+
+    monkeypatch.setattr(oh, "_DB_PATH", tmp_path / "opp-history-endpoint-empty.db")
+    oh._ensure_schema()
+
+    response = client.get("/api/games/evt-empty/opportunity/history")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["eventId"] == "evt-empty"
+    assert payload["count"] == 0
+    assert payload["history"] == []
+    assert payload["limit"] == 10
+    assert payload["readOnly"] is True
+    assert "executionRestriction" in payload
+
+
+def test_game_opportunity_history_endpoint_multiple_rows_and_ordering(tmp_path, monkeypatch) -> None:
+    import app.services.opportunity_history as oh
+
+    monkeypatch.setattr(oh, "_DB_PATH", tmp_path / "opp-history-endpoint-order.db")
+    oh._ensure_schema()
+
+    base = {
+        "eventId": "evt-hist-1",
+        "market": "spread",
+        "side": "home",
+        "sportsbook": "DraftKings",
+        "point": 2.5,
+        "price": -110,
+        "qualificationStatus": "WATCH",
+        "recommendation": "WATCH",
+        "productionEligible": False,
+        "sourceSnapshotId": "snap-a",
+        "observedAtUTC": "2026-09-07T00:00:00+00:00",
+    }
+    first = oh.record_history_snapshot(base)
+    second_payload = dict(base)
+    second_payload["sourceSnapshotId"] = "snap-b"
+    second_payload["qualificationStatus"] = "QUALIFIED"
+    second_payload["recommendation"] = "STRONG BET"
+    second = oh.record_history_snapshot(second_payload)
+
+    response = client.get("/api/games/evt-hist-1/opportunity/history?limit=10")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 2
+    assert payload["history"][0]["historyId"] == second["historyId"]
+    assert payload["history"][1]["historyId"] == first["historyId"]
+    assert payload["history"][0]["transitionReason"] == "WATCH_TO_QUALIFIED"
+
+
+def test_game_opportunity_history_endpoint_bounded_limit_and_event_isolation(tmp_path, monkeypatch) -> None:
+    import app.services.opportunity_history as oh
+
+    monkeypatch.setattr(oh, "_DB_PATH", tmp_path / "opp-history-endpoint-limit.db")
+    oh._ensure_schema()
+
+    for i in range(3):
+        oh.record_history_snapshot(
+            {
+                "eventId": "evt-bounded",
+                "market": "spread",
+                "side": "away",
+                "sportsbook": "DraftKings",
+                "point": 3.5 - i,
+                "price": -110,
+                "qualificationStatus": "WATCH",
+                "recommendation": "WATCH",
+                "productionEligible": False,
+                "sourceSnapshotId": f"snap-bound-{i}",
+                "observedAtUTC": f"2026-09-07T00:00:0{i}+00:00",
+            }
+        )
+
+    oh.record_history_snapshot(
+        {
+            "eventId": "evt-other",
+            "market": "spread",
+            "side": "away",
+            "sportsbook": "DraftKings",
+            "point": 1.0,
+            "price": -110,
+            "qualificationStatus": "WATCH",
+            "recommendation": "WATCH",
+            "productionEligible": False,
+            "sourceSnapshotId": "snap-other",
+            "observedAtUTC": "2026-09-07T00:00:10+00:00",
+        }
+    )
+
+    response = client.get("/api/games/evt-bounded/opportunity/history?limit=2")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 2
+    assert payload["limit"] == 2
+    assert all(item["eventId"] == "evt-bounded" for item in payload["history"])
+
+
+def test_game_opportunity_history_endpoint_response_contract_and_limit_guard(tmp_path, monkeypatch) -> None:
+    import app.services.opportunity_history as oh
+
+    monkeypatch.setattr(oh, "_DB_PATH", tmp_path / "opp-history-endpoint-contract.db")
+    oh._ensure_schema()
+
+    oh.record_history_snapshot(
+        {
+            "eventId": "evt-contract",
+            "market": "spread",
+            "side": "home",
+            "sportsbook": "FanDuel",
+            "point": -2.5,
+            "price": -105,
+            "qualificationStatus": "QUALIFIED",
+            "recommendation": "STRONG BET",
+            "productionEligible": True,
+            "sourceSnapshotId": "snap-contract",
+            "observedAtUTC": "2026-09-07T00:00:00+00:00",
+        }
+    )
+
+    response = client.get("/api/games/evt-contract/opportunity/history?limit=26")
+    assert response.status_code == 422
+
+    ok = client.get("/api/games/evt-contract/opportunity/history?limit=1")
+    assert ok.status_code == 200
+    entry = ok.json()["history"][0]
+    required = {
+        "historyId",
+        "eventId",
+        "market",
+        "side",
+        "sportsbook",
+        "point",
+        "price",
+        "qualificationStatus",
+        "recommendation",
+        "productionEligible",
+        "currentState",
+        "transitionReason",
+        "observedAtUTC",
+        "createdAtUTC",
+        "previousSnapshotAvailable",
+    }
+    assert required.issubset(set(entry.keys()))
+
+
+def test_game_opportunity_lifecycle_summary_contract_not_regressed_by_history_endpoint() -> None:
+    games_response = client.get("/api/games")
+    assert games_response.status_code == 200
+    event_id = games_response.json()["games"][0]["eventId"]
+
+    response = client.get(f"/api/games/{event_id}/opportunity")
+    assert response.status_code == 200
+    lifecycle = response.json()["lifecycle"]
+    assert lifecycle["eventId"] == event_id
+    assert lifecycle["readOnly"] is True
+    assert "executionRestriction" in lifecycle

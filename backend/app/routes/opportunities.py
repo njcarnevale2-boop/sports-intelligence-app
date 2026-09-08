@@ -25,6 +25,7 @@ from app.services.calibration import apply_guarded_isotonic, calibration_info
 from app.services.decision_board import build_decision_board_payload
 from app.services.opportunity_history import (
     build_history_snapshot_from_opportunity,
+    read_history_for_event,
     latest_history_for_opportunity,
     record_history_snapshot,
 )
@@ -297,6 +298,26 @@ def _record_history_for_snapshot(snapshot_id: str | None, opportunities: list[di
             continue
         records.append(record_history_snapshot(payload))
     return records
+
+
+def _history_entry_for_api(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "historyId": row.get("historyId"),
+        "eventId": row.get("eventId"),
+        "market": row.get("market"),
+        "side": row.get("side"),
+        "sportsbook": row.get("sportsbook"),
+        "point": row.get("point"),
+        "price": row.get("price"),
+        "qualificationStatus": row.get("qualificationStatus"),
+        "recommendation": row.get("recommendation"),
+        "productionEligible": row.get("productionEligible"),
+        "currentState": row.get("currentState"),
+        "transitionReason": row.get("transitionReason"),
+        "observedAtUTC": row.get("observedAtUTC"),
+        "createdAtUTC": row.get("createdAtUTC"),
+        "previousSnapshotAvailable": row.get("previousSnapshotAvailable"),
+    }
 
 
 def _build_opportunity_lifecycle(event_id: str, opportunity: dict[str, Any] | None, previous_snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -2066,6 +2087,23 @@ def get_game_opportunity_lifecycle(event_id: str):
     opportunity = payload.get("opportunity")
     previous_snapshot = None
     return _build_opportunity_lifecycle(event_id, opportunity, previous_snapshot)
+
+
+@router.get("/games/{event_id}/opportunity/history")
+def get_game_opportunity_history(
+    event_id: str,
+    limit: int = Query(default=10, ge=1, le=25),
+):
+    """Return bounded read-only opportunity lifecycle history rows for a single event."""
+    rows = read_history_for_event(event_id, limit=limit)
+    return {
+        "eventId": event_id,
+        "count": len(rows),
+        "limit": limit,
+        "history": [_history_entry_for_api(row) for row in rows],
+        "readOnly": True,
+        "executionRestriction": "Historical lifecycle context only; not an execution or publication path.",
+    }
 
 
 @router.get(
