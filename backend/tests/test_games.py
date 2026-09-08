@@ -474,6 +474,41 @@ def test_opportunity_history_missing_provenance_is_skipped_safely(tmp_path, monk
         oh.build_history_snapshot_from_opportunity({"eventId": "evt-600", "market": "spread", "side": "away"}, source_snapshot_id="")
 
 
+def test_history_db_path_resolves_to_persistent_data_in_render(monkeypatch) -> None:
+    import app.services.opportunity_history as oh
+
+    monkeypatch.setattr(oh, "_DB_PATH", None)
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", "/data/NFL_Analytics_OS_v1_9")
+    monkeypatch.delenv("OPPORTUNITY_HISTORY_DB_PATH", raising=False)
+
+    assert str(oh.resolve_history_db_path()) == "/data/NFL_Analytics_OS_v1_9/opportunity_history.sqlite3"
+
+
+def test_history_db_path_rejects_backend_app_location_in_render(monkeypatch) -> None:
+    import app.services.opportunity_history as oh
+
+    monkeypatch.setattr(oh, "_DB_PATH", None)
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.setenv("OPPORTUNITY_HISTORY_DB_PATH", "backend/app/.opportunity_history.sqlite3")
+
+    with pytest.raises(RuntimeError):
+        oh.resolve_history_db_path()
+
+
+def test_history_db_local_test_path_still_works(tmp_path, monkeypatch) -> None:
+    import app.services.opportunity_history as oh
+
+    monkeypatch.setattr(oh, "_DB_PATH", None)
+    monkeypatch.setenv("RENDER", "false")
+    monkeypatch.setenv("OPPORTUNITY_HISTORY_DB_PATH", str(tmp_path / "opportunity_history_test.sqlite3"))
+
+    oh._ensure_schema()
+    resolved = oh.resolve_history_db_path()
+    assert resolved.exists()
+    assert str(resolved).startswith(str(tmp_path))
+
+
 def test_refresh_history_records_only_real_persisted_provenance(tmp_path, monkeypatch) -> None:
     import duckdb
 
@@ -525,6 +560,82 @@ def test_refresh_history_records_only_real_persisted_provenance(tmp_path, monkey
     assert records[0]["price"] == -110
     assert records[0]["qualificationStatus"] is None
     assert records[0]["recommendation"] is None
+
+
+def test_refresh_history_write_failure_does_not_fail_refresh_or_repeat_provider_call(tmp_path, monkeypatch) -> None:
+    from datetime import timedelta, timezone
+
+    import app.runtime_jobs.odds_refresh as refresh_job
+
+    root = tmp_path / "NFL_Analytics_OS_v1_9"
+    (root / "database").mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("ODDS_API_KEY", "test-key")
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(root))
+    monkeypatch.setenv("RENDER", "false")
+
+    monkeypatch.setattr(refresh_job, "_load_regular_season_event_keys", lambda: set())
+    monkeypatch.setattr(refresh_job, "_load_target_regular_season_match_index", lambda now_utc: ({}, None))
+    monkeypatch.setattr(refresh_job, "_evaluate_core_quota_guard", lambda: {"allowed": True})
+
+    calls = {"provider": 0, "history": 0}
+
+    class _FakeResponse:
+        status_code = 200
+
+        def __init__(self, payload):
+            self._payload = payload
+            self.headers = {
+                "x-requests-remaining": "100",
+                "x-requests-used": "1",
+                "x-requests-last": "1",
+            }
+
+        def json(self):
+            return self._payload
+
+    kickoff = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+    provider_payload = [
+        {
+            "id": "evt-700",
+            "commence_time": kickoff,
+            "home_team": "Arizona Cardinals",
+            "away_team": "Atlanta Falcons",
+            "bookmakers": [
+                {
+                    "key": "draftkings",
+                    "title": "DraftKings",
+                    "markets": [
+                        {
+                            "key": "spreads",
+                            "outcomes": [
+                                {"name": "Arizona Cardinals", "point": -2.5, "price": -110},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    ]
+
+    def _fake_execute(signature, *, api_key):
+        calls["provider"] += 1
+        return _FakeResponse(provider_payload)
+
+    def _fake_history(*args, **kwargs):
+        calls["history"] += 1
+        raise RuntimeError("simulated-history-db-error")
+
+    monkeypatch.setattr(refresh_job, "_execute_core_request", _fake_execute)
+    monkeypatch.setattr(refresh_job, "_record_history_from_persisted_snapshot", _fake_history)
+
+    out = refresh_job.run_refresh()
+
+    assert out["providerRequestSkipped"] is False
+    assert out["rows"] == 1
+    assert "OPPORTUNITY_HISTORY_RECORDING_FAILED" in str(out.get("warningCode") or "")
+    assert calls["provider"] == 1
+    assert calls["history"] == 1
 
 
 def test_opportunity_history_disappeared_opportunity_is_not_forced_into_current_board(tmp_path, monkeypatch) -> None:

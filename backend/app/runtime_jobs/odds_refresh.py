@@ -933,15 +933,26 @@ def run_refresh() -> dict[str, Any]:
             )
 
         refresh_snapshot_id = f"odds-refresh:{fetched_at.isoformat()}Z"
-        _record_history_from_persisted_snapshot(
-            con,
-            source_snapshot_id=refresh_snapshot_id,
-            fetched_at=fetched_at,
-        )
+        history_recording_failed = False
+        try:
+            _record_history_from_persisted_snapshot(
+                con,
+                source_snapshot_id=refresh_snapshot_id,
+                fetched_at=fetched_at,
+            )
+        except Exception:
+            history_recording_failed = True
+            log.exception(
+                "Opportunity history recording failed for source_snapshot_id=%s; continuing refresh success",
+                refresh_snapshot_id,
+            )
 
-        warning_code = None
+        warning_codes: list[str] = []
         if provider_events_returned > 0 and len(rows) == 0:
-            warning_code = "PAID_REQUEST_ZERO_SNAPSHOTS"
+            warning_codes.append("PAID_REQUEST_ZERO_SNAPSHOTS")
+        if history_recording_failed:
+            warning_codes.append("OPPORTUNITY_HISTORY_RECORDING_FAILED")
+        warning_code = "|".join(warning_codes) if warning_codes else None
 
         _store_refresh_telemetry(
             con,
@@ -996,7 +1007,7 @@ def run_refresh() -> dict[str, Any]:
         "eventsRejectedByDateMatch": rejected_by_date_match,
         "eventsAccepted": accepted_events,
         "snapshotRowsInserted": len(rows),
-        "warningCode": "PAID_REQUEST_ZERO_SNAPSHOTS" if provider_events_returned > 0 and len(rows) == 0 else None,
+        "warningCode": warning_code,
         "quotaGuardAllowed": True,
         "quotaGuardReason": None,
     }

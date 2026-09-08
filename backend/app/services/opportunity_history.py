@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -9,8 +10,36 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.config import settings
+from app.runtime_paths import runtime_paths
 
-_DB_PATH = (Path(__file__).resolve().parents[1] / ".opportunity_history.sqlite3").resolve()
+_DB_PATH: Path | None = None
+
+
+def _is_render_production() -> bool:
+    return str(os.getenv("RENDER", "") or "").strip().lower() == "true"
+
+
+def resolve_history_db_path() -> Path:
+    configured = str(os.getenv("OPPORTUNITY_HISTORY_DB_PATH", "") or "").strip()
+    if configured:
+        raw_path = Path(configured).expanduser()
+        candidate = raw_path.resolve() if raw_path.is_absolute() else (Path.cwd() / raw_path).resolve()
+    else:
+        candidate = (runtime_paths.root.resolve() / "opportunity_history.sqlite3").resolve()
+
+    if _is_render_production():
+        try:
+            candidate.relative_to(Path("/data"))
+        except ValueError as exc:
+            raise RuntimeError("Opportunity history path must resolve under /data when RENDER=true") from exc
+
+    return candidate
+
+
+def _effective_db_path() -> Path:
+    if _DB_PATH is not None:
+        return Path(_DB_PATH).resolve()
+    return resolve_history_db_path()
 
 
 def _utc_now_iso() -> str:
@@ -65,8 +94,9 @@ def canonical_quote_key(
 
 
 def _connect() -> sqlite3.Connection:
-    _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(str(_DB_PATH))
+    db_path = _effective_db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(db_path))
     con.row_factory = sqlite3.Row
     return con
 
