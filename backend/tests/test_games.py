@@ -226,6 +226,45 @@ def test_lifecycle_represented_when_qualified_history_disappears() -> None:
     assert lifecycle["comparison"]["qualificationChanged"] is True
 
 
+def test_lifecycle_qualified_transition_regression_and_guardrails() -> None:
+    from app.routes.opportunities import _opportunity_lifecycle_state
+
+    previous = {
+        "market": "spread",
+        "qualificationStatus": "QUALIFIED",
+        "recommendation": "STRONG BET",
+        "productionEligible": True,
+        "point": 2.5,
+        "price": -110,
+    }
+    current = {
+        "market": "spread",
+        "qualificationStatus": "WATCH",
+        "recommendation": "WATCH",
+        "productionEligible": True,
+        "point": 3.0,
+        "price": -105,
+    }
+
+    assert _opportunity_lifecycle_state(current, previous_snapshot=previous) == "NO_LONGER_QUALIFIED"
+    assert _opportunity_lifecycle_state({
+        "market": "spread",
+        "qualificationStatus": "QUALIFIED",
+        "recommendation": "STRONG BET",
+        "productionEligible": True,
+        "point": 2.5,
+        "price": -110,
+    }, previous_snapshot=None) == "QUALIFIED"
+    assert _opportunity_lifecycle_state({
+        "market": "spread",
+        "qualificationStatus": "WATCH",
+        "recommendation": "WATCH",
+        "productionEligible": True,
+        "point": 2.5,
+        "price": -110,
+    }, previous_snapshot=None) == "WATCH"
+
+
 def test_opportunity_history_is_stable_and_idempotent(tmp_path, monkeypatch) -> None:
     import app.services.opportunity_history as oh
 

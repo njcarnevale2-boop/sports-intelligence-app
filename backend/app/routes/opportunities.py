@@ -224,7 +224,7 @@ def _opportunity_lifecycle_state(opportunity: dict[str, Any] | None, previous_sn
     if previous_snapshot is not None:
         previous_qualification = str(previous_snapshot.get("qualificationStatus") or "").upper()
         previous_recommendation = str(previous_snapshot.get("recommendation") or "").upper()
-        if previous_qualification == "QUALIFIED" and current_qualification != "QUALIFIED":
+        if previous_qualification == "QUALIFIED" and qualification != "QUALIFIED":
             return "NO_LONGER_QUALIFIED"
         if previous_qualification in {"QUALIFIED", "STRONG BET"} and previous_recommendation in {"QUALIFIED", "STRONG BET"} and recommendation in {"WATCH", "LEAN"}:
             return "SUPERSEDED"
