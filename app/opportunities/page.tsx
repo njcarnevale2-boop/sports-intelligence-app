@@ -118,6 +118,8 @@ type OpportunitiesResponse = {
   weekScheduledGames?: number;
   weekQualifiedOpportunities?: number;
   availableWeeks?: number[];
+  defaultWeek?: number | null;
+  canonicalWeek?: { week?: number | null };
   source: string;
   bestLinesOnly: boolean;
   provider?: string;
@@ -211,11 +213,14 @@ export default function OpportunitiesPage() {
   useEffect(() => {
     async function initializeWeek() {
       try {
-        const data = await fetchJson<{ availableWeeks?: number[] }>("/api/games");
+        const data = await fetchJson<{ availableWeeks?: number[]; defaultWeek?: number | null; canonicalWeek?: { week?: number | null } }>("/api/games");
         const weeks = data.availableWeeks ?? [];
         if (weeks.length) {
           setAvailableWeeks(weeks);
-          setWeek(weeks[0]);
+        }
+        const resolvedDefaultWeek = data.defaultWeek ?? data.canonicalWeek?.week ?? weeks[0] ?? null;
+        if (resolvedDefaultWeek != null) {
+          setWeek(Number(resolvedDefaultWeek));
         }
       } catch {
         // init failure will show after main effect also fails

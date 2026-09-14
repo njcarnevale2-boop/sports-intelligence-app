@@ -11,6 +11,7 @@ from typing import Any, Optional
 from app.services import shadow_markets
 from app.services.games import service as games_service
 from app.services.odds_status import evaluate_optional_provider_request
+from app.services.week_resolution import resolve_canonical_week_metadata
 
 
 TRACKED_MARKET_FAMILIES = ("SPREAD", "MONEYLINE", "TOTAL")
@@ -120,6 +121,12 @@ def _parse_commence(value: Any) -> Optional[datetime]:
 def _resolve_week(week: Optional[int]) -> int:
     if week is not None:
         return int(week)
+
+    canonical = resolve_canonical_week_metadata()
+    canonical_week = _to_int(canonical.get("week"))
+    if canonical_week is not None:
+        return canonical_week
+
     all_games = games_service.list_games()
     available = all_games.get("availableWeeks") or []
     if available:

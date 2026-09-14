@@ -23,6 +23,7 @@ from app.services.decision_ledger import (
 )
 from app.routes.opportunities import get_opportunities
 from app.services.games import service as games_service
+from app.services.week_resolution import resolve_canonical_week_metadata
 
 
 router = APIRouter(prefix="/api/admin/ledger", tags=["admin-ledger"])
@@ -141,8 +142,11 @@ def _resolve_week_and_season(week: Optional[int]) -> tuple[int, int]:
     games = games_service.list_games(week=week)
     selected_week = week
     if selected_week is None:
-        available = games.get("availableWeeks") or []
-        selected_week = int(available[0]) if available else 1
+        canonical = resolve_canonical_week_metadata()
+        selected_week = int(canonical.get("week")) if canonical.get("week") is not None else None
+        if selected_week is None:
+            available = games.get("availableWeeks") or []
+            selected_week = int(available[0]) if available else 1
         games = games_service.list_games(week=selected_week)
 
     rows = games.get("games") or []
@@ -150,7 +154,8 @@ def _resolve_week_and_season(week: Optional[int]) -> tuple[int, int]:
         first = rows[0]
         season = int(first.get("season") or datetime.now(timezone.utc).year)
     else:
-        season = datetime.now(timezone.utc).year
+        canonical = resolve_canonical_week_metadata()
+        season = int(canonical.get("season")) if canonical.get("season") is not None else datetime.now(timezone.utc).year
     return season, int(selected_week)
 
 

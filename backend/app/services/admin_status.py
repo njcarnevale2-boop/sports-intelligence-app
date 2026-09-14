@@ -20,6 +20,7 @@ from app.services.social_sources import get_social_source_coverage_report
 from app.services.weather_history import get_weather_summary
 from app.services.decision_ledger import get_admin_ledger_summary, get_official_publication_for_week
 from app.services.games import service as games_service
+from app.services.week_resolution import build_week_readiness, resolve_canonical_week_metadata
 from app.runtime_paths import runtime_paths, runtime_readiness
 from database.models import PerformanceRecord
 from database.session import SessionLocal
@@ -54,6 +55,8 @@ class AdminStatusService:
         wx_summary = get_weather_summary()
         ledger_summary = get_admin_ledger_summary(limit=100)
         runtime_status = runtime_readiness()
+        canonical_week = resolve_canonical_week_metadata()
+        week_readiness = build_week_readiness(canonical=canonical_week)
         api_health = self._api_health(
             database_status=database_status,
             runtime_status=runtime_status,
@@ -182,6 +185,8 @@ class AdminStatusService:
             "deploymentReadiness": runtime_status.get("deploymentReadiness"),
             "backendReplicaRequirement": runtime_status.get("backendReplicaRequirement"),
             "backendInstanceId": runtime_status.get("backendInstanceId"),
+            "canonicalWeek": canonical_week,
+            "weekReadiness": week_readiness,
         }
 
     def _read_last_refresh(self) -> str:

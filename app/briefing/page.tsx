@@ -82,7 +82,12 @@ type GameInfo = {
 };
 
 type OppsResponse = { opportunities: Opportunity[] };
-type GamesResponse = { availableWeeks: number[]; games: GameInfo[] };
+type GamesResponse = {
+  availableWeeks: number[];
+  games: GameInfo[];
+  defaultWeek?: number | null;
+  canonicalWeek?: { week?: number | null };
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -127,14 +132,18 @@ export default function BriefingPage() {
   useEffect(() => {
     async function load() {
       try {
+        const seed = await fetchJson<GamesResponse>("/api/games");
+        const resolvedWeek =
+          seed.defaultWeek ?? seed.canonicalWeek?.week ?? seed.availableWeeks?.[0] ?? 1;
+
         const [gamesResult, oppsResult] = await Promise.allSettled([
-          fetchJson<GamesResponse>("/api/games?week=1"),
-          fetchJson<OppsResponse>("/api/opportunities?limit=100&week=1"),
+          fetchJson<GamesResponse>(`/api/games?week=${resolvedWeek}`),
+          fetchJson<OppsResponse>(`/api/opportunities?limit=100&week=${resolvedWeek}`),
         ]);
 
         if (gamesResult.status === "fulfilled") {
-          const { games, availableWeeks } = gamesResult.value;
-          setCurrentWeek(availableWeeks[0] ?? 1);
+          const { games } = gamesResult.value;
+          setCurrentWeek(Number(resolvedWeek));
           const map = new Map<string, GameInfo>();
           for (const g of games) map.set(g.eventId, g);
           setGameMap(map);

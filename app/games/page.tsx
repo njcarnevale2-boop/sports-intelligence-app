@@ -49,6 +49,8 @@ type GamesResponse = {
   count: number;
   availableWeeks: number[];
   availableDates: string[];
+  defaultWeek?: number | null;
+  canonicalWeek?: { week?: number | null };
   dataStatus?: { marketIntelligence?: string };
   games: GameCard[];
 };
@@ -123,8 +125,10 @@ export default function GamesPage() {
         setAvailableDates(data.availableDates ?? []);
         setMarketStatus(data.dataStatus?.marketIntelligence ?? null);
 
-        if (data.availableWeeks?.length) {
-          setWeek(data.availableWeeks[0]);
+        const resolvedDefaultWeek =
+          data.defaultWeek ?? data.canonicalWeek?.week ?? data.availableWeeks?.[0] ?? null;
+        if (resolvedDefaultWeek != null) {
+          setWeek(Number(resolvedDefaultWeek));
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : "";

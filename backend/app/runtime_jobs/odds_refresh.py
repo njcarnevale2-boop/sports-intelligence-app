@@ -13,6 +13,7 @@ import pandas as pd
 import requests
 
 from app.runtime_paths import runtime_paths
+from app.services.week_resolution import resolve_canonical_week_metadata
 from app.services.opportunity_history import build_history_snapshot_from_opportunity, record_history_snapshot
 
 
@@ -154,7 +155,7 @@ def _resolve_target_regular_week(schedule_rows: list[dict[str, Any]], *, now_utc
             game_day = datetime.fromisoformat(str(row.get("gameday") or "").strip()).date()
         except (TypeError, ValueError):
             continue
-        if week < 1 or week > 18:
+        if week < 1:
             continue
         if game_day >= today:
             candidates.append((game_day, week))
@@ -182,7 +183,7 @@ def _load_regular_season_schedule_rows() -> list[dict[str, Any]]:
             week = int(row.get("week"))
         except (TypeError, ValueError):
             continue
-        if week < 1 or week > 18:
+        if week < 1:
             continue
         game_day = str(row.get("gameday") or "").strip()
         away = _canonical_team_code(str(row.get("away_team") or "").strip().upper())
@@ -219,7 +220,8 @@ def _load_target_regular_season_match_index(*, now_utc: datetime) -> tuple[dict[
     if not rows:
         return {}, None
 
-    target_week = _resolve_target_regular_week(rows, now_utc=now_utc)
+    canonical = resolve_canonical_week_metadata(now_utc=now_utc)
+    target_week = int(canonical.get("week")) if canonical.get("week") is not None else _resolve_target_regular_week(rows, now_utc=now_utc)
     if target_week is None:
         return {}, None
 

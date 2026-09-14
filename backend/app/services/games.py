@@ -12,6 +12,7 @@ from app.services.market_data import market_data_service, select_best_line_row
 from app.services.market_intelligence import build_market_intelligence_lookup, normalize_market
 from app.services.sports_intelligence_score import calculate_sports_intelligence_score
 from app.services.sportsbook_policy import filter_current_market_sportsbook_rows
+from app.services.week_resolution import build_week_readiness, resolve_canonical_week_metadata
 
 
 MODEL_ROOT = runtime_paths.root
@@ -79,6 +80,14 @@ def safe_int(value: Any) -> Optional[int]:
         return None
 
 
+def _merge_default_week(available_weeks: list[int], canonical_week: dict[str, Any]) -> tuple[list[int], Optional[int]]:
+    out = sorted({int(w) for w in available_weeks})
+    default_week = safe_int(canonical_week.get("week"))
+    if default_week is not None and default_week not in out:
+        out = sorted([*out, default_week])
+    return out, default_week
+
+
 def infer_nfl_season(kickoff: datetime) -> int:
     return kickoff.year if kickoff.month >= 8 else kickoff.year - 1
 
@@ -123,17 +132,24 @@ class GamesService:
         self.provider_manager = ProviderManager()
         self._schedule_context_cache: Dict[Tuple[str, str, str], Tuple[int, int]] = {}
         self._schedule_context_mtime: Optional[float] = None
+        self._schedule_context_path: Optional[str] = None
         self._opportunities_cache: Dict[Tuple[Optional[float], Optional[Tuple[str, ...]]], Dict[str, Dict[str, Any]]] = {}
 
     def list_games(self, week: Optional[int] = None, game_date: Optional[str] = None) -> Dict[str, Any]:
         market_meta = market_data_service.metadata()
+        canonical_week = resolve_canonical_week_metadata()
+        week_readiness = build_week_readiness(canonical=canonical_week)
 
         if not GAME_PROJECTIONS.exists():
+            available_weeks, default_week = _merge_default_week([], canonical_week)
             return {
                 "count": 0,
                 "games": [],
-                "availableWeeks": [],
+                "availableWeeks": available_weeks,
                 "availableDates": [],
+                "defaultWeek": default_week,
+                "canonicalWeek": canonical_week,
+                "weekReadiness": week_readiness,
                 "source": "unavailable",
                 "dataStatus": self._data_status(schedule_available=False, opportunities_available=False),
                 "provider": market_meta["provider"],
@@ -142,11 +158,15 @@ class GamesService:
 
         schedule_df = pd.read_csv(GAME_PROJECTIONS)
         if schedule_df.empty:
+            available_weeks, default_week = _merge_default_week([], canonical_week)
             return {
                 "count": 0,
                 "games": [],
-                "availableWeeks": [],
+                "availableWeeks": available_weeks,
                 "availableDates": [],
+                "defaultWeek": default_week,
+                "canonicalWeek": canonical_week,
+                "weekReadiness": week_readiness,
                 "source": str(GAME_PROJECTIONS),
                 "dataStatus": self._data_status(schedule_available=True, opportunities_available=RANKED_BET_BOARD.exists()),
                 "provider": market_meta["provider"],
@@ -197,6 +217,7 @@ class GamesService:
         # Compute available weeks/dates from the full unfiltered slate so selectors
         # always reflect the complete schedule regardless of the active filter.
         available_weeks = sorted({int(item["week"]) for item in candidate_rows if item.get("week") is not None})
+        available_weeks, default_week = _merge_default_week(available_weeks, canonical_week)
         available_dates = sorted({item["gameDate"] for item in candidate_rows if item.get("gameDate")})
 
         if week is not None:
@@ -210,6 +231,9 @@ class GamesService:
                 "games": [],
                 "availableWeeks": available_weeks,
                 "availableDates": available_dates,
+                "defaultWeek": default_week,
+                "canonicalWeek": canonical_week,
+                "weekReadiness": week_readiness,
                 "source": str(GAME_PROJECTIONS),
                 "dataStatus": self._data_status(schedule_available=True, opportunities_available=RANKED_BET_BOARD.exists()),
                 "provider": market_meta["provider"],
@@ -316,6 +340,9 @@ class GamesService:
             "games": rows,
             "availableWeeks": available_weeks,
             "availableDates": available_dates,
+            "defaultWeek": default_week,
+            "canonicalWeek": canonical_week,
+            "weekReadiness": week_readiness,
             "source": str(GAME_PROJECTIONS),
             "dataStatus": self._data_status(schedule_available=True, opportunities_available=RANKED_BET_BOARD.exists()),
             "provider": market_meta["provider"],
@@ -323,6 +350,7 @@ class GamesService:
         }
 
     def _load_schedule_context_lookup(self) -> Dict[Tuple[str, str, str], Tuple[int, int]]:
+        source_path = str(SCHEDULE_CONTEXT)
         if not SCHEDULE_CONTEXT.exists():
             return {}
 
@@ -331,7 +359,11 @@ class GamesService:
         except OSError:
             return {}
 
-        if self._schedule_context_mtime == modified_time and self._schedule_context_cache:
+        if (
+            self._schedule_context_mtime == modified_time
+            and self._schedule_context_path == source_path
+            and self._schedule_context_cache
+        ):
             return self._schedule_context_cache
 
         try:
@@ -360,6 +392,7 @@ class GamesService:
 
         self._schedule_context_cache = lookup
         self._schedule_context_mtime = modified_time
+        self._schedule_context_path = source_path
         return lookup
 
     def _season_and_week_for_game(

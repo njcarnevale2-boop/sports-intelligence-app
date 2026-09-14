@@ -36,6 +36,7 @@ from app.services.probability_engine import (
     moneyline_outcome_probabilities,
     total_outcome_probabilities,
 )
+from app.services.week_resolution import build_week_readiness, resolve_canonical_week_metadata
 from app.config import settings
 from app.runtime_paths import runtime_paths
 
@@ -1457,7 +1458,12 @@ def get_opportunities(
     # Resolve week: default to first available week when no week param given
     all_games_payload = games_service.list_games()
     available_weeks: list[int] = all_games_payload.get("availableWeeks", [])
-    resolved_week: int = week if week is not None else (available_weeks[0] if available_weeks else 1)
+    canonical_week = resolve_canonical_week_metadata()
+    week_readiness = build_week_readiness(canonical=canonical_week)
+    canonical_default_week = safe_int(canonical_week.get("week"))
+    resolved_week: int = week if week is not None else (
+        canonical_default_week if canonical_default_week is not None else (available_weeks[0] if available_weeks else 1)
+    )
 
     # Filter to only eventIds belonging to the resolved week
     week_games_payload = games_service.list_games(week=resolved_week)
@@ -1483,6 +1489,9 @@ def get_opportunities(
                 "weekScheduledGames": week_scheduled_games,
                 "weekQualifiedOpportunities": 0,
                 "availableWeeks": available_weeks,
+                "defaultWeek": resolved_week,
+                "canonicalWeek": canonical_week,
+                "weekReadiness": week_readiness,
                 "source": str(RANKED_BET_BOARD),
                 "bestLinesOnly": False,
                 "provider": market_meta["provider"],
@@ -1514,6 +1523,9 @@ def get_opportunities(
             "weekScheduledGames": week_scheduled_games,
             "weekQualifiedOpportunities": len(opportunities),
             "availableWeeks": available_weeks,
+            "defaultWeek": resolved_week,
+            "canonicalWeek": canonical_week,
+            "weekReadiness": week_readiness,
             "source": str(RANKED_BET_BOARD),
             "bestLinesOnly": False,
             "provider": market_meta["provider"],
@@ -1716,6 +1728,9 @@ def get_opportunities(
         "weekScheduledGames": week_scheduled_games,
         "weekQualifiedOpportunities": len(best_rows),
         "availableWeeks": available_weeks,
+        "defaultWeek": resolved_week,
+        "canonicalWeek": canonical_week,
+        "weekReadiness": week_readiness,
         "source": str(RANKED_BET_BOARD),
         "bestLinesOnly": True,
         "includeExperimental": include_experimental,
@@ -1747,6 +1762,9 @@ def get_decision_board(
 
     return {
         "week": payload.get("week"),
+        "defaultWeek": payload.get("defaultWeek"),
+        "canonicalWeek": payload.get("canonicalWeek"),
+        "weekReadiness": payload.get("weekReadiness"),
         "dataStatus": payload.get("dataStatus"),
         "lastUpdated": payload.get("lastUpdated"),
         "snapshotId": payload.get("snapshotId"),
