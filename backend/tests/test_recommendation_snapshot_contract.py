@@ -29,6 +29,7 @@ def _base_payload() -> dict:
 
 def test_snapshot_contract_complete(monkeypatch):
     monkeypatch.setattr(snapshot_route, "store_snapshot", lambda payload: "snap-complete")
+    monkeypatch.setattr(snapshot_route, "record_personal_wager_from_payload", lambda payload, decision_id=None, source_snapshot_id=None: {"wagerId": "wager-1"})
     monkeypatch.setattr(
         snapshot_route,
         "record_my_card_decision_from_payload",
@@ -49,6 +50,7 @@ def test_snapshot_contract_complete(monkeypatch):
 
 def test_snapshot_contract_partial_snapshot_preserved(monkeypatch):
     monkeypatch.setattr(snapshot_route, "store_snapshot", lambda payload: "snap-partial")
+    monkeypatch.setattr(snapshot_route, "record_personal_wager_from_payload", lambda payload, decision_id=None, source_snapshot_id=None: {"wagerId": "wager-2"})
 
     def _raise_validation_error(payload: dict):
         raise ValueError("season, week, and eventId are required")
@@ -70,6 +72,7 @@ def test_snapshot_contract_partial_snapshot_preserved(monkeypatch):
 
 def test_snapshot_contract_failed_when_snapshot_not_recorded(monkeypatch):
     monkeypatch.setattr(snapshot_route, "store_snapshot", lambda payload: None)
+    monkeypatch.setattr(snapshot_route, "record_personal_wager_from_payload", lambda payload, decision_id=None, source_snapshot_id=None: {"wagerId": "wager-3"})
 
     response = client.post("/api/recommendation/snapshot", json=_base_payload())
     assert response.status_code == 200

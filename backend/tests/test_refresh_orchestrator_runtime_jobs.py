@@ -29,6 +29,7 @@ def test_run_once_uses_repo_runtime_jobs_not_persistent_scripts(tmp_path, monkey
         patch.object(orch, "_children_ru_maxrss_kb", side_effect=[1000, 1100, 1200, 1300, 1400, 1500]),
         patch("app.services.recommendation_snapshot.capture_closing_lines", return_value={"eligible": 0, "captured": 0, "pending": 0, "missing": 0, "errors": 0}),
         patch("app.services.decision_ledger.run_official_postgame_lifecycle", return_value={"checked": 0, "settled": 0, "pending": 0}),
+        patch("app.services.decision_ledger.run_personal_postgame_lifecycle", return_value={"checked": 0, "settled": 0, "pending": 0}),
         patch("app.services.shadow_markets.append_shadow_outcomes", return_value={"checked": 0, "appended": 0, "pending": 0}),
         patch("app.services.performance.get_performance_service") as perf_factory,
         patch("app.services.injuries.InjuryAnalyzer") as injury_analyzer,
@@ -320,6 +321,7 @@ def test_run_once_memory_telemetry_unavailable_fails_safe(tmp_path, monkeypatch)
         patch.object(orch, "_children_ru_maxrss_kb", return_value=None),
         patch("app.services.recommendation_snapshot.capture_closing_lines", return_value={"eligible": 0, "captured": 0, "pending": 0, "missing": 0, "errors": 0}),
         patch("app.services.decision_ledger.run_official_postgame_lifecycle", return_value={"checked": 0, "settled": 0, "pending": 0}),
+        patch("app.services.decision_ledger.run_personal_postgame_lifecycle", return_value={"checked": 0, "settled": 0, "pending": 0}),
         patch("app.services.shadow_markets.append_shadow_outcomes", return_value={"checked": 0, "appended": 0, "pending": 0}),
         patch("app.services.performance.get_performance_service") as perf_factory,
         patch("app.services.injuries.InjuryAnalyzer") as injury_analyzer,
@@ -342,6 +344,55 @@ def test_run_once_memory_telemetry_unavailable_fails_safe(tmp_path, monkeypatch)
     assert status["lastRefreshChildrenRuMaxRssKbBefore"] is None
     assert status["lastRefreshChildrenRuMaxRssKbAfter"] is None
     assert status["lastRefreshChildrenRuMaxRssKbDelta"] is None
+
+
+def test_run_once_personal_lifecycle_exception_is_non_fatal(tmp_path, monkeypatch):
+    runtime_root = tmp_path / "runtime"
+    (runtime_root / "logs").mkdir(parents=True)
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+    monkeypatch.setenv("PREGAME_AUTOMATION_ENABLED", "0")
+
+    state_file = runtime_root / "logs" / "refresh_state.json"
+
+    with (
+        patch.object(orch, "_STATE_FILE", state_file),
+        patch.object(orch.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="ok", stderr="")),
+        patch.object(orch, "_children_ru_maxrss_kb", side_effect=[1000, 1005, 1010, 1015, 1020, 1025]),
+        patch("app.services.recommendation_snapshot.capture_closing_lines", return_value={"eligible": 1, "captured": 1, "pending": 0, "missing": 0, "errors": 0}),
+        patch("app.services.decision_ledger.run_official_postgame_lifecycle", return_value={"checked": 3, "settled": 2, "pending": 1}) as official_lifecycle,
+        patch("app.services.shadow_markets.append_shadow_outcomes", return_value={"checked": 2, "appended": 1, "pending": 1}) as shadow_lifecycle,
+        patch("app.services.decision_ledger.run_personal_postgame_lifecycle", side_effect=RuntimeError("personal boom")) as personal_lifecycle,
+        patch("app.services.performance.get_performance_service") as perf_factory,
+        patch("app.services.injuries.InjuryAnalyzer") as injury_analyzer,
+        patch("app.services.injury_history.get_injury_summary", return_value={"playersTracked": 0, "teamsUpdated": 0}),
+        patch("app.services.weather_history.get_weather_summary", return_value={"forecastsAvailable": 0}),
+        patch.object(orch, "_read_quota_from_db", return_value=None),
+    ):
+        perf_factory.return_value.get_performance_summary.return_value = {
+            "closingLinesCaptured": 1,
+            "pendingClosingLines": 0,
+            "missingClosingLines": 0,
+            "averageCLV": 0.1,
+        }
+        injury_analyzer.return_value.analyze.return_value = None
+        injury_analyzer.return_value._data_status = "LIVE"
+
+        assert orch._run_once() is True
+
+    official_lifecycle.assert_called_once()
+    shadow_lifecycle.assert_called_once()
+    personal_lifecycle.assert_called_once()
+
+    status = json.loads(state_file.read_text())
+    assert status["lastRefreshCompleted"] is True
+    assert status["ledgerOutcomeChecked"] == 3
+    assert status["ledgerOutcomesAppended"] == 2
+    assert status["shadowOutcomeChecked"] == 2
+    assert status["shadowOutcomesAppended"] == 1
+    assert status["personalOutcomeChecked"] == 0
+    assert status["personalOutcomesSettled"] == 0
+    assert status["lastPersonalOutcomeError"] is not None
+    assert "personal boom" in status["lastPersonalOutcomeError"]
 
 
 def test_get_refresh_status_surfaces_instrumentation_fields(tmp_path, monkeypatch):
@@ -390,6 +441,7 @@ def test_instrumented_orchestrator_run_makes_no_direct_provider_request(tmp_path
         patch("app.runtime_jobs.odds_refresh.requests.get") as request_get,
         patch("app.services.recommendation_snapshot.capture_closing_lines", return_value={"eligible": 0, "captured": 0, "pending": 0, "missing": 0, "errors": 0}),
         patch("app.services.decision_ledger.run_official_postgame_lifecycle", return_value={"checked": 0, "settled": 0, "pending": 0}),
+        patch("app.services.decision_ledger.run_personal_postgame_lifecycle", return_value={"checked": 0, "settled": 0, "pending": 0}),
         patch("app.services.shadow_markets.append_shadow_outcomes", return_value={"checked": 0, "appended": 0, "pending": 0}),
         patch("app.services.performance.get_performance_service") as perf_factory,
         patch("app.services.injuries.InjuryAnalyzer") as injury_analyzer,

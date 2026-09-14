@@ -12,6 +12,7 @@ export type SavedCardItem = Record<string, unknown>;
 
 const CARD_KEY = "sports-intelligence-card";
 const PARTIAL_TRACKING_WARNING = "Added to My Card. Performance tracking could not be fully started.";
+const DEFAULT_UNIT_SIZE = 100;
 
 type SnapshotTrackingStatus = "COMPLETE" | "PARTIAL" | "FAILED";
 
@@ -57,6 +58,13 @@ export async function addToCard(item: SavedCardItem): Promise<AddToCardResult> {
 
   // Always attempt snapshot, even if already in localStorage (idempotent on backend)
   try {
+    const unitsRiskedRaw = Number(item.unitsRisked ?? item.recommendedUnits ?? 1);
+    const unitsRisked = Number.isFinite(unitsRiskedRaw) && unitsRiskedRaw > 0 ? unitsRiskedRaw : 1;
+    const unitSizeAtBetRaw = Number(item.unitSizeAtBet ?? DEFAULT_UNIT_SIZE);
+    const unitSizeAtBet = Number.isFinite(unitSizeAtBetRaw) && unitSizeAtBetRaw > 0 ? unitSizeAtBetRaw : DEFAULT_UNIT_SIZE;
+    const amountRiskedRaw = Number(item.amountRisked ?? unitsRisked * unitSizeAtBet);
+    const amountRisked = Number.isFinite(amountRiskedRaw) && amountRiskedRaw > 0 ? amountRiskedRaw : unitsRisked * unitSizeAtBet;
+
     const snap = await fetchJson<SnapshotResponse>(
       "/api/recommendation/snapshot",
       {
@@ -101,6 +109,9 @@ export async function addToCard(item: SavedCardItem): Promise<AddToCardResult> {
           marketIntelligence: item.marketIntelligence,
           injuryContext:     item.injuryContext,
           weatherContext:    item.weatherContext,
+          amountRisked,
+          unitsRisked,
+          unitSizeAtBet,
         }),
       }
     );

@@ -171,7 +171,53 @@ CREATE TABLE IF NOT EXISTS decision_outcomes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_outcome_decision ON decision_outcomes(decision_id);
+
+CREATE TABLE IF NOT EXISTS personal_wager_ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    wager_id TEXT NOT NULL UNIQUE,
+    placed_at_utc TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    commence_time TEXT,
+    away_team TEXT,
+    home_team TEXT,
+    market TEXT,
+    side TEXT,
+    sportsbook TEXT,
+    line REAL,
+    american_odds REAL,
+    amount_risked REAL,
+    units_risked REAL,
+    unit_size_at_bet REAL,
+    decision_id TEXT,
+    source_snapshot_id TEXT,
+    sia_confidence_score REAL,
+    sia_tier TEXT,
+    model_probability_at_bet REAL,
+    calibrated_probability_at_bet REAL,
+    implied_probability_at_bet REAL,
+    edge_at_bet REAL,
+    ev_at_bet REAL,
+    opening_line REAL,
+    recommendation_line REAL,
+    closing_line REAL,
+    closing_price REAL,
+    clv_points REAL,
+    clv_percent REAL,
+    result TEXT NOT NULL DEFAULT 'PENDING',
+    amount_won_lost REAL,
+    units_won_lost REAL,
+    settled_at_utc TEXT,
+    recorded_at_utc TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_personal_wager_status ON personal_wager_ledger(result);
+CREATE INDEX IF NOT EXISTS idx_personal_wager_event ON personal_wager_ledger(event_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_personal_wager_decision_unique ON personal_wager_ledger(decision_id) WHERE decision_id IS NOT NULL;
 """
+
+
+PERSONAL_LEDGER_STARTING_BANKROLL = 1000.0
+PERSONAL_LEDGER_DEFAULT_UNIT_SIZE = 100.0
 
 
 DECISION_FIELDS = [
@@ -246,9 +292,147 @@ def _connect() -> sqlite3.Connection:
     return con
 
 
+def _migrate_personal_wager_nullable_sizing(con: sqlite3.Connection) -> None:
+    columns = con.execute("PRAGMA table_info(personal_wager_ledger)").fetchall()
+    if not columns:
+        return
+
+    by_name = {str(row["name"]): int(row["notnull"]) for row in columns}
+    needs_migration = any(
+        by_name.get(name, 0) == 1
+        for name in ["amount_risked", "units_risked", "unit_size_at_bet"]
+    )
+    if not needs_migration:
+        return
+
+    con.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS personal_wager_ledger_v2 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            wager_id TEXT NOT NULL UNIQUE,
+            placed_at_utc TEXT NOT NULL,
+            event_id TEXT NOT NULL,
+            commence_time TEXT,
+            away_team TEXT,
+            home_team TEXT,
+            market TEXT,
+            side TEXT,
+            sportsbook TEXT,
+            line REAL,
+            american_odds REAL,
+            amount_risked REAL,
+            units_risked REAL,
+            unit_size_at_bet REAL,
+            decision_id TEXT,
+            source_snapshot_id TEXT,
+            sia_confidence_score REAL,
+            sia_tier TEXT,
+            model_probability_at_bet REAL,
+            calibrated_probability_at_bet REAL,
+            implied_probability_at_bet REAL,
+            edge_at_bet REAL,
+            ev_at_bet REAL,
+            opening_line REAL,
+            recommendation_line REAL,
+            closing_line REAL,
+            closing_price REAL,
+            clv_points REAL,
+            clv_percent REAL,
+            result TEXT NOT NULL DEFAULT 'PENDING',
+            amount_won_lost REAL,
+            units_won_lost REAL,
+            settled_at_utc TEXT,
+            recorded_at_utc TEXT NOT NULL
+        );
+
+        INSERT INTO personal_wager_ledger_v2 (
+            id,
+            wager_id,
+            placed_at_utc,
+            event_id,
+            commence_time,
+            away_team,
+            home_team,
+            market,
+            side,
+            sportsbook,
+            line,
+            american_odds,
+            amount_risked,
+            units_risked,
+            unit_size_at_bet,
+            decision_id,
+            source_snapshot_id,
+            sia_confidence_score,
+            sia_tier,
+            model_probability_at_bet,
+            calibrated_probability_at_bet,
+            implied_probability_at_bet,
+            edge_at_bet,
+            ev_at_bet,
+            opening_line,
+            recommendation_line,
+            closing_line,
+            closing_price,
+            clv_points,
+            clv_percent,
+            result,
+            amount_won_lost,
+            units_won_lost,
+            settled_at_utc,
+            recorded_at_utc
+        )
+        SELECT
+            id,
+            wager_id,
+            placed_at_utc,
+            event_id,
+            commence_time,
+            away_team,
+            home_team,
+            market,
+            side,
+            sportsbook,
+            line,
+            american_odds,
+            amount_risked,
+            units_risked,
+            unit_size_at_bet,
+            decision_id,
+            source_snapshot_id,
+            sia_confidence_score,
+            sia_tier,
+            model_probability_at_bet,
+            calibrated_probability_at_bet,
+            implied_probability_at_bet,
+            edge_at_bet,
+            ev_at_bet,
+            opening_line,
+            recommendation_line,
+            closing_line,
+            closing_price,
+            clv_points,
+            clv_percent,
+            result,
+            amount_won_lost,
+            units_won_lost,
+            settled_at_utc,
+            recorded_at_utc
+        FROM personal_wager_ledger;
+
+        DROP TABLE personal_wager_ledger;
+        ALTER TABLE personal_wager_ledger_v2 RENAME TO personal_wager_ledger;
+        CREATE INDEX IF NOT EXISTS idx_personal_wager_status ON personal_wager_ledger(result);
+        CREATE INDEX IF NOT EXISTS idx_personal_wager_event ON personal_wager_ledger(event_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_personal_wager_decision_unique ON personal_wager_ledger(decision_id) WHERE decision_id IS NOT NULL;
+        """
+    )
+
+
 def _ensure_schema() -> None:
     con = _connect()
     con.executescript(_SCHEMA)
+    _migrate_personal_wager_nullable_sizing(con)
     existing_columns = {
         str(row["name"])
         for row in con.execute("PRAGMA table_info(decision_ledger)").fetchall()
@@ -723,6 +907,38 @@ def _to_float(value: Any) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _implied_probability_from_american_odds(odds: Optional[float]) -> Optional[float]:
+    if odds is None:
+        return None
+    try:
+        value = float(odds)
+    except (TypeError, ValueError):
+        return None
+    if value == 0:
+        return None
+    if value > 0:
+        return 100.0 / (value + 100.0)
+    return abs(value) / (abs(value) + 100.0)
+
+
+def _round_money(value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    return round(float(value), 2)
+
+
+def _coerce_positive(value: Optional[float], fallback: float) -> float:
+    if value is None:
+        return float(fallback)
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return float(fallback)
+    if parsed <= 0:
+        return float(fallback)
+    return parsed
 
 
 def _is_production_eligible_market(market: Any) -> bool:
@@ -1342,14 +1558,13 @@ def _profit_per_dollar(price: Optional[float], bet_result: str) -> Optional[floa
 
 
 def _derive_bet_result(*, market: str, side: str, point: Optional[float], away_score: int, home_score: int) -> Optional[str]:
-    if point is None:
-        return None
-
     market_key = str(market or "").lower()
     side_key = str(side or "").lower()
     result = None
 
     if market_key in {"spread", "spreads"}:
+        if point is None:
+            return None
         margin = float(home_score) - float(away_score)
         if side_key == "home":
             ats = margin + point
@@ -1357,7 +1572,16 @@ def _derive_bet_result(*, market: str, side: str, point: Optional[float], away_s
         elif side_key == "away":
             ats = -margin - point
             result = "WIN" if ats > 0 else "LOSS" if ats < 0 else "PUSH"
+    elif market_key in {"moneyline", "h2h"}:
+        if away_score == home_score:
+            return "PUSH"
+        if side_key == "away":
+            result = "WIN" if away_score > home_score else "LOSS"
+        elif side_key == "home":
+            result = "WIN" if home_score > away_score else "LOSS"
     elif market_key in {"total", "totals"}:
+        if point is None:
+            return None
         total = float(home_score) + float(away_score)
         if side_key == "over":
             result = "WIN" if total > point else "LOSS" if total < point else "PUSH"
@@ -1504,6 +1728,514 @@ def append_outcome(payload: Dict[str, Any]) -> Dict[str, Any]:
         "profitPerDollar": row["profit_per_dollar"],
         "payloadHash": row["payload_hash"],
         "created": created,
+    }
+
+
+def _personal_wager_from_row(row: sqlite3.Row) -> Dict[str, Any]:
+    return {
+        "wagerId": row["wager_id"],
+        "placedAtUTC": row["placed_at_utc"],
+        "eventId": row["event_id"],
+        "commenceTime": row["commence_time"],
+        "awayTeam": row["away_team"],
+        "homeTeam": row["home_team"],
+        "market": row["market"],
+        "side": row["side"],
+        "sportsbook": row["sportsbook"],
+        "line": row["line"],
+        "americanOdds": row["american_odds"],
+        "amountRisked": row["amount_risked"],
+        "unitsRisked": row["units_risked"],
+        "unitSizeAtBet": row["unit_size_at_bet"],
+        "decisionId": row["decision_id"],
+        "sourceSnapshotId": row["source_snapshot_id"],
+        "siaConfidenceScore": row["sia_confidence_score"],
+        "siaTier": row["sia_tier"],
+        "modelProbabilityAtBet": row["model_probability_at_bet"],
+        "calibratedProbabilityAtBet": row["calibrated_probability_at_bet"],
+        "impliedProbabilityAtBet": row["implied_probability_at_bet"],
+        "edgeAtBet": row["edge_at_bet"],
+        "evAtBet": row["ev_at_bet"],
+        "openingLine": row["opening_line"],
+        "recommendationLine": row["recommendation_line"],
+        "closingLine": row["closing_line"],
+        "closingPrice": row["closing_price"],
+        "clvPoints": row["clv_points"],
+        "clvPercent": row["clv_percent"],
+        "result": row["result"],
+        "amountWonLost": row["amount_won_lost"],
+        "unitsWonLost": row["units_won_lost"],
+        "settledAtUTC": row["settled_at_utc"],
+        "recordedAtUTC": row["recorded_at_utc"],
+    }
+
+
+def _create_personal_wager_row(
+    *,
+    placed_at_utc: str,
+    event_id: str,
+    commence_time: Optional[str],
+    away_team: Optional[str],
+    home_team: Optional[str],
+    market: Optional[str],
+    side: Optional[str],
+    sportsbook: Optional[str],
+    line: Optional[float],
+    american_odds: Optional[float],
+    amount_risked: Optional[float],
+    units_risked: Optional[float],
+    unit_size_at_bet: Optional[float],
+    decision_id: Optional[str],
+    source_snapshot_id: Optional[str],
+    sia_confidence_score: Optional[float],
+    sia_tier: Optional[str],
+    model_probability_at_bet: Optional[float],
+    calibrated_probability_at_bet: Optional[float],
+    implied_probability_at_bet: Optional[float],
+    edge_at_bet: Optional[float],
+    ev_at_bet: Optional[float],
+    opening_line: Optional[float],
+    recommendation_line: Optional[float],
+) -> Dict[str, Any]:
+    _ensure_schema()
+    wager_seed = {
+        "placedAtUTC": placed_at_utc,
+        "eventId": event_id,
+        "market": market,
+        "side": side,
+        "sportsbook": sportsbook,
+        "line": line,
+        "americanOdds": american_odds,
+        "amountRisked": amount_risked,
+        "unitsRisked": units_risked,
+        "unitSizeAtBet": unit_size_at_bet,
+        "decisionId": decision_id,
+        "sourceSnapshotId": source_snapshot_id,
+    }
+    wager_id = str(uuid.uuid5(uuid.NAMESPACE_URL, _canonical_json(wager_seed)))
+
+    con = _connect()
+    existing = None
+    if decision_id:
+        existing = con.execute(
+            "SELECT * FROM personal_wager_ledger WHERE decision_id = ? LIMIT 1",
+            [decision_id],
+        ).fetchone()
+    if existing is None:
+        existing = con.execute(
+            "SELECT * FROM personal_wager_ledger WHERE wager_id = ? LIMIT 1",
+            [wager_id],
+        ).fetchone()
+
+    if existing is not None:
+        con.close()
+        out = _personal_wager_from_row(existing)
+        out["created"] = False
+        return out
+
+    con.execute(
+        """
+        INSERT INTO personal_wager_ledger (
+            wager_id, placed_at_utc, event_id, commence_time, away_team, home_team,
+            market, side, sportsbook, line, american_odds,
+            amount_risked, units_risked, unit_size_at_bet,
+            decision_id, source_snapshot_id,
+            sia_confidence_score, sia_tier,
+            model_probability_at_bet, calibrated_probability_at_bet, implied_probability_at_bet,
+            edge_at_bet, ev_at_bet, opening_line, recommendation_line,
+            result, recorded_at_utc
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'PENDING',?)
+        """,
+        [
+            wager_id,
+            placed_at_utc,
+            event_id,
+            commence_time,
+            away_team,
+            home_team,
+            market,
+            side,
+            sportsbook,
+            line,
+            american_odds,
+            amount_risked,
+            units_risked,
+            unit_size_at_bet,
+            decision_id,
+            source_snapshot_id,
+            sia_confidence_score,
+            sia_tier,
+            model_probability_at_bet,
+            calibrated_probability_at_bet,
+            implied_probability_at_bet,
+            edge_at_bet,
+            ev_at_bet,
+            opening_line,
+            recommendation_line,
+            _utc_now_iso(),
+        ],
+    )
+    con.commit()
+    row = con.execute("SELECT * FROM personal_wager_ledger WHERE wager_id = ?", [wager_id]).fetchone()
+    con.close()
+    out = _personal_wager_from_row(row)
+    out["created"] = True
+    return out
+
+
+def record_personal_wager_from_payload(
+    payload: Dict[str, Any],
+    *,
+    decision_id: Optional[str] = None,
+    source_snapshot_id: Optional[str] = None,
+    require_sizing: bool = True,
+) -> Dict[str, Any]:
+    event_id = str(payload.get("eventId") or "").strip()
+    if not event_id:
+        raise ValueError("eventId is required for personal wager tracking")
+
+    parsed_unit_size = _to_float(payload.get("unitSizeAtBet") if payload.get("unitSizeAtBet") is not None else payload.get("unitSize"))
+    parsed_units = _to_float(payload.get("unitsRisked"))
+    parsed_amount = _to_float(payload.get("amountRisked"))
+
+    if require_sizing:
+        unit_size_at_bet = _coerce_positive(parsed_unit_size, PERSONAL_LEDGER_DEFAULT_UNIT_SIZE)
+        units_risked = _coerce_positive(parsed_units, 1.0)
+        amount_risked = _coerce_positive(parsed_amount, units_risked * unit_size_at_bet)
+        units_risked = round(amount_risked / unit_size_at_bet, 4)
+    else:
+        if parsed_amount is None or parsed_units is None:
+            amount_risked = None
+            units_risked = None
+            unit_size_at_bet = parsed_unit_size
+        else:
+            unit_size_at_bet = _coerce_positive(parsed_unit_size, PERSONAL_LEDGER_DEFAULT_UNIT_SIZE)
+            amount_risked = _coerce_positive(parsed_amount, parsed_units * unit_size_at_bet)
+            units_risked = round(amount_risked / unit_size_at_bet, 4)
+
+    line = _to_float(payload.get("line") if payload.get("line") is not None else payload.get("point"))
+    american_odds = _to_float(payload.get("americanOdds") if payload.get("americanOdds") is not None else payload.get("price"))
+    implied_probability = _to_float(payload.get("impliedProbability"))
+    if implied_probability is None:
+        implied_probability = _implied_probability_from_american_odds(american_odds)
+
+    return _create_personal_wager_row(
+        placed_at_utc=str(payload.get("placedAtUTC") or _utc_now_iso()),
+        event_id=event_id,
+        commence_time=payload.get("commenceTime"),
+        away_team=payload.get("awayTeam"),
+        home_team=payload.get("homeTeam"),
+        market=str(payload.get("market") or "").strip(),
+        side=str(payload.get("side") or "").strip(),
+        sportsbook=payload.get("sportsbook") if payload.get("sportsbook") is not None else payload.get("book"),
+        line=line,
+        american_odds=american_odds,
+        amount_risked=amount_risked,
+        units_risked=units_risked,
+        unit_size_at_bet=unit_size_at_bet,
+        decision_id=decision_id,
+        source_snapshot_id=source_snapshot_id,
+        sia_confidence_score=_to_float(payload.get("siScore") if payload.get("siScore") is not None else payload.get("confidence")),
+        sia_tier=str(payload.get("siGrade") or payload.get("recommendation") or "").strip() or None,
+        model_probability_at_bet=_to_float(payload.get("modelProbability") if payload.get("modelProbability") is not None else payload.get("rawProbability")),
+        calibrated_probability_at_bet=_to_float(payload.get("calibratedProbability")),
+        implied_probability_at_bet=implied_probability,
+        edge_at_bet=_to_float(payload.get("edge") if payload.get("edge") is not None else payload.get("rawEdge")),
+        ev_at_bet=_to_float(payload.get("currentEV") if payload.get("currentEV") is not None else payload.get("evPerDollar")),
+        opening_line=_to_float(payload.get("openingLine")),
+        recommendation_line=line,
+    )
+
+
+def _ensure_personal_wager_for_my_card_decision(decision_row: sqlite3.Row) -> None:
+    payload = {
+        "placedAtUTC": decision_row["published_at_utc"],
+        "eventId": decision_row["event_id"],
+        "commenceTime": decision_row["commence_time"],
+        "awayTeam": decision_row["away_team"],
+        "homeTeam": decision_row["home_team"],
+        "market": decision_row["market"],
+        "side": decision_row["side"],
+        "sportsbook": decision_row["sportsbook"],
+        "point": decision_row["point"],
+        "price": decision_row["price"],
+        "siScore": decision_row["si_score"],
+        "siGrade": decision_row["si_grade"],
+        "modelProbability": decision_row["raw_probability"],
+        "calibratedProbability": decision_row["calibrated_probability"],
+        "impliedProbability": _implied_probability_from_american_odds(_to_float(decision_row["price"])),
+        "rawEdge": decision_row["raw_edge"],
+        "currentEV": decision_row["current_ev"],
+        "openingLine": None,
+    }
+    record_personal_wager_from_payload(
+        payload,
+        decision_id=str(decision_row["decision_id"]),
+        source_snapshot_id=decision_row["source_snapshot_id"],
+        require_sizing=False,
+    )
+
+
+def _seed_missing_personal_wagers_from_decisions() -> int:
+    _ensure_schema()
+    con = _connect()
+    rows = con.execute(
+        """
+        SELECT d.*
+        FROM decision_ledger d
+        WHERE d.publication_type = 'MY_CARD'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM personal_wager_ledger w
+              WHERE w.decision_id = d.decision_id
+          )
+        """
+    ).fetchall()
+    con.close()
+    for row in rows:
+        _ensure_personal_wager_for_my_card_decision(row)
+    return len(rows)
+
+
+def _apply_settlement_to_wager(
+    *,
+    wager: sqlite3.Row,
+    bet_result: str,
+    captured_at_utc: str,
+    closing_line: Optional[float],
+    closing_price: Optional[float],
+    clv_points: Optional[float],
+    clv_percent: Optional[float],
+) -> None:
+    odds = _to_float(wager["american_odds"])
+    amount_risked = _to_float(wager["amount_risked"])
+    unit_size = _to_float(wager["unit_size_at_bet"])
+    profit_per_dollar = _profit_per_dollar(odds, bet_result)
+    sizing_known = (
+        amount_risked is not None
+        and amount_risked > 0
+        and unit_size is not None
+        and unit_size > 0
+    )
+    amount_won_lost = None
+    units_won_lost = None
+    if sizing_known and profit_per_dollar is not None:
+        amount_won_lost = float(amount_risked) * float(profit_per_dollar)
+        units_won_lost = float(amount_won_lost) / float(unit_size)
+
+    con = _connect()
+    con.execute(
+        """
+        UPDATE personal_wager_ledger
+        SET result = ?,
+            closing_line = COALESCE(?, closing_line),
+            closing_price = COALESCE(?, closing_price),
+            clv_points = COALESCE(?, clv_points),
+            clv_percent = COALESCE(?, clv_percent),
+            amount_won_lost = ?,
+            units_won_lost = ?,
+            settled_at_utc = ?
+        WHERE wager_id = ?
+          AND result = 'PENDING'
+        """,
+        [
+            bet_result,
+            closing_line,
+            closing_price,
+            clv_points,
+            clv_percent,
+            _round_money(amount_won_lost),
+            None if units_won_lost is None else round(float(units_won_lost), 4),
+            captured_at_utc,
+            wager["wager_id"],
+        ],
+    )
+    con.commit()
+    con.close()
+
+
+def run_personal_postgame_lifecycle(*, fetch_scores_fn: Optional[Any] = None) -> Dict[str, Any]:
+    _ensure_schema()
+    seeded = _seed_missing_personal_wagers_from_decisions()
+
+    if fetch_scores_fn is None:
+        def _default_fetch_scores(event_id: str) -> Optional[Dict[str, Any]]:
+            return None
+        fetch_scores_fn = _default_fetch_scores
+
+    con = _connect()
+    pending = con.execute(
+        """
+        SELECT *
+        FROM personal_wager_ledger
+        WHERE result = 'PENDING'
+        ORDER BY placed_at_utc ASC, id ASC
+        """
+    ).fetchall()
+    con.close()
+
+    settled = 0
+    skipped_not_final = 0
+    skipped_missing_score = 0
+    skipped_invalid_score = 0
+    errors: list[dict[str, Any]] = []
+
+    for wager in pending:
+        event_id = str(wager["event_id"] or "")
+        score_payload = fetch_scores_fn(event_id)
+        extracted = _extract_final_score(score_payload)
+        score_status = str(extracted.get("status") or "MISSING").upper()
+
+        if score_status == "NOT_FINAL":
+            skipped_not_final += 1
+            continue
+        if score_status == "MISSING":
+            skipped_missing_score += 1
+            continue
+        if score_status == "INVALID":
+            skipped_invalid_score += 1
+            continue
+
+        market = str(wager["market"] or "")
+        side = str(wager["side"] or "")
+        point = _to_float(wager["line"])
+        result = _derive_bet_result(
+            market=market,
+            side=side,
+            point=point,
+            away_score=int(extracted.get("finalAwayScore")),
+            home_score=int(extracted.get("finalHomeScore")),
+        )
+        if result is None:
+            skipped_invalid_score += 1
+            continue
+
+        captured_at_utc = _utc_now_iso()
+        closing_line = None
+        closing_price = None
+        clv_points = None
+        clv_percent = None
+
+        decision_id = str(wager["decision_id"] or "").strip()
+        if decision_id:
+            try:
+                outcome = append_outcome(
+                    {
+                        "decisionId": decision_id,
+                        "capturedAtUTC": captured_at_utc,
+                        "betResult": result,
+                        "finalAwayScore": int(extracted.get("finalAwayScore")),
+                        "finalHomeScore": int(extracted.get("finalHomeScore")),
+                        "sourceSnapshotId": extracted.get("sourceSnapshotId"),
+                    }
+                )
+                closing_line = _to_float(outcome.get("closingLine"))
+                closing_price = _to_float(outcome.get("closingPrice"))
+                if str(outcome.get("clvType") or "").upper() == "PERCENT":
+                    clv_percent = _to_float(outcome.get("clv"))
+                else:
+                    clv_points = _to_float(outcome.get("clv"))
+            except Exception as exc:
+                errors.append({"wagerId": wager["wager_id"], "eventId": event_id, "error": str(exc)})
+                continue
+
+        _apply_settlement_to_wager(
+            wager=wager,
+            bet_result=result,
+            captured_at_utc=captured_at_utc,
+            closing_line=closing_line,
+            closing_price=closing_price,
+            clv_points=clv_points,
+            clv_percent=clv_percent,
+        )
+        settled += 1
+
+    return {
+        "seeded": seeded,
+        "checked": len(pending),
+        "settled": settled,
+        "pending": len(pending) - settled - len(errors),
+        "skipped": {
+            "gameNotFinal": skipped_not_final,
+            "missingFinalScore": skipped_missing_score,
+            "invalidScore": skipped_invalid_score,
+        },
+        "errors": errors,
+    }
+
+
+def list_personal_wagers(limit: int = 500) -> List[Dict[str, Any]]:
+    _ensure_schema()
+    con = _connect()
+    rows = con.execute(
+        """
+        SELECT *
+        FROM personal_wager_ledger
+        ORDER BY placed_at_utc DESC, id DESC
+        LIMIT ?
+        """,
+        [int(limit)],
+    ).fetchall()
+    con.close()
+    return [_personal_wager_from_row(row) for row in rows]
+
+
+def get_personal_wager_dashboard(limit: int = 500) -> Dict[str, Any]:
+    wagers = list_personal_wagers(limit=limit)
+    settled = [w for w in wagers if str(w.get("result") or "").upper() in {"WIN", "LOSS", "PUSH"}]
+    pending = [w for w in wagers if str(w.get("result") or "").upper() == "PENDING"]
+
+    sized_settled = [
+        w for w in settled
+        if (w.get("amountRisked") is not None and float(w.get("amountRisked") or 0.0) > 0)
+    ]
+    sized_pending = [
+        w for w in pending
+        if (w.get("amountRisked") is not None and float(w.get("amountRisked") or 0.0) > 0)
+    ]
+
+    total_pl = round(sum(float(w.get("amountWonLost") or 0.0) for w in settled), 2)
+    total_units = round(sum(float(w.get("unitsWonLost") or 0.0) for w in settled), 4)
+    settled_risk = round(sum(float(w.get("amountRisked") or 0.0) for w in sized_settled), 2)
+    pending_exposure = round(sum(float(w.get("amountRisked") or 0.0) for w in sized_pending), 2)
+
+    wins = sum(1 for w in settled if str(w.get("result") or "").upper() == "WIN")
+    losses = sum(1 for w in settled if str(w.get("result") or "").upper() == "LOSS")
+    pushes = sum(1 for w in settled if str(w.get("result") or "").upper() == "PUSH")
+
+    clv_values = [
+        float(w.get("clvPoints"))
+        for w in wagers
+        if w.get("clvPoints") is not None
+    ]
+    average_clv_points = None if not clv_values else round(sum(clv_values) / len(clv_values), 4)
+
+    roi = None
+    if settled_risk > 0:
+        roi = round(total_pl / settled_risk, 6)
+
+    current_bankroll = round(PERSONAL_LEDGER_STARTING_BANKROLL + total_pl, 2)
+
+    return {
+        "startingBankroll": PERSONAL_LEDGER_STARTING_BANKROLL,
+        "unitSize": PERSONAL_LEDGER_DEFAULT_UNIT_SIZE,
+        "currentBankroll": current_bankroll,
+        "totalPL": total_pl,
+        "totalUnits": total_units,
+        "wins": wins,
+        "losses": losses,
+        "pushes": pushes,
+        "roi": roi,
+        "settledRisk": settled_risk,
+        "pendingExposure": pending_exposure,
+        "averageClvPoints": average_clv_points,
+        "unknownStakeCount": len([w for w in wagers if w.get("amountRisked") is None or w.get("unitsRisked") is None]),
+        "unknownStakePendingCount": len([w for w in pending if w.get("amountRisked") is None or w.get("unitsRisked") is None]),
+        "unknownStakeSettledCount": len([w for w in settled if w.get("amountRisked") is None or w.get("unitsRisked") is None]),
+        "count": len(wagers),
+        "settledCount": len(settled),
+        "pendingCount": len(pending),
+        "wagers": wagers,
     }
 
 

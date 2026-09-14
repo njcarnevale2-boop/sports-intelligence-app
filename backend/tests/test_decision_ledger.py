@@ -964,3 +964,439 @@ def test_official_postgame_lifecycle_ignores_non_official_decisions(tmp_path, mo
     )
     assert result["checked"] == 0
     assert result["settled"] == 0
+
+
+def _my_card_payload(event_id: str, *, market: str, side: str, point: float | None, price: float) -> dict:
+    return {
+        "season": 2026,
+        "week": 1,
+        "eventId": event_id,
+        "commenceTime": "2026-09-13T17:00:00+00:00",
+        "awayTeam": "NO",
+        "homeTeam": "ATL",
+        "selection": "TEST PICK",
+        "market": market,
+        "side": side,
+        "point": point,
+        "price": price,
+        "sportsbook": "DraftKings",
+        "siScore": 81.0,
+        "siGrade": "A-",
+        "modelProbability": 0.57,
+        "calibratedProbability": 0.59,
+        "impliedProbability": 0.52,
+        "rawEdge": 0.03,
+        "currentEV": 0.05,
+        "recommendation": "BET",
+    }
+
+
+def test_personal_wager_persistence_and_pending_bankroll_math(tmp_path, monkeypatch):
+    import app.services.decision_ledger as dl
+
+    monkeypatch.setattr(dl, "_DB_PATH", tmp_path / "ledger.db")
+
+    wager = dl.record_personal_wager_from_payload(
+        {
+            **_my_card_payload("evt-pending-1", market="spread", side="away", point=3.0, price=-110.0),
+            "amountRisked": 150.0,
+            "unitsRisked": 1.5,
+            "unitSizeAtBet": 100.0,
+        },
+        decision_id=None,
+        source_snapshot_id="snap-1",
+    )
+
+    assert wager["created"] is True
+    assert wager["result"] == "PENDING"
+    assert wager["amountRisked"] == 150.0
+    assert wager["unitsRisked"] == 1.5
+    assert wager["unitSizeAtBet"] == 100.0
+    assert wager["modelProbabilityAtBet"] == 0.57
+    assert wager["calibratedProbabilityAtBet"] == 0.59
+
+    dashboard = dl.get_personal_wager_dashboard()
+    assert dashboard["startingBankroll"] == 1000.0
+    assert dashboard["currentBankroll"] == 1000.0
+    assert dashboard["totalPL"] == 0.0
+    assert dashboard["totalUnits"] == 0.0
+    assert dashboard["roi"] is None
+    assert dashboard["pendingExposure"] == 150.0
+    assert dashboard["wins"] == 0
+    assert dashboard["losses"] == 0
+    assert dashboard["pushes"] == 0
+
+
+def test_personal_settlement_spread_moneyline_total_push_and_roi(tmp_path, monkeypatch):
+    import app.services.decision_ledger as dl
+
+    monkeypatch.setattr(dl, "_DB_PATH", tmp_path / "ledger.db")
+
+    spread_decision = dl.record_my_card_decision_from_payload(
+        _my_card_payload("evt-spread-win", market="spread", side="away", point=3.0, price=-110.0)
+    )
+    moneyline_decision = dl.record_my_card_decision_from_payload(
+        _my_card_payload("evt-ml-win", market="moneyline", side="home", point=None, price=150.0)
+    )
+    total_decision = dl.record_my_card_decision_from_payload(
+        _my_card_payload("evt-total-loss", market="total", side="over", point=44.5, price=-105.0)
+    )
+    push_decision = dl.record_my_card_decision_from_payload(
+        _my_card_payload("evt-total-push", market="total", side="over", point=44.0, price=-110.0)
+    )
+
+    dl.record_personal_wager_from_payload(
+        {**_my_card_payload("evt-spread-win", market="spread", side="away", point=3.0, price=-110.0), "amountRisked": 110.0},
+        decision_id=spread_decision["decisionId"],
+    )
+    dl.record_personal_wager_from_payload(
+        {**_my_card_payload("evt-ml-win", market="moneyline", side="home", point=None, price=150.0), "amountRisked": 100.0},
+        decision_id=moneyline_decision["decisionId"],
+    )
+    dl.record_personal_wager_from_payload(
+        {**_my_card_payload("evt-total-loss", market="total", side="over", point=44.5, price=-105.0), "amountRisked": 105.0},
+        decision_id=total_decision["decisionId"],
+    )
+    dl.record_personal_wager_from_payload(
+        {**_my_card_payload("evt-total-push", market="total", side="over", point=44.0, price=-110.0), "amountRisked": 100.0},
+        decision_id=push_decision["decisionId"],
+    )
+    dl.record_personal_wager_from_payload(
+        {**_my_card_payload("evt-pending-keep", market="spread", side="home", point=-2.5, price=-110.0), "amountRisked": 120.0},
+        decision_id=None,
+    )
+
+    with patch.object(dl, "append_outcome") as mocked_append_outcome:
+        def _fake_append(payload: dict):
+            decision_id = str(payload["decisionId"])
+            mapping = {
+                spread_decision["decisionId"]: {"betResult": "WIN", "closingLine": 2.5, "closingPrice": -110.0, "clv": 0.5, "clvType": "POINTS"},
+                moneyline_decision["decisionId"]: {"betResult": "WIN", "closingLine": None, "closingPrice": 140.0, "clv": None, "clvType": None},
+                total_decision["decisionId"]: {"betResult": "LOSS", "closingLine": 45.0, "closingPrice": -110.0, "clv": -0.5, "clvType": "POINTS"},
+                push_decision["decisionId"]: {"betResult": "PUSH", "closingLine": 44.0, "closingPrice": -110.0, "clv": 0.0, "clvType": "POINTS"},
+            }
+            out = mapping[decision_id]
+            return {
+                "decisionId": decision_id,
+                "betResult": out["betResult"],
+                "closingLine": out["closingLine"],
+                "closingPrice": out["closingPrice"],
+                "clv": out["clv"],
+                "clvType": out["clvType"],
+            }
+
+        mocked_append_outcome.side_effect = _fake_append
+
+        out = dl.run_personal_postgame_lifecycle(
+            fetch_scores_fn=lambda event_id: {
+                "evt-spread-win": {"status": "FINAL", "finalAwayScore": 24, "finalHomeScore": 20},
+                "evt-ml-win": {"status": "FINAL", "finalAwayScore": 17, "finalHomeScore": 21},
+                "evt-total-loss": {"status": "FINAL", "finalAwayScore": 20, "finalHomeScore": 24},
+                "evt-total-push": {"status": "FINAL", "finalAwayScore": 20, "finalHomeScore": 24},
+                "evt-pending-keep": None,
+            }.get(event_id)
+        )
+
+    assert out["settled"] == 4
+    assert out["skipped"]["missingFinalScore"] == 1
+
+    dashboard = dl.get_personal_wager_dashboard()
+    assert dashboard["wins"] == 2
+    assert dashboard["losses"] == 1
+    assert dashboard["pushes"] == 1
+    assert dashboard["pendingCount"] == 1
+    assert dashboard["pendingExposure"] == 120.0
+    assert dashboard["totalPL"] == 145.0
+    assert dashboard["totalUnits"] == 1.45
+    assert dashboard["currentBankroll"] == 1145.0
+    assert dashboard["settledRisk"] == 415.0
+    assert dashboard["roi"] == round(145.0 / 415.0, 6)
+    assert dashboard["averageClvPoints"] == pytest.approx(0.0, rel=1e-6)
+
+
+def test_personal_settlement_idempotent_and_immutable_recommendation_fields(tmp_path, monkeypatch):
+    import app.services.decision_ledger as dl
+
+    monkeypatch.setattr(dl, "_DB_PATH", tmp_path / "ledger.db")
+    decision = dl.record_my_card_decision_from_payload(
+        _my_card_payload("evt-idem", market="spread", side="away", point=3.0, price=-110.0)
+    )
+    dl.record_personal_wager_from_payload(
+        {**_my_card_payload("evt-idem", market="spread", side="away", point=3.0, price=-110.0), "amountRisked": 110.0},
+        decision_id=decision["decisionId"],
+    )
+
+    with patch.object(dl, "append_outcome", return_value={"decisionId": decision["decisionId"], "betResult": "WIN", "closingLine": 2.5, "closingPrice": -110.0, "clv": 0.5, "clvType": "POINTS"}):
+        first = dl.run_personal_postgame_lifecycle(
+            fetch_scores_fn=lambda event_id: {"status": "FINAL", "finalAwayScore": 21, "finalHomeScore": 17}
+        )
+        second = dl.run_personal_postgame_lifecycle(
+            fetch_scores_fn=lambda event_id: {"status": "FINAL", "finalAwayScore": 21, "finalHomeScore": 17}
+        )
+
+    assert first["settled"] == 1
+    assert second["settled"] == 0
+
+    wagers = dl.list_personal_wagers()
+    assert len(wagers) == 1
+    wager = wagers[0]
+    assert wager["result"] == "WIN"
+    assert wager["modelProbabilityAtBet"] == 0.57
+    assert wager["calibratedProbabilityAtBet"] == 0.59
+    assert wager["impliedProbabilityAtBet"] == 0.52
+
+
+def test_existing_my_card_decisions_are_discovered_and_settled(tmp_path, monkeypatch):
+    import app.services.decision_ledger as dl
+
+    monkeypatch.setattr(dl, "_DB_PATH", tmp_path / "ledger.db")
+    legacy_one = dl.record_my_card_decision_from_payload(
+        _my_card_payload("evt-legacy-1", market="spread", side="away", point=3.0, price=-110.0)
+    )
+    legacy_two = dl.record_my_card_decision_from_payload(
+        _my_card_payload("evt-legacy-2", market="total", side="under", point=45.0, price=-110.0)
+    )
+
+    with patch.object(dl, "append_outcome") as mocked_append_outcome:
+        def _fake_append(payload: dict):
+            return {
+                "decisionId": payload["decisionId"],
+                "betResult": "WIN" if payload["decisionId"] == legacy_one["decisionId"] else "LOSS",
+                "closingLine": 2.5,
+                "closingPrice": -110.0,
+                "clv": 0.25,
+                "clvType": "POINTS",
+            }
+
+        mocked_append_outcome.side_effect = _fake_append
+        out = dl.run_personal_postgame_lifecycle(
+            fetch_scores_fn=lambda event_id: {
+                "evt-legacy-1": {"status": "FINAL", "finalAwayScore": 24, "finalHomeScore": 20},
+                "evt-legacy-2": {"status": "FINAL", "finalAwayScore": 21, "finalHomeScore": 24},
+            }.get(event_id)
+        )
+
+    assert out["seeded"] == 2
+    assert out["settled"] == 2
+    dashboard = dl.get_personal_wager_dashboard()
+    assert dashboard["count"] == 2
+    assert dashboard["pendingCount"] == 0
+    assert dashboard["unknownStakeCount"] == 2
+    assert dashboard["unknownStakeSettledCount"] == 2
+    assert dashboard["settledRisk"] == 0.0
+    assert dashboard["roi"] is None
+    assert dashboard["totalPL"] == 0.0
+    assert dashboard["currentBankroll"] == 1000.0
+
+    wagers = dl.list_personal_wagers()
+    assert len(wagers) == 2
+    assert all(w["amountRisked"] is None for w in wagers)
+    assert all(w["unitsRisked"] is None for w in wagers)
+    assert {w["result"] for w in wagers} == {"WIN", "PUSH"}
+
+
+def test_ensure_schema_is_idempotent_and_preserves_existing_ledger_rows(tmp_path, monkeypatch):
+    import app.services.decision_ledger as dl
+
+    db_path = tmp_path / "ledger.db"
+    monkeypatch.setattr(dl, "_DB_PATH", db_path)
+
+    con = sqlite3.connect(str(db_path))
+    con.executescript(
+        """
+        CREATE TABLE decision_ledger (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            decision_id TEXT NOT NULL UNIQUE,
+            decision_group_id TEXT NOT NULL,
+            decision_version INTEGER NOT NULL,
+            supersedes_decision_id TEXT,
+            publication_type TEXT NOT NULL,
+            published_at_utc TEXT NOT NULL,
+            season INTEGER NOT NULL,
+            week INTEGER NOT NULL,
+            event_id TEXT NOT NULL,
+            commence_time TEXT,
+            away_team TEXT,
+            home_team TEXT,
+            selection TEXT NOT NULL,
+            market TEXT NOT NULL,
+            side TEXT,
+            point REAL,
+            price REAL,
+            sportsbook TEXT,
+            raw_probability REAL,
+            calibrated_probability REAL,
+            push_probability REAL,
+            loss_probability REAL,
+            raw_edge REAL,
+            calibrated_edge REAL,
+            current_ev REAL,
+            fair_line REAL,
+            true_playable_to REAL,
+            true_playable_to_status TEXT,
+            si_score REAL,
+            si_grade TEXT,
+            si_rank INTEGER,
+            recommendation TEXT,
+            qualification_status TEXT,
+            qualification_reasons_json TEXT,
+            model_version TEXT,
+            probability_engine_version TEXT,
+            calibration_version TEXT,
+            si_score_version TEXT,
+            ranking_version TEXT,
+            qualification_policy_version TEXT,
+            git_commit_hash TEXT,
+            odds_provider TEXT,
+            odds_timestamp TEXT,
+            model_timestamp TEXT,
+            market_timestamp TEXT,
+            source_snapshot_id TEXT,
+            payload_hash TEXT NOT NULL,
+            canonical_payload TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            recorded_at_utc TEXT NOT NULL
+        );
+
+        CREATE TABLE decision_outcomes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            outcome_id TEXT NOT NULL UNIQUE,
+            decision_id TEXT NOT NULL,
+            captured_at_utc TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            canonical_payload TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            recorded_at_utc TEXT NOT NULL
+        );
+
+        CREATE TABLE personal_wager_ledger (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            wager_id TEXT NOT NULL UNIQUE,
+            placed_at_utc TEXT NOT NULL,
+            event_id TEXT NOT NULL,
+            commence_time TEXT,
+            away_team TEXT,
+            home_team TEXT,
+            market TEXT,
+            side TEXT,
+            sportsbook TEXT,
+            line REAL,
+            american_odds REAL,
+            amount_risked REAL NOT NULL,
+            units_risked REAL NOT NULL,
+            unit_size_at_bet REAL NOT NULL,
+            decision_id TEXT,
+            source_snapshot_id TEXT,
+            sia_confidence_score REAL,
+            sia_tier TEXT,
+            model_probability_at_bet REAL,
+            calibrated_probability_at_bet REAL,
+            implied_probability_at_bet REAL,
+            edge_at_bet REAL,
+            ev_at_bet REAL,
+            opening_line REAL,
+            recommendation_line REAL,
+            closing_line REAL,
+            closing_price REAL,
+            clv_points REAL,
+            clv_percent REAL,
+            result TEXT NOT NULL DEFAULT 'PENDING',
+            amount_won_lost REAL,
+            units_won_lost REAL,
+            settled_at_utc TEXT,
+            recorded_at_utc TEXT NOT NULL
+        );
+
+        INSERT INTO decision_ledger (
+            decision_id,
+            decision_group_id,
+            decision_version,
+            publication_type,
+            published_at_utc,
+            season,
+            week,
+            event_id,
+            selection,
+            market,
+            payload_hash,
+            canonical_payload,
+            idempotency_key,
+            recorded_at_utc
+        ) VALUES (
+            'dec-existing',
+            'grp-existing',
+            1,
+            'MY_CARD',
+            '2026-09-13T17:00:00+00:00',
+            2026,
+            1,
+            'evt-existing',
+            'NO +3',
+            'spread',
+            'h1',
+            '{}',
+            'idem-existing',
+            '2026-09-13T17:00:00+00:00'
+        );
+
+        INSERT INTO decision_outcomes (
+            outcome_id,
+            decision_id,
+            captured_at_utc,
+            payload_hash,
+            canonical_payload,
+            idempotency_key,
+            recorded_at_utc
+        ) VALUES (
+            'out-existing',
+            'dec-existing',
+            '2026-09-13T23:00:00+00:00',
+            'h2',
+            '{}',
+            'idem-out-existing',
+            '2026-09-13T23:00:00+00:00'
+        );
+        """
+    )
+    con.commit()
+    con.close()
+
+    dl._ensure_schema()
+    dl._ensure_schema()
+
+    con = sqlite3.connect(str(db_path))
+    con.row_factory = sqlite3.Row
+    decision_count = con.execute("SELECT COUNT(*) AS c FROM decision_ledger WHERE decision_id = 'dec-existing'").fetchone()["c"]
+    outcome_count = con.execute("SELECT COUNT(*) AS c FROM decision_outcomes WHERE outcome_id = 'out-existing'").fetchone()["c"]
+    p_cols = {
+        str(row["name"]): int(row["notnull"])
+        for row in con.execute("PRAGMA table_info(personal_wager_ledger)").fetchall()
+    }
+    con.close()
+
+    assert decision_count == 1
+    assert outcome_count == 1
+    assert p_cols["amount_risked"] == 0
+    assert p_cols["units_risked"] == 0
+    assert p_cols["unit_size_at_bet"] == 0
+
+
+def test_personal_settlement_does_not_interfere_with_official_flow(tmp_path, monkeypatch):
+    import app.services.decision_ledger as dl
+
+    monkeypatch.setattr(dl, "_DB_PATH", tmp_path / "ledger.db")
+
+    official_payload = _decision_payload("evt-official-alone")
+    official_id = _post_decision(official_payload).json()["decisionId"]
+    assert _publish_official_slot(official_id, week=8).status_code == 200
+
+    out = dl.run_personal_postgame_lifecycle(
+        fetch_scores_fn=lambda event_id: {"status": "FINAL", "finalAwayScore": 17, "finalHomeScore": 24}
+    )
+    assert out["checked"] == 0
+    assert out["settled"] == 0
+
+    con = sqlite3.connect(str(tmp_path / "ledger.db"))
+    count = con.execute("SELECT COUNT(*) FROM decision_outcomes").fetchone()[0]
+    con.close()
+    assert count == 0

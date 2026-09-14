@@ -285,6 +285,10 @@ _EMPTY_STATE: Dict[str, Any] = {
     "shadowOutcomesAppended": 0,
     "shadowOutcomesStillPending": 0,
     "lastShadowOutcomeError": None,
+    "personalOutcomeChecked": 0,
+    "personalOutcomesSettled": 0,
+    "personalOutcomesStillPending": 0,
+    "lastPersonalOutcomeError": None,
     # Injury refresh stats (updated each run)
     "injuryPlayersUpdated": 0,
     "injuryTeamsUpdated": 0,
@@ -642,6 +646,23 @@ def _run_once(request_provenance: str = "SCHEDULER_AUTOMATION") -> bool:
             shadow_outcome_error = str(exc)[:300]
             log.warning("Shadow outcome append step failed (non-fatal): %s", exc)
 
+        # Step 3d: settle personal MY_CARD wagers (append-only + idempotent).
+        personal_outcomes: Dict[str, int] = {"checked": 0, "settled": 0, "pending": 0}
+        personal_outcome_error: Optional[str] = None
+        try:
+            from app.services.decision_ledger import run_personal_postgame_lifecycle
+
+            personal_outcomes = run_personal_postgame_lifecycle(fetch_scores_fn=_fetch_final_score_from_duckdb)
+            log.info(
+                "Personal wager lifecycle: checked=%d settled=%d pending=%d",
+                int(personal_outcomes.get("checked", 0)),
+                int(personal_outcomes.get("settled", 0)),
+                int(personal_outcomes.get("pending", 0)),
+            )
+        except Exception as exc:
+            personal_outcome_error = str(exc)[:300]
+            log.warning("Personal wager lifecycle step failed (non-fatal): %s", exc)
+
         # Step 4: refresh performance metrics after CLV capture (non-fatal).
         try:
             from app.services.performance import get_performance_service
@@ -679,6 +700,10 @@ def _run_once(request_provenance: str = "SCHEDULER_AUTOMATION") -> bool:
         state["shadowOutcomesAppended"] = int(shadow_outcomes.get("appended", 0))
         state["shadowOutcomesStillPending"] = int(shadow_outcomes.get("pending", 0))
         state["lastShadowOutcomeError"] = shadow_outcome_error
+        state["personalOutcomeChecked"] = int(personal_outcomes.get("checked", 0))
+        state["personalOutcomesSettled"] = int(personal_outcomes.get("settled", 0))
+        state["personalOutcomesStillPending"] = int(personal_outcomes.get("pending", 0))
+        state["lastPersonalOutcomeError"] = personal_outcome_error
 
         # Step 5: refresh injury data (non-fatal – never blocks odds refresh)
         try:
