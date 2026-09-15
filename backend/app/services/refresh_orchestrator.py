@@ -7,10 +7,13 @@ aggressive defaults are baked in.  Overlap is prevented by a threading.Lock;
 state is persisted to a JSON file so the admin dashboard survives restarts.
 
 Environment variables (all optional – defaults shown):
-  ODDS_REFRESH_OFFSEASON_MINS   360   far from any game
-    ODDS_REFRESH_GAMEWEEK_MINS    180   Mon-Sat during season, no games today
-    ODDS_REFRESH_GAMEDAY_MINS      60   a game is scheduled today
-    ODDS_REFRESH_NEARKICKOFF_MINS  20   within 3 h of any scheduled kickoff
+    ODDS_REFRESH_OFFSEASON_MINS      360   no active NFL week window
+    ODDS_REFRESH_ACTIVE_WEEK_MINS     60   active week and >24h to next kickoff
+    ODDS_REFRESH_WITHIN_24H_MINS      30   within 24h of next kickoff
+    ODDS_REFRESH_ACTIVE_SLATE_MINS    15   within 6h pre-kickoff through active slate
+    ODDS_ACTIVE_SLATE_PRE_HOURS        6   pre-kickoff near window for active slate
+    ODDS_ACTIVE_SLATE_POST_HOURS       6   post-kickoff active decision window
+    ODDS_ACTIVE_WEEK_LOOKAHEAD_HOURS 168   active week lookahead from now
   ODDS_QUOTA_PAUSE_THRESHOLD     20   stop refreshing below this
   ODDS_QUOTA_REDUCE_THRESHOLD    50   floor cadence at GAMEWEEK interval
   ODDS_QUOTA_SLOW_THRESHOLD     100   floor cadence at OFFSEASON interval
@@ -59,58 +62,137 @@ def _env_bool(name: str, default: bool) -> bool:
     return default
 
 
-MINS_OFFSEASON    = lambda: _env_int("ODDS_REFRESH_OFFSEASON_MINS",    360)
-MINS_GAMEWEEK     = lambda: _env_int("ODDS_REFRESH_GAMEWEEK_MINS",     180)
-MINS_GAMEDAY      = lambda: _env_int("ODDS_REFRESH_GAMEDAY_MINS",       60)
-MINS_NEARKICKOFF  = lambda: _env_int("ODDS_REFRESH_NEARKICKOFF_MINS",   20)
+MINS_OFFSEASON = lambda: _env_int("ODDS_REFRESH_OFFSEASON_MINS", 360)
+MINS_ACTIVE_WEEK = lambda: _env_int("ODDS_REFRESH_ACTIVE_WEEK_MINS", _env_int("ODDS_REFRESH_GAMEDAY_MINS", 60))
+MINS_WITHIN_24H = lambda: _env_int("ODDS_REFRESH_WITHIN_24H_MINS", 30)
+MINS_ACTIVE_SLATE = lambda: _env_int("ODDS_REFRESH_ACTIVE_SLATE_MINS", _env_int("ODDS_REFRESH_NEARKICKOFF_MINS", 15))
 QUOTA_PAUSE       = lambda: _env_int("ODDS_QUOTA_PAUSE_THRESHOLD",      20)
 QUOTA_REDUCE      = lambda: _env_int("ODDS_QUOTA_REDUCE_THRESHOLD",     50)
 QUOTA_SLOW        = lambda: _env_int("ODDS_QUOTA_SLOW_THRESHOLD",      100)
-NEAR_KICKOFF_HRS  = lambda: _env_int("ODDS_NEARKICKOFF_HOURS",           3)
+ACTIVE_SLATE_PRE_HOURS = lambda: _env_int("ODDS_ACTIVE_SLATE_PRE_HOURS", 6)
+ACTIVE_SLATE_POST_HOURS = lambda: _env_int("ODDS_ACTIVE_SLATE_POST_HOURS", 6)
+ACTIVE_WEEK_LOOKAHEAD_HOURS = lambda: _env_int("ODDS_ACTIVE_WEEK_LOOKAHEAD_HOURS", 168)
 ODDS_REFRESH_AUTOMATION_ENABLED = lambda: _env_bool("ODDS_REFRESH_AUTOMATION_ENABLED", False)
 PREGAME_AUTOMATION_ENABLED = lambda: _env_bool("PREGAME_AUTOMATION_ENABLED", False)
 PLAYER_PROP_COLLECTION_ENABLED = lambda: _env_bool("PLAYER_PROP_COLLECTION_ENABLED", False)
 
+_CADENCE_BUCKET_OFFSEASON = "OFFSEASON"
+_CADENCE_BUCKET_ACTIVE_WEEK = "ACTIVE_WEEK_GT_24H"
+_CADENCE_BUCKET_WITHIN_24H = "WITHIN_24H_TO_KICKOFF"
+_CADENCE_BUCKET_ACTIVE_SLATE = "ACTIVE_SLATE"
 
-def _determine_base_cadence_minutes_at(now_utc: datetime) -> int:
-    """Return cadence based on scheduled games in the projections CSV."""
-    today = now_utc.date()
 
+def _load_projection_kickoffs_utc() -> list[datetime]:
     try:
         import pandas as pd  # type: ignore
+
         if not _SCHEDULE_CSV.exists():
-            return MINS_OFFSEASON()
+            return []
         df = pd.read_csv(_SCHEDULE_CSV)
         if df.empty or "commence_time" not in df.columns:
-            return MINS_OFFSEASON()
+            return []
 
         kickoffs = pd.to_datetime(df["commence_time"], utc=True, errors="coerce").dropna()
         if kickoffs.empty:
-            return MINS_OFFSEASON()
+            return []
 
-        # Near-kickoff: any game starting within NEAR_KICKOFF_HRS hours
-        near_hrs = NEAR_KICKOFF_HRS()
-        near_window_end = now_utc + timedelta(hours=near_hrs)
-        if ((kickoffs >= now_utc) & (kickoffs <= near_window_end)).any():
-            return MINS_NEARKICKOFF()
-
-        # Game-day: any game today
-        if (kickoffs.dt.date == today).any():
-            return MINS_GAMEDAY()
-
-        # Game-week: any game this calendar week
-        week_end = today + timedelta(days=(6 - today.weekday()))
-        if ((kickoffs.dt.date >= today) & (kickoffs.dt.date <= week_end)).any():
-            return MINS_GAMEWEEK()
-
+        out: list[datetime] = []
+        seen: set[str] = set()
+        for ts in kickoffs:
+            dt = ts.to_pydatetime().astimezone(timezone.utc)
+            key = dt.isoformat()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(dt)
+        out.sort()
+        return out
     except Exception as exc:
         log.warning("Could not read schedule for cadence: %s", exc)
+        return []
 
-    return MINS_OFFSEASON()
+
+def _determine_base_cadence_context_at(now_utc: datetime) -> dict[str, Any]:
+    kickoffs = _load_projection_kickoffs_utc()
+    if not kickoffs:
+        return {
+            "bucket": _CADENCE_BUCKET_OFFSEASON,
+            "cadenceMinutes": MINS_OFFSEASON(),
+            "nextKickoffAt": None,
+            "hoursToNextKickoff": None,
+            "activeWeek": False,
+            "activeSlate": False,
+        }
+
+    future = [dt for dt in kickoffs if dt >= now_utc]
+    past = [dt for dt in kickoffs if dt < now_utc]
+    next_kickoff = future[0] if future else None
+    last_kickoff = past[-1] if past else None
+
+    lookahead = timedelta(hours=ACTIVE_WEEK_LOOKAHEAD_HOURS())
+    recent_window = timedelta(hours=ACTIVE_SLATE_POST_HOURS())
+    active_week = bool(
+        (next_kickoff is not None and (next_kickoff - now_utc) <= lookahead)
+        or (last_kickoff is not None and (now_utc - last_kickoff) <= recent_window)
+    )
+
+    pre = timedelta(hours=ACTIVE_SLATE_PRE_HOURS())
+    post = timedelta(hours=ACTIVE_SLATE_POST_HOURS())
+    active_slate = any((kickoff - pre) <= now_utc <= (kickoff + post) for kickoff in kickoffs)
+
+    if not active_week:
+        return {
+            "bucket": _CADENCE_BUCKET_OFFSEASON,
+            "cadenceMinutes": MINS_OFFSEASON(),
+            "nextKickoffAt": None if next_kickoff is None else next_kickoff.isoformat(),
+            "hoursToNextKickoff": None if next_kickoff is None else round((next_kickoff - now_utc).total_seconds() / 3600.0, 3),
+            "activeWeek": False,
+            "activeSlate": active_slate,
+        }
+
+    if active_slate:
+        return {
+            "bucket": _CADENCE_BUCKET_ACTIVE_SLATE,
+            "cadenceMinutes": MINS_ACTIVE_SLATE(),
+            "nextKickoffAt": None if next_kickoff is None else next_kickoff.isoformat(),
+            "hoursToNextKickoff": None if next_kickoff is None else round((next_kickoff - now_utc).total_seconds() / 3600.0, 3),
+            "activeWeek": True,
+            "activeSlate": True,
+        }
+
+    if next_kickoff is not None:
+        hours_to_next = (next_kickoff - now_utc).total_seconds() / 3600.0
+        if hours_to_next <= 24.0:
+            return {
+                "bucket": _CADENCE_BUCKET_WITHIN_24H,
+                "cadenceMinutes": MINS_WITHIN_24H(),
+                "nextKickoffAt": next_kickoff.isoformat(),
+                "hoursToNextKickoff": round(hours_to_next, 3),
+                "activeWeek": True,
+                "activeSlate": False,
+            }
+
+    return {
+        "bucket": _CADENCE_BUCKET_ACTIVE_WEEK,
+        "cadenceMinutes": MINS_ACTIVE_WEEK(),
+        "nextKickoffAt": None if next_kickoff is None else next_kickoff.isoformat(),
+        "hoursToNextKickoff": None if next_kickoff is None else round((next_kickoff - now_utc).total_seconds() / 3600.0, 3),
+        "activeWeek": True,
+        "activeSlate": False,
+    }
+
+
+def _determine_base_cadence_minutes_at(now_utc: datetime) -> int:
+    """Compatibility helper retained for call sites that only need minutes."""
+    return int(_determine_base_cadence_context_at(now_utc).get("cadenceMinutes") or MINS_OFFSEASON())
 
 
 def _determine_base_cadence_minutes() -> int:
     return _determine_base_cadence_minutes_at(datetime.now(timezone.utc))
+
+
+def _determine_base_cadence_context() -> dict[str, Any]:
+    return _determine_base_cadence_context_at(datetime.now(timezone.utc))
 
 
 def _quota_cap(base_minutes: int, quota: Optional[int]) -> Optional[int]:
@@ -120,7 +202,7 @@ def _quota_cap(base_minutes: int, quota: Optional[int]) -> Optional[int]:
     if quota <= QUOTA_PAUSE():
         return None  # paused
     if quota <= QUOTA_REDUCE():
-        return max(base_minutes, MINS_GAMEWEEK())
+        return max(base_minutes, MINS_ACTIVE_WEEK())
     if quota <= QUOTA_SLOW():
         return max(base_minutes, MINS_OFFSEASON())
     return base_minutes
@@ -257,8 +339,22 @@ def _run_pregame_automation_tick() -> Dict[str, Any]:
 # ── state persistence ───────────────────────────────────────────────────────
 _EMPTY_STATE: Dict[str, Any] = {
     "lastRefreshAt": None,
+    "lastSuccessAt": None,
     "lastAttemptAt": None,
     "nextRefreshAt": None,
+    "schedulerHeartbeatAt": None,
+    "schedulerRestartedAt": None,
+    "schedulerRestartCount": 0,
+    "selectedCadenceBucket": None,
+    "effectiveCadenceMinutes": None,
+    "overdueMinutes": None,
+    "schedulerHealth": "DISABLED",
+    "nextKickoffAt": None,
+    "hoursToNextKickoff": None,
+    "activeWeek": False,
+    "activeSlate": False,
+    "lastSchedulerException": None,
+    "lastSchedulerExceptionAt": None,
     "lastError": None,
     "isRunning": False,
     "cadenceMinutes": None,
@@ -474,29 +570,49 @@ def _normalize_disabled_scheduler_state(state: Dict[str, Any]) -> None:
 
 def _scheduler_iteration(now: Optional[datetime] = None) -> float:
     state = _read_state()
+    now_utc = now or datetime.now(timezone.utc)
+    state["schedulerHeartbeatAt"] = now_utc.isoformat()
     automation_enabled = bool(ODDS_REFRESH_AUTOMATION_ENABLED())
     state["oddsRefreshAutomationEnabled"] = automation_enabled
+    state["automationEnabled"] = automation_enabled
 
     if not automation_enabled:
         _normalize_disabled_scheduler_state(state)
+        state["selectedCadenceBucket"] = None
+        state["effectiveCadenceMinutes"] = None
+        state["overdueMinutes"] = None
+        state["schedulerHealth"] = "DISABLED"
         _write_state(state)
         return 300
 
     quota = state.get("quotaRemaining")
-    base = _determine_base_cadence_minutes()
+    base_ctx = _determine_base_cadence_context_at(now_utc)
+    base = int(base_ctx.get("cadenceMinutes") or MINS_OFFSEASON())
+    state["selectedCadenceBucket"] = base_ctx.get("bucket")
+    state["nextKickoffAt"] = base_ctx.get("nextKickoffAt")
+    state["hoursToNextKickoff"] = base_ctx.get("hoursToNextKickoff")
+    state["activeWeek"] = bool(base_ctx.get("activeWeek"))
+    state["activeSlate"] = bool(base_ctx.get("activeSlate"))
     effective = _quota_cap(base, quota)
     state["cadenceMinutes"] = effective
+    state["effectiveCadenceMinutes"] = effective
 
     if effective is None:
         log.warning("Odds quota at or below pause threshold – refresh suspended")
         state["nextRefreshAt"] = None
+        state["overdueMinutes"] = None
+        state["schedulerHealth"] = "HEALTHY"
         _write_state(state)
         return 300
 
-    now_utc = now or datetime.now(timezone.utc)
     next_dt = _next_refresh_dt(state, now_utc, effective)
 
     state["nextRefreshAt"] = next_dt.isoformat()
+    overdue_minutes = 0.0
+    if now_utc > next_dt:
+        overdue_minutes = round((now_utc - next_dt).total_seconds() / 60.0, 3)
+    state["overdueMinutes"] = overdue_minutes
+    state["schedulerHealth"] = "OVERDUE" if overdue_minutes > 0.0 else "HEALTHY"
     _write_state(state)
 
     if now_utc >= next_dt:
@@ -682,9 +798,11 @@ def _run_once(request_provenance: str = "SCHEDULER_AUTOMATION") -> bool:
 
         state = _read_state()
         state["lastRefreshAt"] = started.isoformat()
+        state["lastSuccessAt"] = started.isoformat()
         state["lastAttemptAt"] = started.isoformat()
         state["lastError"] = None
         state["consecutiveFailures"] = 0
+        state["schedulerHealth"] = "HEALTHY"
         state["closingCaptureLastRun"] = datetime.now(timezone.utc).isoformat()
         state["closingCaptureEligible"] = clv_counts["eligible"]
         state["closingLinesCapturedThisRun"] = clv_counts["captured"]
@@ -793,6 +911,7 @@ def _run_once(request_provenance: str = "SCHEDULER_AUTOMATION") -> bool:
         state["lastAttemptAt"] = started.isoformat()
         state["lastError"] = str(exc)[:500]
         state["consecutiveFailures"] = int(state.get("consecutiveFailures") or 0) + 1
+        state["schedulerHealth"] = "ERROR"
         state["lastRefreshCompleted"] = False
         state["lastRefreshOverallElapsedSeconds"] = round((datetime.now(timezone.utc) - started).total_seconds(), 3)
         state["lastRefreshFinishedAt"] = datetime.now(timezone.utc).isoformat()
@@ -930,6 +1049,16 @@ def _log_captured_records() -> None:
 # ── scheduler loop ──────────────────────────────────────────────────────────
 _scheduler_started = False
 _scheduler_lock = threading.Lock()
+_scheduler_thread: Optional[threading.Thread] = None
+_watchdog_thread: Optional[threading.Thread] = None
+
+
+def _record_scheduler_exception(exc: Exception) -> None:
+    state = _read_state()
+    state["lastSchedulerException"] = str(exc)[:500]
+    state["lastSchedulerExceptionAt"] = datetime.now(timezone.utc).isoformat()
+    state["schedulerHealth"] = "ERROR"
+    _write_state(state)
 
 
 def _scheduler_loop() -> None:
@@ -942,21 +1071,58 @@ def _scheduler_loop() -> None:
 
         except Exception as exc:
             log.error("Scheduler loop error: %s", exc)
+            _record_scheduler_exception(exc)
             import time
             time.sleep(60)
 
 
-def start_scheduler() -> None:
-    """Start the background scheduler thread (idempotent)."""
-    global _scheduler_started
-    with _scheduler_lock:
-        if _scheduler_started:
-            return
-        _scheduler_started = True
-
+def _start_scheduler_thread_locked() -> None:
+    global _scheduler_thread, _scheduler_started
     t = threading.Thread(target=_scheduler_loop, name="odds-refresh-scheduler", daemon=True)
     t.start()
-    log.info("Odds refresh scheduler started")
+    _scheduler_thread = t
+    _scheduler_started = True
+    state = _read_state()
+    state["schedulerHeartbeatAt"] = datetime.now(timezone.utc).isoformat()
+    state["schedulerHealth"] = "HEALTHY" if bool(ODDS_REFRESH_AUTOMATION_ENABLED()) else "DISABLED"
+    _write_state(state)
+
+
+def _scheduler_watchdog_loop() -> None:
+    import time
+
+    while True:
+        try:
+            with _scheduler_lock:
+                thread_alive = _scheduler_thread is not None and _scheduler_thread.is_alive()
+                if not thread_alive:
+                    state = _read_state()
+                    state["schedulerRestartCount"] = int(state.get("schedulerRestartCount") or 0) + 1
+                    state["schedulerRestartedAt"] = datetime.now(timezone.utc).isoformat()
+                    state["schedulerHealth"] = "ERROR"
+                    state["lastSchedulerException"] = "Scheduler thread was not alive; watchdog restarted it."
+                    state["lastSchedulerExceptionAt"] = datetime.now(timezone.utc).isoformat()
+                    _write_state(state)
+                    _start_scheduler_thread_locked()
+        except Exception as exc:
+            log.error("Scheduler watchdog error: %s", exc)
+            _record_scheduler_exception(exc)
+
+        time.sleep(30)
+
+
+def start_scheduler() -> None:
+    """Start the background scheduler thread (idempotent)."""
+    global _watchdog_thread
+    with _scheduler_lock:
+        if _scheduler_thread is None or not _scheduler_thread.is_alive():
+            _start_scheduler_thread_locked()
+            log.info("Odds refresh scheduler started")
+
+        if _watchdog_thread is None or not _watchdog_thread.is_alive():
+            _watchdog_thread = threading.Thread(target=_scheduler_watchdog_loop, name="odds-refresh-watchdog", daemon=True)
+            _watchdog_thread.start()
+            log.info("Odds refresh scheduler watchdog started")
 
 
 # ── public API ───────────────────────────────────────────────────────────────
@@ -976,7 +1142,15 @@ def trigger_now(request_provenance: str = "MANUAL_REFRESH") -> Dict[str, Any]:
         "triggered": True,
         "success": success,
         "oddsRefreshAutomationEnabled": bool(state.get("oddsRefreshAutomationEnabled", ODDS_REFRESH_AUTOMATION_ENABLED())),
+        "automationEnabled": bool(state.get("oddsRefreshAutomationEnabled", ODDS_REFRESH_AUTOMATION_ENABLED())),
         "lastRefreshAt": state.get("lastRefreshAt"),
+        "lastSuccessAt": state.get("lastSuccessAt") or state.get("lastRefreshAt"),
+        "lastAttemptAt": state.get("lastAttemptAt"),
+        "schedulerHeartbeatAt": state.get("schedulerHeartbeatAt"),
+        "selectedCadenceBucket": state.get("selectedCadenceBucket"),
+        "effectiveCadenceMinutes": state.get("effectiveCadenceMinutes"),
+        "overdueMinutes": state.get("overdueMinutes"),
+        "schedulerHealth": state.get("schedulerHealth"),
         "lastError": state.get("lastError"),
         "quotaRemaining": state.get("quotaRemaining"),
         "closingCaptureLastRun": state.get("closingCaptureLastRun"),
@@ -1029,24 +1203,75 @@ def trigger_now(request_provenance: str = "MANUAL_REFRESH") -> Dict[str, Any]:
 def get_refresh_status() -> Dict[str, Any]:
     """Return current scheduler status for the admin dashboard."""
     state = _read_state()
+    now_utc = datetime.now(timezone.utc)
     automation_enabled = bool(state.get("oddsRefreshAutomationEnabled", ODDS_REFRESH_AUTOMATION_ENABLED()))
     if not automation_enabled:
         _normalize_disabled_scheduler_state(state)
+        state["schedulerHealth"] = "DISABLED"
     quota = state.get("quotaRemaining")
-    base = _determine_base_cadence_minutes() if automation_enabled else None
+    base_ctx = _determine_base_cadence_context() if automation_enabled else None
+    base = int((base_ctx or {}).get("cadenceMinutes") or 0) if automation_enabled else None
     effective = _quota_cap(base, quota) if base is not None else None
+
+    next_refresh_dt = _parse_state_dt(state.get("nextRefreshAt"))
+    overdue_minutes = None
+    if automation_enabled and effective is not None and next_refresh_dt is not None and now_utc > next_refresh_dt:
+        overdue_minutes = round((now_utc - next_refresh_dt).total_seconds() / 60.0, 3)
+    elif automation_enabled and effective is not None:
+        overdue_minutes = 0.0
+
+    thread_alive = bool(_scheduler_thread is not None and _scheduler_thread.is_alive())
+    scheduler_initialized = bool(_scheduler_started)
+    if not automation_enabled:
+        scheduler_health = "DISABLED"
+    elif bool(state.get("isRunning")):
+        scheduler_health = "RUNNING"
+    elif state.get("lastSchedulerException"):
+        scheduler_health = "ERROR"
+    elif overdue_minutes is not None and overdue_minutes > 0.0:
+        scheduler_health = "OVERDUE"
+    elif not scheduler_initialized or not thread_alive:
+        scheduler_health = "ERROR"
+    elif state.get("lastError") and int(state.get("consecutiveFailures") or 0) > 0:
+        scheduler_health = "ERROR"
+    else:
+        scheduler_health = "HEALTHY"
+
+    selected_bucket = state.get("selectedCadenceBucket") or (base_ctx or {}).get("bucket")
+    next_kickoff_at = state.get("nextKickoffAt") or (base_ctx or {}).get("nextKickoffAt")
+    hours_to_next_kickoff = state.get("hoursToNextKickoff")
+    if hours_to_next_kickoff is None:
+        hours_to_next_kickoff = (base_ctx or {}).get("hoursToNextKickoff")
 
     return {
         "lastRefreshAt": state.get("lastRefreshAt"),
+        "lastSuccessAt": state.get("lastSuccessAt") or state.get("lastRefreshAt"),
+        "lastAttemptAt": state.get("lastAttemptAt"),
         "nextRefreshAt": state.get("nextRefreshAt"),
         "cadenceMinutes": effective,
+        "effectiveCadenceMinutes": effective,
+        "selectedCadenceBucket": selected_bucket,
+        "overdueMinutes": overdue_minutes,
+        "schedulerHeartbeatAt": state.get("schedulerHeartbeatAt"),
+        "schedulerInitialized": scheduler_initialized,
+        "schedulerThreadAlive": thread_alive,
+        "schedulerHealth": scheduler_health,
+        "nextKickoffAt": next_kickoff_at,
+        "hoursToNextKickoff": hours_to_next_kickoff,
+        "activeWeek": bool(state.get("activeWeek") if state.get("activeWeek") is not None else (base_ctx or {}).get("activeWeek")),
+        "activeSlate": bool(state.get("activeSlate") if state.get("activeSlate") is not None else (base_ctx or {}).get("activeSlate")),
         "isRunning": bool(state.get("isRunning")),
         "lastError": state.get("lastError"),
+        "lastSchedulerException": state.get("lastSchedulerException"),
+        "lastSchedulerExceptionAt": state.get("lastSchedulerExceptionAt"),
+        "schedulerRestartedAt": state.get("schedulerRestartedAt"),
+        "schedulerRestartCount": int(state.get("schedulerRestartCount") or 0),
         "consecutiveFailures": int(state.get("consecutiveFailures") or 0),
         "quotaRemaining": quota,
         "quotaPaused": automation_enabled and effective is None,
         "provider": "The Odds API",
         "oddsRefreshAutomationEnabled": automation_enabled,
+        "automationEnabled": automation_enabled,
         "oddsRefreshAutomationState": "ENABLED" if automation_enabled else "DISABLED",
         "historicalLastError": state.get("historicalLastError"),
         "historicalConsecutiveFailures": int(state.get("historicalConsecutiveFailures") or 0),
