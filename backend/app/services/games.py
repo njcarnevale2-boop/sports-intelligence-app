@@ -158,7 +158,6 @@ class GamesService:
         self._schedule_context_cache: Dict[Tuple[str, str, str], Tuple[int, int]] = {}
         self._schedule_context_mtime: Optional[float] = None
         self._schedule_context_path: Optional[str] = None
-        self._opportunities_cache: Dict[Tuple[Optional[float], Optional[Tuple[str, ...]]], Dict[str, Dict[str, Any]]] = {}
 
     def list_games(self, week: Optional[int] = None, game_date: Optional[str] = None) -> Dict[str, Any]:
         market_meta = market_data_service.metadata()
@@ -244,6 +243,9 @@ class GamesService:
         available_weeks = sorted({int(item["week"]) for item in candidate_rows if item.get("week") is not None})
         available_weeks, default_week = _merge_default_week(available_weeks, canonical_week)
         available_dates = sorted({item["gameDate"] for item in candidate_rows if item.get("gameDate")})
+        resolved_week = week if week is not None else default_week
+        resolved_week_rows = [item for item in candidate_rows if item.get("week") == resolved_week]
+        week_scheduled_games = len({item["eventId"] for item in resolved_week_rows})
 
         if week is not None:
             candidate_rows = [item for item in candidate_rows if item.get("week") == week]
@@ -265,7 +267,14 @@ class GamesService:
                 "lastUpdated": market_meta["lastUpdated"],
             }
 
-        opportunities_lookup = self._load_best_opportunities_lookup({item["eventId"] for item in candidate_rows})
+        opportunities_lookup = self._load_best_opportunities_lookup(
+            resolved_week=resolved_week,
+            event_ids={item["eventId"] for item in candidate_rows},
+            available_weeks=available_weeks,
+            canonical_week=canonical_week,
+            week_readiness=week_readiness,
+            week_scheduled_games=week_scheduled_games,
+        )
         market_lookup = market_data_service.all_event_snapshots()
 
         rows: List[Dict[str, Any]] = []
@@ -283,20 +292,22 @@ class GamesService:
             sports_score = enrichment.get("sportsIntelligenceScore") if enrichment else None
             market_snapshot = market_lookup.get(event_id, {})
 
-            qualification_status = "QUALIFIED" if enrichment else "NOT_QUALIFIED"
-            bet_status = "NO QUALIFIED BET"
-            qualification_reasons = ["Current edge and confidence do not meet SIA qualification thresholds."]
+            current_qualification = enrichment.get("currentQualification") if enrichment else None
             recommendation_label = enrichment.get("recommendationLabel") if enrichment else None
+            qualification_status = str((current_qualification or {}).get("status") or "NOT_QUALIFIED") if enrichment else "NOT_QUALIFIED"
+            qualification_reasons = enrichment.get("qualificationReasons") if enrichment else None
+            if not isinstance(qualification_reasons, list) or not qualification_reasons:
+                qualification_reasons = ["Current edge and confidence do not meet SIA qualification thresholds."]
 
+            bet_status = "NO QUALIFIED BET"
             if enrichment:
-                recommendation_upper = str(recommendation_label or "").upper()
+                recommendation_upper = str(recommendation_label or enrichment.get("recommendation") or "").upper()
                 if "STRONG" in recommendation_upper or "ELITE" in recommendation_upper:
                     bet_status = "STRONG BET"
                 elif "LEAN" in recommendation_upper:
                     bet_status = "LEAN"
                 else:
                     bet_status = "QUALIFIED"
-                qualification_reasons = ["Current model edge and confidence meet SIA qualification thresholds."]
             elif market_snapshot.get("booksTracked", 0) == 0:
                 qualification_status = "INSUFFICIENT_DATA"
                 bet_status = "INSUFFICIENT DATA"
@@ -355,6 +366,11 @@ class GamesService:
                     "qualificationStatus": qualification_status,
                     "qualificationReasons": qualification_reasons,
                     "betStatus": bet_status,
+                    "originalCandidate": enrichment.get("originalCandidate") if enrichment else None,
+                    "currentExecution": enrichment.get("currentExecution") if enrichment else None,
+                    "currentQualification": current_qualification if enrichment else None,
+                    "executionDrift": enrichment.get("executionDrift") if enrichment else None,
+                    "productionRank": enrichment.get("productionRank") if enrichment else None,
                 }
             )
 
@@ -445,171 +461,70 @@ class GamesService:
         inferred_week = max(1, ((kickoff - season_start).days // 7) + 1)
         return season, inferred_week
 
-    def _load_best_opportunities_lookup(self, event_ids: Optional[set[str]] = None) -> Dict[str, Dict[str, Any]]:
-        if not RANKED_BET_BOARD.exists():
-            return {}
-
-        try:
-            modified_time = RANKED_BET_BOARD.stat().st_mtime
-        except OSError:
-            modified_time = None
-
-        normalized_ids: Optional[Tuple[str, ...]] = None
-        if event_ids is not None:
-            normalized_ids = tuple(sorted(str(event_id) for event_id in event_ids if str(event_id).strip()))
-
-        cache_key = (modified_time, normalized_ids)
-        cached_lookup = self._opportunities_cache.get(cache_key)
-        if cached_lookup is not None:
-            return cached_lookup
-
-        try:
-            board_df = pd.read_csv(RANKED_BET_BOARD)
-        except (OSError, pd.errors.EmptyDataError):
-            return {}
-
-        required_cols = {
-            "api_event_id",
-            "rank",
-            "market",
-            "side",
-            "point",
-            "price",
-            "edge_pp",
-            "ev_per_dollar",
-            "confidence_score",
-            "data_completeness",
-        }
-        if board_df.empty or not required_cols.issubset(set(board_df.columns)):
-            return {}
-
-        board_df = board_df.copy()
-        board_df["api_event_id"] = board_df["api_event_id"].astype(str)
-        board_df = board_df[board_df["market"].astype(str).str.strip().str.lower().isin(["spread", "spreads"])]
-        if event_ids is not None:
-            event_ids = {str(event_id) for event_id in event_ids}
-            board_df = board_df[board_df["api_event_id"].isin(event_ids)]
-        if board_df.empty:
-            self._opportunities_cache[cache_key] = {}
-            return {}
-
-        board_df = board_df.sort_values("rank")
-        best_rows_by_event: List[Tuple[str, pd.Series, pd.DataFrame, pd.Series]] = []
-        selection_keys: set[Tuple[str, str, str]] = set()
-        for event_id, group in board_df.groupby("api_event_id", sort=False):
-            best_ranked = group.iloc[0]
-            market = str(best_ranked.get("market", "")).strip().lower()
-            side = str(best_ranked.get("side", "")).strip().lower()
-
-            current_execution = self._select_current_execution_for_candidate(
-                event_id=str(event_id),
-                market=market,
-                side=side,
-            )
-            if current_execution is None:
-                continue
-
-            best = best_ranked.copy()
-            best["sportsbook"] = current_execution.get("sportsbook")
-            best["point"] = current_execution.get("point")
-            best["price"] = current_execution.get("price")
-
-            best_rows_by_event.append((event_id, best, group, current_execution))
-            selection_keys.add((str(event_id), market, side))
-
-        lookup_event_ids = {event_id for event_id, _, _, _ in best_rows_by_event}
-        market_intelligence_lookup = build_market_intelligence_lookup(
-            event_ids=lookup_event_ids,
-            selection_keys=selection_keys,
-        )
-
-        output: Dict[str, Dict[str, Any]] = {}
-        for event_id, best, group, current_execution in best_rows_by_event:
-            market = str(best.get("market", "")).strip().lower()
-            side = str(best.get("side", "")).strip().lower()
-
-            market_intelligence = market_intelligence_lookup.get(
-                (str(event_id), normalize_market(market), str(side).lower()),
-                {},
-            )
-            if market_intelligence.get("booksTracked", 0) == 0:
-                market_intelligence_payload: Optional[Dict[str, Any]] = None
-            else:
-                market_intelligence_payload = market_intelligence
-
-
-            score_payload = calculate_sports_intelligence_score(
-                opportunity={
-                    "edge": float(best.get("edge_pp", 0.0)) * 100.0,
-                    "evPerDollar": float(best.get("ev_per_dollar", 0.0)),
-                    "confidence": float(best.get("confidence_score", 0.0)),
-                    "dataCompleteness": float(best.get("data_completeness", 0.0)) * 100.0,
-                },
-                market_intelligence=market_intelligence,
-            )
-
-            moneyline = self._extract_moneyline(group)
-
-            output[event_id] = {
-                "bestOpportunity": self._format_best_opportunity(best),
-                "bestOpportunityDetail": {
-                    "market": market,
-                    "side": side,
-                    "pick": self._format_best_opportunity(best),
-                    "point": safe_float(current_execution.get("point")),
-                    "price": safe_float(current_execution.get("price")),
-                    "sportsbook": str(current_execution.get("sportsbook", "")).strip() or None,
-                },
-                "recommendationLabel": str(best.get("recommendation", "")).strip() or None,
-                "sportsIntelligenceScore": float(score_payload.get("score", 0.0)),
-                "marketIntelligence": market_intelligence_payload,
-                "moneyline": moneyline,
-            }
-        self._opportunities_cache[cache_key] = output
-        return output
-
-    def _select_current_execution_for_candidate(
+    def _load_best_opportunities_lookup(
         self,
         *,
-        event_id: str,
-        market: str,
-        side: str,
-    ) -> Optional[pd.Series]:
-        records = market_data_service.records_for_event(event_id)
-        now_utc = datetime.now(timezone.utc)
-        rows: list[dict[str, Any]] = []
-        for record in records:
-            if normalize_market(record.get("market")) != normalize_market(market):
+        resolved_week: int,
+        event_ids: Optional[set[str]] = None,
+        available_weeks: Optional[list[int]] = None,
+        canonical_week: Optional[dict[str, Any]] = None,
+        week_readiness: Optional[dict[str, Any]] = None,
+        week_scheduled_games: Optional[int] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        if not event_ids:
+            return {}
+        output: Dict[str, Dict[str, Any]] = {}
+
+        from app.routes.opportunities import _get_opportunities_payload
+
+        payload = _get_opportunities_payload(
+            limit=max(100, len(event_ids)),
+            best_lines_only=True,
+            include_experimental=False,
+            week=resolved_week,
+            available_weeks_override=available_weeks or [resolved_week],
+            canonical_week_override=canonical_week or {"week": resolved_week},
+            week_readiness_override=week_readiness or {},
+            week_event_ids_override={str(event_id) for event_id in event_ids},
+            week_scheduled_games_override=week_scheduled_games if week_scheduled_games is not None else len(event_ids),
+        )
+
+        for opportunity in payload.get("opportunities") or []:
+            event_id = str(opportunity.get("eventId") or "")
+            if not event_id:
                 continue
-            if str(record.get("side") or "").strip().lower() != str(side or "").strip().lower():
-                continue
 
-            sportsbook = str(record.get("sportsbook") or "").strip()
-            if not sportsbook:
-                continue
-
-            canonical = resolve_canonical_sportsbook(sportsbook)
-            if not bool(canonical.get("actionableAllowed")):
-                continue
-
-            age_minutes = _quote_age_minutes(record.get("lastUpdated"), now_utc=now_utc)
-            if age_minutes is None or age_minutes > float(CURRENT_ACTIONABLE_MAX_ODDS_AGE_MINUTES):
-                continue
-
-            rows.append(
-                {
-                    "sportsbook": sportsbook,
-                    "point": safe_float(record.get("point")),
-                    "price": safe_float(record.get("americanOdds")),
-                    "quoteLastUpdated": record.get("lastUpdated"),
-                }
-            )
-
-        if not rows:
-            return None
-
-        selected = select_best_line_row(pd.DataFrame(rows))
-        return selected
+            sports_score = opportunity.get("sportsIntelligenceScore") or {}
+            output[event_id] = {
+                "bestOpportunity": opportunity.get("pick"),
+                "bestOpportunityDetail": {
+                    "market": opportunity.get("market"),
+                    "side": opportunity.get("side"),
+                    "pick": opportunity.get("pick"),
+                    "point": opportunity.get("point"),
+                    "price": opportunity.get("price"),
+                    "sportsbook": opportunity.get("book"),
+                    "currentExecution": opportunity.get("currentExecution"),
+                    "currentQualification": opportunity.get("currentQualification"),
+                    "originalCandidate": opportunity.get("originalCandidate"),
+                    "executionDrift": opportunity.get("executionDrift"),
+                    "productionRank": opportunity.get("productionRank"),
+                    "recommendation": opportunity.get("recommendation"),
+                    "qualificationStatus": opportunity.get("qualificationStatus"),
+                },
+                "recommendationLabel": opportunity.get("recommendation"),
+                "qualificationReasons": opportunity.get("qualificationReasons"),
+                "qualificationStatus": (opportunity.get("currentQualification") or {}).get("status") or opportunity.get("qualificationStatus"),
+                "sportsIntelligenceScore": None if not sports_score else float(sports_score.get("score", 0.0)),
+                "marketIntelligence": opportunity.get("marketIntelligence"),
+                "moneyline": None,
+                "originalCandidate": opportunity.get("originalCandidate"),
+                "currentExecution": opportunity.get("currentExecution"),
+                "currentQualification": opportunity.get("currentQualification"),
+                "executionDrift": opportunity.get("executionDrift"),
+                "productionRank": opportunity.get("productionRank"),
+            }
+        return output
 
     def _extract_moneyline(self, event_rows: pd.DataFrame) -> Optional[Dict[str, float]]:
         event_rows = filter_current_market_sportsbook_rows(event_rows)

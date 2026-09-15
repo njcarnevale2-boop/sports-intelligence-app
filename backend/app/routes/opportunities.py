@@ -1651,10 +1651,7 @@ def _prepare_current_execution_row(original_row: pd.Series, selected_execution_r
 # ---------------------------------------------------------
 
 
-@router.get(
-    "/opportunities"
-)
-def get_opportunities(
+def _get_opportunities_payload(
     limit: int = Query(
         default=100,
         ge=1,
@@ -1663,29 +1660,50 @@ def get_opportunities(
     best_lines_only: bool = True,
     include_experimental: bool = False,
     week: int | None = Query(default=None),
+    *,
+    available_weeks_override: list[int] | None = None,
+    canonical_week_override: dict[str, Any] | None = None,
+    week_readiness_override: dict[str, Any] | None = None,
+    week_event_ids_override: set[str] | None = None,
+    week_scheduled_games_override: int | None = None,
 ):
-    from app.services.games import service as games_service
-
     market_meta = market_data_service.metadata()
     if RANKED_BET_BOARD.exists():
         df = pd.read_csv(RANKED_BET_BOARD)
     else:
         df = pd.DataFrame()
 
-    # Resolve week: default to first available week when no week param given
-    all_games_payload = games_service.list_games()
-    available_weeks: list[int] = all_games_payload.get("availableWeeks", [])
-    canonical_week = resolve_canonical_week_metadata()
-    week_readiness = build_week_readiness(canonical=canonical_week)
-    canonical_default_week = safe_int(canonical_week.get("week"))
-    resolved_week: int = week if week is not None else (
-        canonical_default_week if canonical_default_week is not None else (available_weeks[0] if available_weeks else 1)
-    )
+    if (
+        available_weeks_override is None
+        or canonical_week_override is None
+        or week_readiness_override is None
+        or week_event_ids_override is None
+        or week_scheduled_games_override is None
+    ):
+        from app.services.games import service as games_service
 
-    # Filter to only eventIds belonging to the resolved week
-    week_games_payload = games_service.list_games(week=resolved_week)
-    week_event_ids: set[str] = {g["eventId"] for g in week_games_payload.get("games", [])}
-    week_scheduled_games: int = len(week_event_ids)
+        all_games_payload = games_service.list_games()
+        available_weeks: list[int] = all_games_payload.get("availableWeeks", [])
+        canonical_week = resolve_canonical_week_metadata()
+        week_readiness = build_week_readiness(canonical=canonical_week)
+        canonical_default_week = safe_int(canonical_week.get("week"))
+        resolved_week: int = week if week is not None else (
+            canonical_default_week if canonical_default_week is not None else (available_weeks[0] if available_weeks else 1)
+        )
+
+        week_games_payload = games_service.list_games(week=resolved_week)
+        week_event_ids: set[str] = {g["eventId"] for g in week_games_payload.get("games", [])}
+        week_scheduled_games: int = len(week_event_ids)
+    else:
+        available_weeks = list(available_weeks_override)
+        canonical_week = dict(canonical_week_override)
+        week_readiness = dict(week_readiness_override)
+        canonical_default_week = safe_int(canonical_week.get("week"))
+        resolved_week = week if week is not None else (
+            canonical_default_week if canonical_default_week is not None else (available_weeks[0] if available_weeks else 1)
+        )
+        week_event_ids = {str(event_id) for event_id in week_event_ids_override}
+        week_scheduled_games = int(week_scheduled_games_override)
 
     if not df.empty and "api_event_id" in df.columns:
         df["api_event_id"] = df["api_event_id"].astype(str)
@@ -2035,6 +2053,27 @@ def get_opportunities(
         "qualificationPolicyVersion": settings.DEFAULT_QUALIFICATION_POLICY_VERSION,
         "opportunities": best_rows,
     }
+
+
+@router.get(
+    "/opportunities"
+)
+def get_opportunities(
+    limit: int = Query(
+        default=100,
+        ge=1,
+        le=500,
+    ),
+    best_lines_only: bool = True,
+    include_experimental: bool = False,
+    week: int | None = Query(default=None),
+):
+    return _get_opportunities_payload(
+        limit=limit,
+        best_lines_only=best_lines_only,
+        include_experimental=include_experimental,
+        week=week,
+    )
 
 
 @router.get("/decision-board")
