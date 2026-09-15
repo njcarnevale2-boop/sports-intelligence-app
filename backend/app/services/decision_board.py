@@ -282,6 +282,9 @@ def build_decision_board_payload(
                 "isStale": quote_freshness == "STALE",
                 "limitedDepth": market_coverage_status in {"THIN", "SINGLE_BOOK", "NO_BOOKS"},
             },
+            "currentSizing": opp.get("currentSizing"),
+            "recommendedUnits": opp.get("recommendedUnits"),
+            "bankrollPercent": opp.get("bankrollPercent"),
         }
         recommendations.append(recommendation)
 

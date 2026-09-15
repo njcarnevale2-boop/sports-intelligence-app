@@ -269,7 +269,8 @@ def test_current_opportunities_skip_lowvig_and_recompute_from_remaining_quotes(t
     assert opp["productionEligible"] is True
     assert opp["currentQualification"]["actionable"] is False
     assert round(float(opp["evPerDollar"]), 3) == -0.036
-    assert opp["kelly20"] == 0.11
+    assert opp["kelly20"] is None
+    assert opp["currentSizing"]["status"] == "UNAVAILABLE"
     assert opp["allAvailableBooks"][0]["book"] == "DraftKings"
     assert all(book["book"] != "LowVig.ag" for book in opp["allAvailableBooks"])
 

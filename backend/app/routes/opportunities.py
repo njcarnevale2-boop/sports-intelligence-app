@@ -24,6 +24,10 @@ from app.services.fair_price import build_fair_price_result
 from app.services.decision_profile import build_spread_decision_boundaries
 from app.services.calibration import apply_guarded_isotonic, calibration_info
 from app.services.decision_board import build_decision_board_payload
+from app.services.decision_ledger import (
+    PERSONAL_LEDGER_DEFAULT_UNIT_SIZE,
+    PERSONAL_LEDGER_STARTING_BANKROLL,
+)
 from app.services.sportsbook_policy import (
     filter_current_market_sportsbook_rows,
     resolve_canonical_sportsbook,
@@ -98,6 +102,7 @@ LINE_MOVEMENT_BOARD = runtime_paths.line_movement_board_csv
 
 
 CURRENT_ACTIONABLE_MAX_ODDS_AGE_MINUTES = int(settings.CURRENT_ACTIONABLE_MAX_ODDS_AGE_MINUTES)
+FRACTIONAL_KELLY_SHARE = 0.2
 
 
 # ---------------------------------------------------------
@@ -222,6 +227,157 @@ def _safe_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _american_profit_multiplier(american_odds: float | None) -> float | None:
+    if american_odds is None:
+        return None
+    odds = float(american_odds)
+    if odds == 0:
+        return None
+    if odds > 0:
+        return odds / 100.0
+    return 100.0 / abs(odds)
+
+
+def _kelly_fraction_from_outcomes(
+    *,
+    win_probability: float | None,
+    push_probability: float | None,
+    loss_probability: float | None,
+    american_odds: float | None,
+) -> float | None:
+    win_prob = _unit_probability(win_probability)
+    if win_prob is None:
+        return None
+
+    push_prob = _unit_probability(push_probability) or 0.0
+    resolved_loss = _unit_probability(loss_probability)
+    if resolved_loss is None:
+        resolved_loss = max(0.0, 1.0 - win_prob - push_prob)
+
+    if resolved_loss < 0.0:
+        return None
+
+    profit_multiplier = _american_profit_multiplier(american_odds)
+    if profit_multiplier is None or profit_multiplier <= 0.0:
+        return None
+
+    full_kelly = ((profit_multiplier * win_prob) - resolved_loss) / profit_multiplier
+    if not pd.notna(full_kelly):
+        return None
+    return max(0.0, float(full_kelly))
+
+
+def _artifact_sizing_snapshot(row: pd.Series | dict[str, Any]) -> dict[str, Any]:
+    artifact_full = _safe_float(row.get("kelly_full"))
+    artifact_fractional = _safe_float(row.get("kelly_20pct"))
+    artifact_units = _safe_float(row.get("recommended_units"))
+    artifact_raw_units = _safe_float(row.get("raw_units"))
+    return {
+        "status": "HISTORICAL",
+        "reason": "Ranked artifact sizing preserved for audit only; current execution sizing is authoritative for actionable bets.",
+        "fullKellyFraction": round(float(artifact_full), 4) if artifact_full is not None else None,
+        "fractionalKellyFraction": round(float(artifact_fractional), 4) if artifact_fractional is not None else None,
+        "bankrollPercent": round(float(artifact_fractional) * 100.0, 2) if artifact_fractional is not None else None,
+        "recommendedUnits": round(float(artifact_units), 2) if artifact_units is not None else None,
+        "rawUnits": round(float(artifact_raw_units), 2) if artifact_raw_units is not None else None,
+    }
+
+
+def _build_current_sizing(
+    *,
+    current_execution: dict[str, Any] | None,
+    current_qualification: dict[str, Any] | None,
+    current_win_probability: float | None,
+    current_push_probability: float | None,
+    current_loss_probability: float | None,
+    current_ev: float | None,
+) -> dict[str, Any]:
+    execution = current_execution or {}
+    qualification = current_qualification or {}
+    execution_status = str(execution.get("status") or "UNAVAILABLE").upper()
+    qualification_status = str(qualification.get("status") or "NOT_QUALIFIED").upper()
+    current_price = _safe_float(execution.get("price"))
+
+    unavailable = {
+        "line": _safe_float(execution.get("point")),
+        "price": current_price,
+        "sportsbook": execution.get("sportsbook"),
+        "unitSize": float(PERSONAL_LEDGER_DEFAULT_UNIT_SIZE),
+        "bankrollBasis": float(PERSONAL_LEDGER_STARTING_BANKROLL),
+        "fullKellyFraction": None,
+        "fractionalKellyFraction": None,
+        "bankrollPercent": None,
+        "recommendedAmount": None,
+        "recommendedUnits": None,
+    }
+
+    if execution_status != "AVAILABLE":
+        return {
+            "status": "UNAVAILABLE",
+            "reason": str(execution.get("reason") or "No current executable approved quote is available."),
+            **unavailable,
+        }
+
+    if qualification_status != "QUALIFIED":
+        return {
+            "status": "UNAVAILABLE",
+            "reason": str(qualification.get("reason") or "Current market does not qualify for production sizing."),
+            **unavailable,
+        }
+
+    if current_win_probability is None:
+        return {
+            "status": "UNAVAILABLE",
+            "reason": "Current win probability is unavailable for Kelly sizing.",
+            **unavailable,
+        }
+
+    if current_price is None:
+        return {
+            "status": "UNAVAILABLE",
+            "reason": "Current executable price is unavailable for Kelly sizing.",
+            **unavailable,
+        }
+
+    if current_ev is None:
+        return {
+            "status": "UNAVAILABLE",
+            "reason": "Current expected value is unavailable for Kelly sizing.",
+            **unavailable,
+        }
+
+    full_kelly = _kelly_fraction_from_outcomes(
+        win_probability=current_win_probability,
+        push_probability=current_push_probability,
+        loss_probability=current_loss_probability,
+        american_odds=current_price,
+    )
+    if full_kelly is None or full_kelly <= 0.0:
+        return {
+            "status": "UNAVAILABLE",
+            "reason": "Kelly sizing is unavailable for the current executable quote.",
+            **unavailable,
+        }
+
+    fractional_kelly = full_kelly * FRACTIONAL_KELLY_SHARE
+    recommended_amount = fractional_kelly * float(PERSONAL_LEDGER_STARTING_BANKROLL)
+    recommended_units = recommended_amount / float(PERSONAL_LEDGER_DEFAULT_UNIT_SIZE)
+    return {
+        "status": "AVAILABLE",
+        "reason": "Current sizing recalculated from the current executable quote and current probability state.",
+        "line": _safe_float(execution.get("point")),
+        "price": current_price,
+        "sportsbook": execution.get("sportsbook"),
+        "unitSize": float(PERSONAL_LEDGER_DEFAULT_UNIT_SIZE),
+        "bankrollBasis": float(PERSONAL_LEDGER_STARTING_BANKROLL),
+        "fullKellyFraction": round(float(full_kelly), 4),
+        "fractionalKellyFraction": round(float(fractional_kelly), 4),
+        "bankrollPercent": round(float(fractional_kelly) * 100.0, 2),
+        "recommendedAmount": round(float(recommended_amount), 2),
+        "recommendedUnits": round(float(recommended_units), 2),
+    }
 
 
 def _parse_iso(value: Any) -> datetime | None:
@@ -946,8 +1102,7 @@ def row_to_opportunity(
 
     fair_odds = safe_float(row.get("fair_odds"))
     ev_per_dollar = safe_float(row.get("ev_per_dollar"))
-    kelly_full = safe_float(row.get("kelly_full"))
-    kelly_20 = safe_float(row.get("kelly_20pct"))
+    artifact_sizing = _artifact_sizing_snapshot(row)
 
     result = {
         "id": build_id(row),
@@ -977,8 +1132,12 @@ def row_to_opportunity(
         "rawEdge": round(float(raw_edge or 0.0) * 100, 1),
         "calibratedEdge": calibrated_edge,
         "evPerDollar": round(float(ev_per_dollar), 3) if ev_per_dollar is not None else None,
-        "kellyFull": round(float(kelly_full), 3) if kelly_full is not None else 0.0,
-        "kelly20": round(float(kelly_20), 3) if kelly_20 is not None else 0.0,
+        "kellyFull": None,
+        "kelly20": None,
+        "bankrollPercent": None,
+        "recommendedUnits": None,
+        "recommendedAmount": None,
+        "unitSizeAtBet": float(PERSONAL_LEDGER_DEFAULT_UNIT_SIZE),
         "recommendation": row.get("recommendation"),
         "confidence": int(round(float(safe_float(row.get("confidence_score")) or 0.0))),
         "dataCompleteness": round(float(safe_float(row.get("data_completeness")) or 0.0) * 100, 1),
@@ -1016,6 +1175,7 @@ def row_to_opportunity(
                 "under": market_snapshot.get("bestPriceUnder") if market_snapshot else None,
             },
         },
+        "artifactSizing": artifact_sizing,
     }
 
     if original_candidate is not None:
@@ -1202,6 +1362,24 @@ def row_to_opportunity(
             "actionable": recomputed_status == "QUALIFIED",
             "reason": "Current qualification recalculated from current executable line/price.",
         }
+
+    current_sizing = _build_current_sizing(
+        current_execution=current_execution,
+        current_qualification=result.get("currentQualification"),
+        current_win_probability=_safe_float(result.get("currentWinProbability")),
+        current_push_probability=_safe_float(result.get("currentPushProbability")),
+        current_loss_probability=_safe_float(result.get("currentLossProbability")),
+        current_ev=_safe_float(result.get("currentEV")),
+    )
+    result["currentSizing"] = current_sizing
+    result["sizingStatus"] = current_sizing.get("status")
+    result["sizingReason"] = current_sizing.get("reason")
+    result["kellyFull"] = current_sizing.get("fullKellyFraction")
+    result["kelly20"] = current_sizing.get("fractionalKellyFraction")
+    result["bankrollPercent"] = current_sizing.get("bankrollPercent")
+    result["recommendedUnits"] = current_sizing.get("recommendedUnits")
+    result["recommendedAmount"] = current_sizing.get("recommendedAmount")
+    result["unitSizeAtBet"] = current_sizing.get("unitSize")
 
     # -----------------------------------------------------
     # SPORTS INTELLIGENCE SCORE

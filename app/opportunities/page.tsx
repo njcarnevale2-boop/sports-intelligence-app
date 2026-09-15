@@ -94,6 +94,12 @@ type Opportunity = {
 
   kellyFull: number;
   kelly20: number;
+  currentSizing?: {
+    status?: string;
+    reason?: string | null;
+    recommendedUnits?: number | null;
+    bankrollPercent?: number | null;
+  };
 
   recommendation: string;
   confidence: number;
@@ -290,23 +296,28 @@ export default function OpportunitiesPage() {
     opportunity: Opportunity
   ) {
     const alreadyAdded = added.includes(opportunity.id);
+    let addedSuccessfully = alreadyAdded;
     if (!alreadyAdded) {
       const result = await addToCardWithSnapshot(opportunity as Record<string, unknown>);
       if (!result.success) {
         setSnapshotErrors((prev) => ({ ...prev, [opportunity.id]: result.error }));
       } else if (result.trackingStatus === "PARTIAL") {
+        addedSuccessfully = true;
         setSnapshotErrors((prev) => ({ ...prev, [opportunity.id]: result.warning || "Added to My Card. Performance tracking could not be fully started." }));
       } else {
+        addedSuccessfully = true;
         // Clear any prior error on re-add
         setSnapshotErrors((prev) => { const next = { ...prev }; delete next[opportunity.id]; return next; });
       }
     }
 
-    setAdded((current) =>
-      current.includes(opportunity.id)
-        ? current
-        : [...current, opportunity.id]
-    );
+    if (addedSuccessfully) {
+      setAdded((current) =>
+        current.includes(opportunity.id)
+          ? current
+          : [...current, opportunity.id]
+      );
+    }
   }
 
   const sportsbooks =
@@ -1215,7 +1226,7 @@ export default function OpportunitiesPage() {
                             )
                           }
                           disabled={
-                            isAdded
+                            isAdded || String(opportunity.currentSizing?.status || "").toUpperCase() !== "AVAILABLE"
                           }
                           className={
                             isAdded

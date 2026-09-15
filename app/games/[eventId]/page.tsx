@@ -107,7 +107,20 @@ type Opportunity = {
   worstObservedPlayablePriceStatus?: "AVAILABLE" | "UNAVAILABLE";
   minimumPlayableEV?: number | null;
   confidence: number;
-  kelly20: number;
+  kelly20: number | null;
+  kellyFull?: number | null;
+  bankrollPercent?: number | null;
+  recommendedUnits?: number | null;
+  recommendedAmount?: number | null;
+  unitSizeAtBet?: number | null;
+  currentSizing?: {
+    status?: string;
+    reason?: string | null;
+    bankrollPercent?: number | null;
+    recommendedUnits?: number | null;
+    recommendedAmount?: number | null;
+    unitSize?: number | null;
+  };
   marketIntelligence: MarketIntelligence;
   sportsIntelligenceScore: SportsIntelligenceScore;
   productionEligible?: boolean;
@@ -362,21 +375,22 @@ function betStatusLabel(report: IntelligenceReport | null, opp: Opportunity | nu
 }
 
 function suggestedBetText(opp: Opportunity | null, bankroll: number | null) {
-  if (!opp || opp.kelly20 == null) {
+  const sizing = opp?.currentSizing;
+  if (!opp || !sizing || String(sizing.status || "").toUpperCase() !== "AVAILABLE") {
     return { headline: "Unavailable", detail: "Suggested bet size is not currently available." };
   }
 
-  const pct = opp.kelly20 * 100;
-  if (bankroll && bankroll > 0) {
-    return {
-      headline: `$${Math.round(bankroll * opp.kelly20).toLocaleString()}`,
-      detail: `${pct.toFixed(1)}% of $${bankroll.toLocaleString()} bankroll`,
-    };
+  const units = sizing.recommendedUnits;
+  const pct = sizing.bankrollPercent;
+  if (units == null || pct == null) {
+    return { headline: "Unavailable", detail: "Suggested bet size is not currently available." };
   }
 
   return {
-    headline: `${pct.toFixed(1)}% of bankroll`,
-    detail: "Bankroll not set. Percentage sizing shown.",
+    headline: `${units.toFixed(2)} U`,
+    detail: bankroll && bankroll > 0
+      ? `${pct.toFixed(2)}% of bankroll · $${Math.round(bankroll * (pct / 100)).toLocaleString()} risk`
+      : `${pct.toFixed(2)}% of bankroll`,
   };
 }
 
@@ -500,11 +514,12 @@ export default function GameIntelligencePage() {
   async function handleAddToCard() {
     if (!opportunity) return;
     const result = await addToCardHelper(opportunity as Record<string, unknown>);
-    setAdded(true);
     if (!result.success) {
-      setAddToCardNotice("Added to My Card. Performance tracking could not be started right now.");
+      setAddToCardNotice(result.error);
       return;
     }
+
+    setAdded(true);
 
     if (result.trackingStatus === "PARTIAL") {
       setAddToCardNotice(result.warning || "Added to My Card. Performance tracking could not be fully started.");
@@ -761,7 +776,7 @@ export default function GameIntelligencePage() {
           <div className="mt-5 flex flex-wrap gap-3">
             <Button
               onClick={() => void handleAddToCard()}
-              disabled={added || !opportunity}
+              disabled={added || !opportunity || String(opportunity.currentSizing?.status || "").toUpperCase() !== "AVAILABLE"}
               className={added ? "h-10 bg-emerald-400/10 text-emerald-300" : "h-10 bg-white text-black hover:bg-zinc-200"}
             >
               {added ? "Added to Card ✓" : "ADD TO CARD"}
@@ -1188,7 +1203,7 @@ export default function GameIntelligencePage() {
                 <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Value & Risk</p>
                 <p className="mt-2 text-sm text-zinc-300">Push-aware EV: {opportunity?.currentEV != null ? `+$${opportunity.currentEV.toFixed(3)} per $1` : "Unavailable"}</p>
                 <p className="mt-1 text-sm text-zinc-300">Confidence: {opportunity ? `${opportunity.confidence}/100` : "Unavailable"}</p>
-                <p className="mt-1 text-sm text-zinc-300">Kelly (advanced): {opportunity ? `${(opportunity.kelly20 * 100).toFixed(1)}%` : "Unavailable"}</p>
+                <p className="mt-1 text-sm text-zinc-300">Kelly (advanced): {opportunity?.currentSizing?.bankrollPercent != null ? `${opportunity.currentSizing.bankrollPercent.toFixed(2)}%` : "Unavailable"}</p>
               </div>
               <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
                 <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Pricing Boundaries</p>

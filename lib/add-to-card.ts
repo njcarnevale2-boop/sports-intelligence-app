@@ -6,13 +6,21 @@
  * caller via the returned status object; they do NOT silently succeed.
  */
 
-import { fetchJson } from "@/app/lib/api";
+import { fetchJson } from "../app/lib/api.ts";
 
 export type SavedCardItem = Record<string, unknown>;
 
 const CARD_KEY = "sports-intelligence-card";
 const PARTIAL_TRACKING_WARNING = "Added to My Card. Performance tracking could not be fully started.";
 const DEFAULT_UNIT_SIZE = 100;
+
+type CurrentSizing = {
+  status?: string;
+  reason?: string;
+  recommendedUnits?: number | null;
+  recommendedAmount?: number | null;
+  unitSize?: number | null;
+};
 
 type SnapshotTrackingStatus = "COMPLETE" | "PARTIAL" | "FAILED";
 
@@ -30,8 +38,53 @@ export type AddToCardResult =
   | { success: true; alreadyExists: boolean; snapshotId?: string; trackingStatus: "COMPLETE" | "PARTIAL"; warning?: string }
   | { success: false; error: string; trackingStatus: "FAILED" };
 
+function asPositiveNumber(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function isQualifiedCurrentWager(item: SavedCardItem): boolean {
+  const qualification = String(
+    (item.currentQualification as { status?: string } | undefined)?.status ?? item.qualificationStatus ?? "",
+  ).toUpperCase();
+  const execution = String(
+    (item.currentExecution as { status?: string } | undefined)?.status ?? "",
+  ).toUpperCase();
+  return qualification === "QUALIFIED" || execution === "AVAILABLE";
+}
+
+function resolveSizing(item: SavedCardItem): { unitsRisked: number; amountRisked: number; unitSizeAtBet: number } | { error: string } {
+  const explicitUnitSize = asPositiveNumber(item.unitSizeAtBet ?? item.unitSize);
+  const explicitUnits = asPositiveNumber(item.unitsRisked ?? item.recommendedUnits);
+  const explicitAmount = asPositiveNumber(item.amountRisked);
+  if (explicitUnits != null) {
+    const unitSizeAtBet = explicitUnitSize ?? DEFAULT_UNIT_SIZE;
+    const amountRisked = explicitAmount ?? explicitUnits * unitSizeAtBet;
+    return { unitsRisked: explicitUnits, amountRisked, unitSizeAtBet };
+  }
+
+  const currentSizing = (item.currentSizing as CurrentSizing | undefined) ?? undefined;
+  if (String(currentSizing?.status || "").toUpperCase() === "AVAILABLE") {
+    const unitSizeAtBet = asPositiveNumber(currentSizing?.unitSize) ?? explicitUnitSize ?? DEFAULT_UNIT_SIZE;
+    const unitsRisked = asPositiveNumber(currentSizing?.recommendedUnits);
+    const amountRisked = asPositiveNumber(currentSizing?.recommendedAmount);
+    if (unitsRisked != null && amountRisked != null) {
+      return { unitsRisked, amountRisked, unitSizeAtBet };
+    }
+  }
+
+  if (isQualifiedCurrentWager(item)) {
+    return { error: String(currentSizing?.reason || "Suggested bet size is not currently available.") };
+  }
+  return { error: "Suggested bet size is not currently available." };
+}
+
 export async function addToCard(item: SavedCardItem): Promise<AddToCardResult> {
   const id = item.id as string | undefined;
+  const sizing = resolveSizing(item);
+  if ("error" in sizing) {
+    return { success: false, error: sizing.error, trackingStatus: "FAILED" };
+  }
 
   // Read existing card
   let current: SavedCardItem[] = [];
@@ -58,12 +111,9 @@ export async function addToCard(item: SavedCardItem): Promise<AddToCardResult> {
 
   // Always attempt snapshot, even if already in localStorage (idempotent on backend)
   try {
-    const unitsRiskedRaw = Number(item.unitsRisked ?? item.recommendedUnits ?? 1);
-    const unitsRisked = Number.isFinite(unitsRiskedRaw) && unitsRiskedRaw > 0 ? unitsRiskedRaw : 1;
-    const unitSizeAtBetRaw = Number(item.unitSizeAtBet ?? DEFAULT_UNIT_SIZE);
-    const unitSizeAtBet = Number.isFinite(unitSizeAtBetRaw) && unitSizeAtBetRaw > 0 ? unitSizeAtBetRaw : DEFAULT_UNIT_SIZE;
-    const amountRiskedRaw = Number(item.amountRisked ?? unitsRisked * unitSizeAtBet);
-    const amountRisked = Number.isFinite(amountRiskedRaw) && amountRiskedRaw > 0 ? amountRiskedRaw : unitsRisked * unitSizeAtBet;
+    const unitsRisked = sizing.unitsRisked;
+    const unitSizeAtBet = sizing.unitSizeAtBet;
+    const amountRisked = sizing.amountRisked;
 
     const snap = await fetchJson<SnapshotResponse>(
       "/api/recommendation/snapshot",

@@ -369,8 +369,12 @@ class GamesService:
                     "originalCandidate": enrichment.get("originalCandidate") if enrichment else None,
                     "currentExecution": enrichment.get("currentExecution") if enrichment else None,
                     "currentQualification": current_qualification if enrichment else None,
+                    "currentSizing": enrichment.get("currentSizing") if enrichment else None,
+                    "artifactSizing": enrichment.get("artifactSizing") if enrichment else None,
                     "executionDrift": enrichment.get("executionDrift") if enrichment else None,
                     "productionRank": enrichment.get("productionRank") if enrichment else None,
+                    "recommendedUnits": enrichment.get("recommendedUnits") if enrichment else None,
+                    "bankrollPercent": enrichment.get("bankrollPercent") if enrichment else None,
                 }
             )
 
@@ -506,11 +510,15 @@ class GamesService:
                     "sportsbook": opportunity.get("book"),
                     "currentExecution": opportunity.get("currentExecution"),
                     "currentQualification": opportunity.get("currentQualification"),
+                    "currentSizing": opportunity.get("currentSizing"),
                     "originalCandidate": opportunity.get("originalCandidate"),
+                    "artifactSizing": opportunity.get("artifactSizing"),
                     "executionDrift": opportunity.get("executionDrift"),
                     "productionRank": opportunity.get("productionRank"),
                     "recommendation": opportunity.get("recommendation"),
                     "qualificationStatus": opportunity.get("qualificationStatus"),
+                    "recommendedUnits": opportunity.get("recommendedUnits"),
+                    "bankrollPercent": opportunity.get("bankrollPercent"),
                 },
                 "recommendationLabel": opportunity.get("recommendation"),
                 "qualificationReasons": opportunity.get("qualificationReasons"),
@@ -521,8 +529,12 @@ class GamesService:
                 "originalCandidate": opportunity.get("originalCandidate"),
                 "currentExecution": opportunity.get("currentExecution"),
                 "currentQualification": opportunity.get("currentQualification"),
+                "currentSizing": opportunity.get("currentSizing"),
+                "artifactSizing": opportunity.get("artifactSizing"),
                 "executionDrift": opportunity.get("executionDrift"),
                 "productionRank": opportunity.get("productionRank"),
+                "recommendedUnits": opportunity.get("recommendedUnits"),
+                "bankrollPercent": opportunity.get("bankrollPercent"),
             }
         return output
 

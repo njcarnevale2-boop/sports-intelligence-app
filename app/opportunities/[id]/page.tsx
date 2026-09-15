@@ -115,6 +115,12 @@ type Opportunity = {
 
   kellyFull: number;
   kelly20: number;
+  currentSizing?: {
+    status?: string;
+    reason?: string | null;
+    recommendedUnits?: number | null;
+    bankrollPercent?: number | null;
+  };
 
   recommendation: string;
   confidence: number;
@@ -555,8 +561,7 @@ export default function OpportunityAnalysisPage() {
         setSnapshotError(result.warning || "Added to My Card. Performance tracking could not be fully started.");
       }
     } else {
-      // Card may still be saved locally; surface tracking failure.
-      setAdded(true);
+      // Nothing was persisted; keep the action available and surface the sizing or tracking error.
       setSnapshotError(result.error);
     }
   }
@@ -738,7 +743,7 @@ export default function OpportunityAnalysisPage() {
           <div className="mt-6 flex flex-wrap gap-3">
             <Button
               onClick={addToCard}
-              disabled={added}
+              disabled={added || String(opportunity.currentSizing?.status || "").toUpperCase() !== "AVAILABLE"}
               className={added ? "h-11 bg-emerald-400/10 px-6 text-emerald-300" : "h-11 bg-white px-6 text-black hover:bg-zinc-200"}
             >
               {added ? "Added to My Card ✓" : "Add to My Card"}

@@ -64,6 +64,12 @@ type Opportunity = {
   edge: number;
   evPerDollar: number;
   kelly20: number;
+  currentSizing?: {
+    status?: string;
+    reason?: string | null;
+    recommendedUnits?: number | null;
+    bankrollPercent?: number | null;
+  };
   recommendation: string;
   confidence: number;
   rank: number;
@@ -226,10 +232,12 @@ export default function BriefingPage() {
   async function handleAddToCard(opp: Opportunity) {
     setSnapshotMsg("");
     const result = await addToCardHelper(opp as Record<string, unknown>);
-    setAddedId(opp.id);
+    if (result.success) {
+      setAddedId(opp.id);
+    }
     setSnapshotMsg(
       !result.success
-        ? "Added to My Card, but performance tracking could not start right now."
+        ? result.error
         : result.trackingStatus === "PARTIAL"
           ? (result.warning || "Added to My Card. Performance tracking could not be fully started.")
           : "Added to My Card — tracking active."
@@ -351,7 +359,7 @@ export default function BriefingPage() {
             </Link>
             <button
               onClick={() => void handleAddToCard(lead)}
-              disabled={addedId === lead.id}
+              disabled={addedId === lead.id || String(lead.currentSizing?.status || "").toUpperCase() !== "AVAILABLE"}
               className={`inline-flex h-10 items-center rounded-lg border px-5 text-sm font-medium transition ${
                 addedId === lead.id
                   ? "border-emerald-400/20 bg-emerald-400/[0.08] text-emerald-300"

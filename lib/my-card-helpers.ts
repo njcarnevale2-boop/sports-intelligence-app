@@ -19,7 +19,22 @@ export type SavedBet = {
   edge: number | string;
   evPerDollar?: number;
   kelly20?: number;
+  kellyFull?: number;
+  bankrollPercent?: number;
+  recommendedUnits?: number;
+  recommendedAmount?: number;
+  unitSizeAtBet?: number;
   recommendation?: string;
+  currentSizing?: {
+    status?: string;
+    reason?: string;
+    fullKellyFraction?: number | null;
+    fractionalKellyFraction?: number | null;
+    bankrollPercent?: number | null;
+    recommendedUnits?: number | null;
+    recommendedAmount?: number | null;
+    unitSize?: number | null;
+  } | null;
   sportsIntelligenceScore?: { score?: number; recommendation?: string; grade?: string };
   marketIntelligence?: { score?: number };
   injuryContext?: { summary?: string; awayInjuryScore?: number; homeInjuryScore?: number };
@@ -78,6 +93,12 @@ export function normalizeSavedBet(bet: Record<string, unknown> & Partial<SavedBe
     edge: typeof bet.edge === 'number' ? bet.edge : String(bet.edge ?? '0%'),
     evPerDollar: typeof bet.evPerDollar === 'number' ? bet.evPerDollar : undefined,
     kelly20: typeof bet.kelly20 === 'number' ? bet.kelly20 : undefined,
+    kellyFull: typeof bet.kellyFull === 'number' ? bet.kellyFull : undefined,
+    bankrollPercent: typeof bet.bankrollPercent === 'number' ? bet.bankrollPercent : undefined,
+    recommendedUnits: typeof bet.recommendedUnits === 'number' ? bet.recommendedUnits : undefined,
+    recommendedAmount: typeof bet.recommendedAmount === 'number' ? bet.recommendedAmount : undefined,
+    unitSizeAtBet: typeof bet.unitSizeAtBet === 'number' ? bet.unitSizeAtBet : undefined,
+    currentSizing: typeof bet.currentSizing === 'object' && bet.currentSizing ? bet.currentSizing as SavedBet['currentSizing'] : undefined,
     recommendation: typeof bet.recommendation === 'string' ? bet.recommendation : undefined,
     sportsIntelligenceScore: typeof bet.sportsIntelligenceScore === 'object' && bet.sportsIntelligenceScore ? bet.sportsIntelligenceScore as { score?: number; recommendation?: string; grade?: string } : undefined,
     marketIntelligence: typeof bet.marketIntelligence === 'object' && bet.marketIntelligence ? bet.marketIntelligence as { score?: number } : undefined,

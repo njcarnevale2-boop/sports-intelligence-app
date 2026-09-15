@@ -1931,7 +1931,9 @@ def record_personal_wager_from_payload(
 
     if require_sizing:
         unit_size_at_bet = _coerce_positive(parsed_unit_size, PERSONAL_LEDGER_DEFAULT_UNIT_SIZE)
-        units_risked = _coerce_positive(parsed_units, 1.0)
+        if parsed_units is None and parsed_amount is None:
+            raise ValueError("unitsRisked or amountRisked is required for personal wager tracking")
+        units_risked = _coerce_positive(parsed_units, (_coerce_positive(parsed_amount, unit_size_at_bet) / unit_size_at_bet))
         amount_risked = _coerce_positive(parsed_amount, units_risked * unit_size_at_bet)
         units_risked = round(amount_risked / unit_size_at_bet, 4)
     else:
