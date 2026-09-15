@@ -142,6 +142,21 @@ def map_game_card_status(entry: dict[str, Any]) -> str:
     return "NO EDGE"
 
 
+def _is_currently_actionable(opp: dict[str, Any]) -> bool:
+    if not bool(opp.get("productionEligible")):
+        return False
+
+    execution_status = str((opp.get("currentExecution") or {}).get("status") or "").upper()
+    if execution_status and execution_status != "AVAILABLE":
+        return False
+
+    current_qualification = opp.get("currentQualification") or {}
+    if "actionable" in current_qualification:
+        return bool(current_qualification.get("actionable"))
+
+    return str(opp.get("qualificationStatus") or "").upper() == "QUALIFIED"
+
+
 def _closest_watch_item(opportunities: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
     production_rows = [
         o for o in opportunities
@@ -205,11 +220,7 @@ def build_decision_board_payload(
 ) -> dict[str, Any]:
     now = now_utc or datetime.now(timezone.utc)
 
-    official_candidates = [
-        o for o in opportunities
-        if bool(o.get("productionEligible"))
-        and str(o.get("qualificationStatus") or "").upper() == "QUALIFIED"
-    ]
+    official_candidates = [o for o in opportunities if _is_currently_actionable(o)]
 
     official_candidates.sort(key=lambda o: int(o.get("rank") or 9999))
     selected = official_candidates[: max(0, int(limit))]

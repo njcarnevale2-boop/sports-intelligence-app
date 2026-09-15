@@ -31,6 +31,7 @@ class Settings:
     DEFAULT_GIT_COMMIT_HASH: str = os.getenv("GIT_COMMIT_HASH", "")
     OFFICIAL_SIA3_CADENCE: str = os.getenv("OFFICIAL_SIA3_CADENCE", "UNSET")
     OFFICIAL_PUBLICATION_MAX_ODDS_AGE_MINUTES: int = int(os.getenv("OFFICIAL_PUBLICATION_MAX_ODDS_AGE_MINUTES", "60"))
+    CURRENT_ACTIONABLE_MAX_ODDS_AGE_MINUTES: int = int(os.getenv("CURRENT_ACTIONABLE_MAX_ODDS_AGE_MINUTES", "20"))
 
     @property
     def sqlalchemy_database_url(self) -> str:

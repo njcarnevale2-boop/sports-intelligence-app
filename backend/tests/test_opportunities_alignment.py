@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -120,6 +121,23 @@ def _patch_dependencies(monkeypatch, tmp_path: Path, rows: list[dict]):
             }
             for r in rows
         },
+    )
+    monkeypatch.setattr(
+        opportunities_route.market_data_service,
+        "records_for_event",
+        lambda event_id: [
+            {
+                "eventId": str(r["api_event_id"]),
+                "market": str(r.get("market") or "spread"),
+                "side": str(r.get("side") or "away"),
+                "point": float(r.get("point") or 0.0),
+                "americanOdds": float(r.get("price") or -110),
+                "sportsbook": str(r.get("sportsbook") or "DraftKings"),
+                "lastUpdated": datetime.now(timezone.utc).isoformat(),
+            }
+            for r in rows
+            if str(r.get("api_event_id")) == str(event_id)
+        ],
     )
 
     monkeypatch.setattr(
@@ -255,16 +273,17 @@ def test_opportunity_qualification_and_si_inputs_use_push_aware_semantics(tmp_pa
     payload = opportunities_route.get_opportunities(limit=10, best_lines_only=True, week=1)
     opp = payload["opportunities"][0]
 
-    assert opp["qualificationStatus"] == "NOT_QUALIFIED"
+    assert opp["qualificationStatus"] == "QUALIFIED"
     assert opp["qualificationReasons"]
+    assert opp["currentQualification"]["actionable"] is True
 
     # push-aware fair-price EV is canonical input now
     assert opp["currentEV"] == 0.123
     assert opp["evPerDollar"] == 0.123
 
     # edge now tracks current calibrated win probability vs implied probability
-    assert opp["edge"] == 7.0
-    assert round(float(opp["calibratedEdge"]), 6) == 0.07
+    assert opp["edge"] == 9.6
+    assert round(float(opp["calibratedEdge"]), 6) == 0.09619
 
     # SI expected value component should reflect 0.123 EV, not raw board EV.
     si = opp["sportsIntelligenceScore"]
@@ -312,3 +331,273 @@ def test_spread_opportunity_emits_boundary_research_metadata(tmp_path, monkeypat
     assert isinstance(research["transitionFlags"]["crossesZero"], bool)
     assert isinstance(research["degradationPath"], list)
     assert research["degradationPath"][0]["quoteObserved"] is True
+
+
+def test_opportunity_exposes_original_candidate_and_current_execution_drift(tmp_path, monkeypatch):
+    rows = [
+        {
+            "api_event_id": "evt-drift-1",
+            "commence_time": "2026-09-13T17:00:00+00:00",
+            "away_team": "NO",
+            "home_team": "ATL",
+            "market": "spread",
+            "side": "away",
+            "point": 3.0,
+            "sportsbook": "DraftKings",
+            "price": -110,
+            "model_prob": 0.58,
+            "implied_prob_raw": 0.55,
+            "fair_odds": -120,
+            "edge_pp": 0.03,
+            "ev_per_dollar": 0.04,
+            "kelly_full": 0.03,
+            "kelly_20pct": 0.006,
+            "recommendation": "BET",
+            "confidence_score": 68,
+            "data_completeness": 0.95,
+            "market_confidence": 0.8,
+            "model_confidence": 0.7,
+            "rank": 1,
+        }
+    ]
+
+    opportunities_route = _patch_dependencies(monkeypatch, tmp_path, rows)
+    monkeypatch.setattr(
+        opportunities_route.market_data_service,
+        "records_for_event",
+        lambda event_id: [
+            {
+                "eventId": "evt-drift-1",
+                "market": "spread",
+                "side": "away",
+                "point": 2.5,
+                "americanOdds": -112,
+                "sportsbook": "DraftKings",
+                "lastUpdated": datetime.now(timezone.utc).isoformat(),
+            }
+        ]
+        if str(event_id) == "evt-drift-1"
+        else [],
+    )
+
+    payload = opportunities_route.get_opportunities(limit=10, best_lines_only=True, week=1)
+    opp = payload["opportunities"][0]
+
+    assert opp["point"] == 2.5
+    assert opp["price"] == -112.0
+    assert opp["currentExecution"]["status"] == "AVAILABLE"
+    assert opp["currentExecution"]["point"] == 2.5
+    assert opp["currentExecution"]["price"] == -112.0
+    assert opp["originalCandidate"]["point"] == 3.0
+    assert opp["originalCandidate"]["price"] == -110.0
+    assert opp["executionDrift"]["originalCandidatePoint"] == 3.0
+    assert opp["executionDrift"]["currentExecutionPoint"] == 2.5
+    assert opp["executionDrift"]["lineDriftPoints"] == -0.5
+
+
+def test_ranked_candidate_without_fresh_approved_quote_fails_closed_but_preserves_original_candidate(tmp_path, monkeypatch):
+    rows = [
+        {
+            "api_event_id": "evt-failclosed-1",
+            "commence_time": "2026-09-13T17:00:00+00:00",
+            "away_team": "NYG",
+            "home_team": "DAL",
+            "market": "spread",
+            "side": "away",
+            "point": 9.5,
+            "sportsbook": "BetUS",
+            "price": -110,
+            "model_prob": 0.6,
+            "implied_prob_raw": 0.52,
+            "fair_odds": -120,
+            "edge_pp": 0.08,
+            "ev_per_dollar": 0.1,
+            "kelly_full": 0.04,
+            "kelly_20pct": 0.008,
+            "recommendation": "BET",
+            "confidence_score": 70,
+            "data_completeness": 0.95,
+            "market_confidence": 0.8,
+            "model_confidence": 0.7,
+            "rank": 1,
+        }
+    ]
+
+    opportunities_route = _patch_dependencies(monkeypatch, tmp_path, rows)
+    monkeypatch.setattr(
+        opportunities_route.market_data_service,
+        "records_for_event",
+        lambda event_id: [
+            {
+                "eventId": "evt-failclosed-1",
+                "market": "spread",
+                "side": "away",
+                "point": 7.0,
+                "americanOdds": -108,
+                "sportsbook": "Fanatics Sportsbook",
+                "lastUpdated": "2020-01-01T00:00:00+00:00",
+            },
+            {
+                "eventId": "evt-failclosed-1",
+                "market": "spread",
+                "side": "away",
+                "point": 10.0,
+                "americanOdds": -105,
+                "sportsbook": "BetOnline",
+                "lastUpdated": datetime.now(timezone.utc).isoformat(),
+            },
+        ]
+        if str(event_id) == "evt-failclosed-1"
+        else [],
+    )
+
+    prod_payload = opportunities_route.get_opportunities(limit=10, best_lines_only=True, week=1)
+    assert prod_payload["count"] == 0
+    assert prod_payload["opportunities"] == []
+
+    audit_payload = opportunities_route.get_opportunities(limit=10, best_lines_only=True, include_experimental=True, week=1)
+    assert audit_payload["count"] == 1
+    assert audit_payload["productionCount"] == 0
+    opp = audit_payload["opportunities"][0]
+    assert opp["currentExecution"]["status"] == "STALE_APPROVED_MARKET"
+    assert opp["book"] is None
+    assert opp["point"] is None
+    assert opp["price"] is None
+    assert opp["currentQualification"]["actionable"] is False
+    assert opp["originalCandidate"]["sportsbook"] == "BetUS"
+    assert opp["originalCandidate"]["point"] == 9.5
+    assert opp["originalCandidate"]["price"] == -110.0
+
+
+def test_deterministic_week2_discrepancy_fixture_prefers_fresh_approved_quotes_and_ignores_unapproved(tmp_path, monkeypatch):
+    rows = [
+        {
+            "api_event_id": "evt-nyg",
+            "commence_time": "2026-09-20T17:00:00+00:00",
+            "away_team": "NYG",
+            "home_team": "DAL",
+            "market": "spread",
+            "side": "away",
+            "point": 9.5,
+            "sportsbook": "BetUS",
+            "price": -110,
+            "model_prob": 0.59,
+            "implied_prob_raw": 0.52,
+            "fair_odds": -118,
+            "edge_pp": 0.07,
+            "ev_per_dollar": 0.08,
+            "kelly_full": 0.03,
+            "kelly_20pct": 0.006,
+            "recommendation": "BET",
+            "confidence_score": 70,
+            "data_completeness": 0.95,
+            "market_confidence": 0.8,
+            "model_confidence": 0.7,
+            "rank": 1,
+        },
+        {
+            "api_event_id": "evt-mia",
+            "commence_time": "2026-09-20T20:00:00+00:00",
+            "away_team": "MIA",
+            "home_team": "BUF",
+            "market": "spread",
+            "side": "away",
+            "point": 10.5,
+            "sportsbook": "DraftKings",
+            "price": -110,
+            "model_prob": 0.6,
+            "implied_prob_raw": 0.52,
+            "fair_odds": -119,
+            "edge_pp": 0.08,
+            "ev_per_dollar": 0.09,
+            "kelly_full": 0.04,
+            "kelly_20pct": 0.008,
+            "recommendation": "BET",
+            "confidence_score": 72,
+            "data_completeness": 0.95,
+            "market_confidence": 0.8,
+            "model_confidence": 0.7,
+            "rank": 2,
+        },
+        {
+            "api_event_id": "evt-no",
+            "commence_time": "2026-09-20T23:00:00+00:00",
+            "away_team": "NO",
+            "home_team": "ATL",
+            "market": "spread",
+            "side": "away",
+            "point": 7.5,
+            "sportsbook": "DraftKings",
+            "price": -110,
+            "model_prob": 0.58,
+            "implied_prob_raw": 0.52,
+            "fair_odds": -117,
+            "edge_pp": 0.06,
+            "ev_per_dollar": 0.07,
+            "kelly_full": 0.03,
+            "kelly_20pct": 0.006,
+            "recommendation": "BET",
+            "confidence_score": 69,
+            "data_completeness": 0.95,
+            "market_confidence": 0.8,
+            "model_confidence": 0.7,
+            "rank": 3,
+        },
+    ]
+
+    opportunities_route = _patch_dependencies(monkeypatch, tmp_path, rows)
+
+    def _records_for_event(event_id: str):
+        now = datetime.now(timezone.utc).isoformat()
+        if str(event_id) == "evt-nyg":
+            return [
+                {"eventId": "evt-nyg", "market": "spread", "side": "away", "point": 7.0, "americanOdds": -110, "sportsbook": "Fanatics Sportsbook", "lastUpdated": now},
+                {"eventId": "evt-nyg", "market": "spread", "side": "away", "point": 10.0, "americanOdds": -105, "sportsbook": "BetUS", "lastUpdated": now},
+                {"eventId": "evt-nyg", "market": "spread", "side": "away", "point": 10.5, "americanOdds": -102, "sportsbook": "Bovada", "lastUpdated": now},
+            ]
+        if str(event_id) == "evt-mia":
+            return [
+                {"eventId": "evt-mia", "market": "spread", "side": "away", "point": 13.0, "americanOdds": -111, "sportsbook": "Fanatics Sportsbook", "lastUpdated": now},
+                {"eventId": "evt-mia", "market": "spread", "side": "away", "point": 14.0, "americanOdds": -105, "sportsbook": "BetOnline", "lastUpdated": now},
+            ]
+        if str(event_id) == "evt-no":
+            return [
+                {"eventId": "evt-no", "market": "spread", "side": "away", "point": 8.5, "americanOdds": -109, "sportsbook": "Fanatics Sportsbook", "lastUpdated": now},
+                {"eventId": "evt-no", "market": "spread", "side": "away", "point": 9.5, "americanOdds": -103, "sportsbook": "LowVig.ag", "lastUpdated": now},
+            ]
+        return []
+
+    monkeypatch.setattr(opportunities_route.market_data_service, "records_for_event", _records_for_event)
+
+    payload = opportunities_route.get_opportunities(limit=10, best_lines_only=True, include_experimental=True, week=1)
+    assert payload["count"] == 3
+    assert payload["productionCount"] == 3
+
+    by_event = {o["eventId"]: o for o in payload["opportunities"]}
+
+    nyg = by_event["evt-nyg"]
+    assert nyg["originalCandidate"]["point"] == 9.5
+    assert nyg["originalCandidate"]["sportsbook"] == "BetUS"
+    assert nyg["point"] == 7.0
+    assert nyg["book"] == "Fanatics Sportsbook"
+    assert nyg["currentExecution"]["sportsbookCanonicalKey"] == "fanatics"
+    assert nyg["executionDrift"]["lineDriftPoints"] == -2.5
+    assert nyg["currentQualification"]["actionable"] is True
+
+    mia = by_event["evt-mia"]
+    assert mia["originalCandidate"]["point"] == 10.5
+    assert mia["originalCandidate"]["sportsbook"] == "DraftKings"
+    assert mia["point"] == 13.0
+    assert mia["book"] == "Fanatics Sportsbook"
+    assert mia["currentExecution"]["sportsbookCanonicalKey"] == "fanatics"
+    assert mia["executionDrift"]["lineDriftPoints"] == 2.5
+    assert mia["currentQualification"]["actionable"] is True
+
+    no = by_event["evt-no"]
+    assert no["originalCandidate"]["point"] == 7.5
+    assert no["originalCandidate"]["sportsbook"] == "DraftKings"
+    assert no["point"] == 8.5
+    assert no["book"] == "Fanatics Sportsbook"
+    assert no["currentExecution"]["sportsbookCanonicalKey"] == "fanatics"
+    assert no["executionDrift"]["lineDriftPoints"] == 1.0
+    assert no["currentQualification"]["actionable"] is True

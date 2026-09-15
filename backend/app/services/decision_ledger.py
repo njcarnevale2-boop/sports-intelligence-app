@@ -947,6 +947,9 @@ def _is_production_eligible_market(market: Any) -> bool:
 
 def _decision_publication_sportsbook(value: Any) -> Any:
     if isinstance(value, dict):
+        current_execution = value.get("currentExecution") if isinstance(value.get("currentExecution"), dict) else {}
+        if current_execution.get("sportsbook") is not None:
+            return current_execution.get("sportsbook")
         return value.get("sportsbook") if value.get("sportsbook") is not None else value.get("book")
     return value
 
@@ -958,9 +961,16 @@ def _reject_excluded_publication_quote(value: Any) -> None:
 
 def _opportunity_production_eligible(opportunity: Dict[str, Any]) -> bool:
     explicit = opportunity.get("productionEligible")
-    if explicit is not None:
-        return bool(explicit)
-    return _is_production_eligible_market(opportunity.get("market"))
+    base_eligible = bool(explicit) if explicit is not None else _is_production_eligible_market(opportunity.get("market"))
+    if not base_eligible:
+        return False
+
+    execution_status = str((opportunity.get("currentExecution") or {}).get("status") or "").upper()
+    if execution_status != "AVAILABLE":
+        return False
+
+    current_qualification = opportunity.get("currentQualification") if isinstance(opportunity.get("currentQualification"), dict) else {}
+    return bool(current_qualification.get("actionable"))
 
 
 def _snapshot_linkage(
@@ -1041,6 +1051,19 @@ def _snapshot_linkage(
 
 
 def _decision_payload_from_opportunity(opportunity: Dict[str, Any], published_at_utc: str) -> Dict[str, Any]:
+    current_execution = opportunity.get("currentExecution") if isinstance(opportunity.get("currentExecution"), dict) else {}
+    execution_status = str(current_execution.get("status") or "").upper()
+    if execution_status and execution_status != "AVAILABLE":
+        raise ValueError("SIA 3 publication requires currently executable opportunities.")
+
+    current_point = _to_float(current_execution.get("point")) if current_execution else None
+    current_price = _to_float(current_execution.get("price")) if current_execution else None
+    current_sportsbook = current_execution.get("sportsbook") if current_execution else None
+
+    decision_point = current_point if current_point is not None else _to_float(opportunity.get("point"))
+    decision_price = current_price if current_price is not None else _to_float(opportunity.get("price"))
+    decision_sportsbook = current_sportsbook if current_sportsbook is not None else opportunity.get("book")
+
     raw_probability = _to_float(opportunity.get("rawModelProbability") if opportunity.get("rawModelProbability") is not None else opportunity.get("modelProbability"))
     if raw_probability is not None and raw_probability > 1.0:
         raw_probability = raw_probability / 100.0
@@ -1081,12 +1104,15 @@ def _decision_payload_from_opportunity(opportunity: Dict[str, Any], published_at
         event_id=str(opportunity.get("eventId") or ""),
         market=str(opportunity.get("market") or ""),
         side=str(opportunity.get("side") or ""),
-        sportsbook=str(opportunity.get("book") or ""),
-        point=_to_float(opportunity.get("point")),
-        price=_to_float(opportunity.get("price")),
+        sportsbook=str(decision_sportsbook or ""),
+        point=decision_point,
+        price=decision_price,
     )
 
     qualification_status = str(opportunity.get("qualificationStatus") or "").upper() or "QUALIFIED"
+    current_qualification = opportunity.get("currentQualification") if isinstance(opportunity.get("currentQualification"), dict) else {}
+    if "status" in current_qualification:
+        qualification_status = str(current_qualification.get("status") or qualification_status).upper()
     qualification_reasons = opportunity.get("qualificationReasons")
     if not isinstance(qualification_reasons, list):
         qualification_reasons = reasons
@@ -1109,9 +1135,9 @@ def _decision_payload_from_opportunity(opportunity: Dict[str, Any], published_at
         "selection": opportunity.get("pick"),
         "market": opportunity.get("market"),
         "side": opportunity.get("side"),
-        "point": _to_float(opportunity.get("point")),
-        "price": _to_float(opportunity.get("price")),
-        "sportsbook": opportunity.get("book"),
+        "point": decision_point,
+        "price": decision_price,
+        "sportsbook": decision_sportsbook,
         "rawProbability": raw_probability,
         "calibratedProbability": calibrated_probability,
         "pushProbability": push_probability,
@@ -1216,7 +1242,12 @@ def build_official_sia3_preview(
     threshold = max_odds_age_minutes if max_odds_age_minutes is not None else settings.OFFICIAL_PUBLICATION_MAX_ODDS_AGE_MINUTES
     published_at_utc = _utc_now_iso()
 
-    eligible = [o for o in opportunities if _opportunity_production_eligible(o) and is_current_market_sportsbook_allowed(o.get("book"))]
+    eligible = [
+        o
+        for o in opportunities
+        if _opportunity_production_eligible(o)
+        and is_current_market_sportsbook_allowed(_decision_publication_sportsbook(o))
+    ]
     top_three = eligible[:3]
     slots = []
     stale_count = 0

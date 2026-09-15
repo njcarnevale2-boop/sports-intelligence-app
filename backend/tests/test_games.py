@@ -481,6 +481,8 @@ def test_opportunity_history_reads_are_deterministic_for_same_timestamps(tmp_pat
 
 
 def test_opportunity_history_route_records_generated_snapshot_history(tmp_path, monkeypatch) -> None:
+    from datetime import datetime, timezone
+
     import app.routes.opportunities as route
     import app.services.opportunity_history as oh
 
@@ -495,6 +497,23 @@ def test_opportunity_history_route_records_generated_snapshot_history(tmp_path, 
     )
 
     monkeypatch.setattr(route, "RANKED_BET_BOARD", board)
+    monkeypatch.setattr(
+        route.market_data_service,
+        "records_for_event",
+        lambda event_id: [
+            {
+                "eventId": "evt-500",
+                "market": "spread",
+                "side": "home",
+                "point": 3.5,
+                "americanOdds": -110,
+                "sportsbook": "DraftKings",
+                "lastUpdated": datetime.now(timezone.utc).isoformat(),
+            }
+        ]
+        if str(event_id) == "evt-500"
+        else [],
+    )
     monkeypatch.setattr(route, "_record_history_for_snapshot", lambda snapshot_id, opportunities, observed_at_utc=None: [
         oh.record_history_snapshot(
             oh.build_history_snapshot_from_opportunity(

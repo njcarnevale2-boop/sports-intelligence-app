@@ -6,12 +6,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from app.config import settings
 from app.providers.provider_manager import ProviderManager
 from app.runtime_paths import runtime_paths
 from app.services.market_data import market_data_service, select_best_line_row
 from app.services.market_intelligence import build_market_intelligence_lookup, normalize_market
 from app.services.sports_intelligence_score import calculate_sports_intelligence_score
-from app.services.sportsbook_policy import filter_current_market_sportsbook_rows
+from app.services.sportsbook_policy import filter_current_market_sportsbook_rows, resolve_canonical_sportsbook
 from app.services.week_resolution import build_week_readiness, resolve_canonical_week_metadata
 
 
@@ -19,6 +20,7 @@ MODEL_ROOT = runtime_paths.root
 GAME_PROJECTIONS = runtime_paths.current_game_projections_csv
 SCHEDULE_CONTEXT = runtime_paths.schedule_context_latest_csv
 RANKED_BET_BOARD = runtime_paths.ranked_bet_board_csv
+CURRENT_ACTIONABLE_MAX_ODDS_AGE_MINUTES = int(settings.CURRENT_ACTIONABLE_MAX_ODDS_AGE_MINUTES)
 
 
 TEAM_META: Dict[str, Dict[str, str]] = {
@@ -112,6 +114,29 @@ def parse_commence_time(value: Any) -> Optional[datetime]:
         return parsed.replace(tzinfo=timezone.utc)
 
     return parsed.astimezone(timezone.utc)
+
+
+def _parse_iso(value: Any) -> Optional[datetime]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _quote_age_minutes(value: Any, now_utc: Optional[datetime] = None) -> Optional[float]:
+    ts = _parse_iso(value)
+    if ts is None:
+        return None
+    now = now_utc or datetime.now(timezone.utc)
+    return max(0.0, (now - ts).total_seconds() / 60.0)
 
 
 def normalize_team_code(team_code: str) -> str:
@@ -461,7 +486,6 @@ class GamesService:
         board_df = board_df.copy()
         board_df["api_event_id"] = board_df["api_event_id"].astype(str)
         board_df = board_df[board_df["market"].astype(str).str.strip().str.lower().isin(["spread", "spreads"])]
-        board_df = filter_current_market_sportsbook_rows(board_df)
         if event_ids is not None:
             event_ids = {str(event_id) for event_id in event_ids}
             board_df = board_df[board_df["api_event_id"].isin(event_ids)]
@@ -470,31 +494,37 @@ class GamesService:
             return {}
 
         board_df = board_df.sort_values("rank")
-        best_rows_by_event: List[Tuple[str, pd.Series, pd.DataFrame]] = []
+        best_rows_by_event: List[Tuple[str, pd.Series, pd.DataFrame, pd.Series]] = []
         selection_keys: set[Tuple[str, str, str]] = set()
         for event_id, group in board_df.groupby("api_event_id", sort=False):
             best_ranked = group.iloc[0]
             market = str(best_ranked.get("market", "")).strip().lower()
             side = str(best_ranked.get("side", "")).strip().lower()
-            selected_group = group[
-                group["market"].astype(str).str.strip().str.lower().eq(market)
-                & group["side"].astype(str).str.strip().str.lower().eq(side)
-            ]
-            best = select_best_line_row(selected_group if not selected_group.empty else group)
-            if best is None:
+
+            current_execution = self._select_current_execution_for_candidate(
+                event_id=str(event_id),
+                market=market,
+                side=side,
+            )
+            if current_execution is None:
                 continue
 
-            best_rows_by_event.append((event_id, best, group))
+            best = best_ranked.copy()
+            best["sportsbook"] = current_execution.get("sportsbook")
+            best["point"] = current_execution.get("point")
+            best["price"] = current_execution.get("price")
+
+            best_rows_by_event.append((event_id, best, group, current_execution))
             selection_keys.add((str(event_id), market, side))
 
-        lookup_event_ids = {event_id for event_id, _, _ in best_rows_by_event}
+        lookup_event_ids = {event_id for event_id, _, _, _ in best_rows_by_event}
         market_intelligence_lookup = build_market_intelligence_lookup(
             event_ids=lookup_event_ids,
             selection_keys=selection_keys,
         )
 
         output: Dict[str, Dict[str, Any]] = {}
-        for event_id, best, group in best_rows_by_event:
+        for event_id, best, group, current_execution in best_rows_by_event:
             market = str(best.get("market", "")).strip().lower()
             side = str(best.get("side", "")).strip().lower()
 
@@ -526,9 +556,9 @@ class GamesService:
                     "market": market,
                     "side": side,
                     "pick": self._format_best_opportunity(best),
-                    "point": safe_float(best.get("point")),
-                    "price": safe_float(best.get("price")),
-                    "sportsbook": str(best.get("sportsbook", "")).strip() or None,
+                    "point": safe_float(current_execution.get("point")),
+                    "price": safe_float(current_execution.get("price")),
+                    "sportsbook": str(current_execution.get("sportsbook", "")).strip() or None,
                 },
                 "recommendationLabel": str(best.get("recommendation", "")).strip() or None,
                 "sportsIntelligenceScore": float(score_payload.get("score", 0.0)),
@@ -537,6 +567,49 @@ class GamesService:
             }
         self._opportunities_cache[cache_key] = output
         return output
+
+    def _select_current_execution_for_candidate(
+        self,
+        *,
+        event_id: str,
+        market: str,
+        side: str,
+    ) -> Optional[pd.Series]:
+        records = market_data_service.records_for_event(event_id)
+        now_utc = datetime.now(timezone.utc)
+        rows: list[dict[str, Any]] = []
+        for record in records:
+            if normalize_market(record.get("market")) != normalize_market(market):
+                continue
+            if str(record.get("side") or "").strip().lower() != str(side or "").strip().lower():
+                continue
+
+            sportsbook = str(record.get("sportsbook") or "").strip()
+            if not sportsbook:
+                continue
+
+            canonical = resolve_canonical_sportsbook(sportsbook)
+            if not bool(canonical.get("actionableAllowed")):
+                continue
+
+            age_minutes = _quote_age_minutes(record.get("lastUpdated"), now_utc=now_utc)
+            if age_minutes is None or age_minutes > float(CURRENT_ACTIONABLE_MAX_ODDS_AGE_MINUTES):
+                continue
+
+            rows.append(
+                {
+                    "sportsbook": sportsbook,
+                    "point": safe_float(record.get("point")),
+                    "price": safe_float(record.get("americanOdds")),
+                    "quoteLastUpdated": record.get("lastUpdated"),
+                }
+            )
+
+        if not rows:
+            return None
+
+        selected = select_best_line_row(pd.DataFrame(rows))
+        return selected
 
     def _extract_moneyline(self, event_rows: pd.DataFrame) -> Optional[Dict[str, float]]:
         event_rows = filter_current_market_sportsbook_rows(event_rows)

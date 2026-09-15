@@ -1,6 +1,7 @@
 from pathlib import Path
 import hashlib
 import json
+from datetime import datetime, timezone
 from typing import Any
 
 import pandas as pd
@@ -23,7 +24,10 @@ from app.services.fair_price import build_fair_price_result
 from app.services.decision_profile import build_spread_decision_boundaries
 from app.services.calibration import apply_guarded_isotonic, calibration_info
 from app.services.decision_board import build_decision_board_payload
-from app.services.sportsbook_policy import filter_current_market_sportsbook_rows
+from app.services.sportsbook_policy import (
+    filter_current_market_sportsbook_rows,
+    resolve_canonical_sportsbook,
+)
 from app.services.opportunity_history import (
     build_history_snapshot_from_opportunity,
     read_history_for_event,
@@ -91,6 +95,9 @@ GAME_PROJECTIONS = runtime_paths.current_game_projections_csv
 
 
 LINE_MOVEMENT_BOARD = runtime_paths.line_movement_board_csv
+
+
+CURRENT_ACTIONABLE_MAX_ODDS_AGE_MINUTES = int(settings.CURRENT_ACTIONABLE_MAX_ODDS_AGE_MINUTES)
 
 
 # ---------------------------------------------------------
@@ -169,6 +176,13 @@ def safe_int(value):
     return int(value)
 
 
+def _safe_int(value: Any) -> int | None:
+    try:
+        return safe_int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _clamp_probability(value: float) -> float:
     return max(1e-6, min(1 - 1e-6, value))
 
@@ -208,6 +222,37 @@ def _safe_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _parse_iso(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _quote_age_minutes(last_updated: Any, now_utc: datetime | None = None) -> float | None:
+    parsed = _parse_iso(last_updated)
+    if parsed is None:
+        return None
+    now = now_utc or datetime.now(timezone.utc)
+    return max(0.0, (now - parsed).total_seconds() / 60.0)
+
+
+def _execution_status_from_rows(approved_count: int, fresh_count: int) -> str:
+    if approved_count <= 0:
+        return "UNAVAILABLE_APPROVED_MARKET"
+    if fresh_count <= 0:
+        return "STALE_APPROVED_MARKET"
+    return "AVAILABLE"
 
 
 def _opportunity_lifecycle_state(opportunity: dict[str, Any] | None, previous_snapshot: dict[str, Any] | None = None) -> str:
@@ -871,6 +916,8 @@ def row_to_opportunity(
     injury_ctx=None,
     group_rows=None,
     game_projection_row=None,
+    original_candidate: dict[str, Any] | None = None,
+    current_execution: dict[str, Any] | None = None,
 ):
     away_code = normalize_team_code(row.get("away_team", ""))
     home_code = normalize_team_code(row.get("home_team", ""))
@@ -971,10 +1018,48 @@ def row_to_opportunity(
         },
     }
 
+    if original_candidate is not None:
+        result["originalCandidate"] = original_candidate
+    if current_execution is not None:
+        result["currentExecution"] = current_execution
+
+    execution_status = str((current_execution or {}).get("status") or "AVAILABLE")
+    result["currentQualification"] = {
+        "status": result["qualificationStatus"],
+        "recommendation": result["recommendation"],
+        "actionable": execution_status == "AVAILABLE" and str(result.get("qualificationStatus") or "").upper() == "QUALIFIED",
+        "reason": (current_execution or {}).get("reason"),
+    }
+
+    original_point = _safe_float((original_candidate or {}).get("point"))
+    current_point = _safe_float((current_execution or {}).get("point"))
+    result["executionDrift"] = {
+        "originalCandidatePoint": original_point,
+        "currentExecutionPoint": current_point,
+        "lineDriftPoints": None if original_point is None or current_point is None else round(float(current_point - original_point), 3),
+        "originalCandidatePrice": _safe_float((original_candidate or {}).get("price")),
+        "currentExecutionPrice": _safe_float((current_execution or {}).get("price")),
+    }
+
     production_eligible, eligibility_reason, validation_status = _market_eligibility(market_key)
     result["productionEligible"] = production_eligible
     result["eligibilityReason"] = eligibility_reason
     result["marketValidationStatus"] = validation_status
+
+    if execution_status != "AVAILABLE":
+        result["productionEligible"] = False
+        result["qualificationStatus"] = "NOT_QUALIFIED"
+        result["qualificationReasons"] = [str((current_execution or {}).get("reason") or "No current executable approved quote is available.")]
+        result["recommendation"] = "PASS"
+        result["book"] = None
+        result["point"] = None
+        result["price"] = None
+        result["currentQualification"] = {
+            "status": result["qualificationStatus"],
+            "recommendation": result["recommendation"],
+            "actionable": False,
+            "reason": (current_execution or {}).get("reason"),
+        }
 
     # -----------------------------------------------------
     # MARKET INTELLIGENCE
@@ -1101,6 +1186,23 @@ def row_to_opportunity(
     if result["currentEV"] is not None:
         result["evPerDollar"] = round(float(result["currentEV"]), 3)
 
+    if execution_status == "AVAILABLE":
+        recomputed_recommendation, recomputed_status, recomputed_reasons = _qualify_market_candidate(
+            market=market_key,
+            calibrated_edge=result.get("calibratedEdge"),
+            current_ev=result.get("currentEV"),
+            confidence_score=result.get("confidence"),
+        )
+        result["recommendation"] = recomputed_recommendation
+        result["qualificationStatus"] = recomputed_status
+        result["qualificationReasons"] = recomputed_reasons
+        result["currentQualification"] = {
+            "status": recomputed_status,
+            "recommendation": recomputed_recommendation,
+            "actionable": recomputed_status == "QUALIFIED",
+            "reason": "Current qualification recalculated from current executable line/price.",
+        }
+
     # -----------------------------------------------------
     # SPORTS INTELLIGENCE SCORE
     # -----------------------------------------------------
@@ -1187,7 +1289,16 @@ def _build_generated_multimarket_candidates(
     df["sportsbook"] = df.get("sportsbook")
     df["price"] = pd.to_numeric(df.get("americanOdds"), errors="coerce")
     df["point"] = pd.to_numeric(df.get("point"), errors="coerce")
+    if "lastUpdated" in df.columns:
+        last_updated_series = df["lastUpdated"]
+    else:
+        last_updated_series = pd.Series([None] * len(df), index=df.index)
+    df["quoteAgeMinutes"] = last_updated_series.map(_quote_age_minutes)
+    df["quoteFresh"] = df["quoteAgeMinutes"].map(
+        lambda age: age is not None and age <= float(CURRENT_ACTIONABLE_MAX_ODDS_AGE_MINUTES)
+    )
     df = filter_current_market_sportsbook_rows(df)
+    df = df[df["quoteFresh"] == True].copy()
 
     grouped = df.groupby(["api_event_id", "market", "side"], dropna=False, sort=False)
     selected_rows: list[pd.Series] = []
@@ -1428,6 +1539,113 @@ def make_all_available_books(group, selected_row):
     return [selected_entry, *alternates]
 
 
+def _current_market_group_for_candidate(
+    *,
+    event_id: str,
+    market: str,
+    side: str,
+    max_quote_age_minutes: int,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    records = market_data_service.records_for_event(event_id)
+    market_key = _market_key(market)
+    side_key = str(side or "").strip().lower()
+
+    rows: list[dict[str, Any]] = []
+    now_utc = datetime.now(timezone.utc)
+    for record in records:
+        if _market_key(record.get("market")) != market_key:
+            continue
+        if str(record.get("side") or "").strip().lower() != side_key:
+            continue
+
+        provider_title = str(record.get("sportsbook") or "").strip()
+        if not provider_title:
+            continue
+
+        canonical = resolve_canonical_sportsbook(provider_title)
+        quote_timestamp = record.get("lastUpdated")
+        age_minutes = _quote_age_minutes(quote_timestamp, now_utc=now_utc)
+        quote_fresh = age_minutes is not None and age_minutes <= float(max_quote_age_minutes)
+
+        rows.append(
+            {
+                "api_event_id": event_id,
+                "market": market_key,
+                "side": side_key,
+                "sportsbook": provider_title,
+                "price": _safe_float(record.get("americanOdds")),
+                "point": _safe_float(record.get("point")),
+                "quoteLastUpdated": quote_timestamp,
+                "quoteAgeMinutes": round(float(age_minutes), 3) if age_minutes is not None else None,
+                "quoteFresh": bool(quote_fresh),
+                "sportsbookCanonicalKey": canonical.get("canonicalKey"),
+                "sportsbookCanonicalDisplay": canonical.get("canonicalDisplay"),
+                "sportsbookPolicyStatus": canonical.get("status"),
+                "sportsbookApprovedForActionable": bool(canonical.get("approvedForActionable")),
+                "sportsbookMappingVerified": bool(canonical.get("mappingVerified")),
+                "sportsbookActionableAllowed": bool(canonical.get("actionableAllowed")),
+            }
+        )
+
+    all_rows = pd.DataFrame(rows)
+    if all_rows.empty:
+        execution_meta = {
+            "status": "UNAVAILABLE_APPROVED_MARKET",
+            "reason": "No approved sportsbook quote was found for this event/market/side.",
+            "approvedRows": 0,
+            "freshRows": 0,
+        }
+        return all_rows, all_rows, execution_meta
+
+    approved_rows = all_rows[all_rows["sportsbookActionableAllowed"] == True].copy()
+    fresh_rows = approved_rows[approved_rows["quoteFresh"] == True].copy()
+
+    status = _execution_status_from_rows(len(approved_rows), len(fresh_rows))
+    if status == "UNAVAILABLE_APPROVED_MARKET":
+        reason = "No approved verified sportsbook quote was found for this event/market/side."
+    elif status == "STALE_APPROVED_MARKET":
+        reason = "Approved sportsbook quotes exist but all are stale for current-actionable use."
+    else:
+        reason = "Current executable quote selected from approved fresh sportsbook rows."
+
+    execution_meta = {
+        "status": status,
+        "reason": reason,
+        "approvedRows": int(len(approved_rows)),
+        "freshRows": int(len(fresh_rows)),
+    }
+    return approved_rows, fresh_rows, execution_meta
+
+
+def _build_original_candidate_snapshot(row: pd.Series) -> dict[str, Any]:
+    provider_title = str(row.get("sportsbook") or "").strip()
+    canonical = resolve_canonical_sportsbook(provider_title)
+    return {
+        "sportsbook": provider_title or None,
+        "sportsbookCanonicalKey": canonical.get("canonicalKey"),
+        "sportsbookCanonicalDisplay": canonical.get("canonicalDisplay"),
+        "sportsbookPolicyStatus": canonical.get("status"),
+        "point": _safe_float(row.get("point")),
+        "price": _safe_float(row.get("price")),
+        "recommendation": row.get("recommendation"),
+        "qualificationStatus": row.get("qualification_status"),
+        "rank": safe_int(row.get("rank")),
+    }
+
+
+def _prepare_current_execution_row(original_row: pd.Series, selected_execution_row: pd.Series | None) -> pd.Series:
+    row = original_row.copy()
+    if selected_execution_row is None:
+        return row
+
+    row["sportsbook"] = selected_execution_row.get("sportsbook")
+    row["point"] = selected_execution_row.get("point")
+    row["price"] = selected_execution_row.get("price")
+    row["market_no_vig_prob"] = _implied_probability_from_american(_safe_float(selected_execution_row.get("price")))
+    row["implied_prob_raw"] = row.get("market_no_vig_prob")
+    return row
+
+
 # ---------------------------------------------------------
 # OPPORTUNITIES
 # ---------------------------------------------------------
@@ -1451,7 +1669,6 @@ def get_opportunities(
     market_meta = market_data_service.metadata()
     if RANKED_BET_BOARD.exists():
         df = pd.read_csv(RANKED_BET_BOARD)
-        df = filter_current_market_sportsbook_rows(df)
     else:
         df = pd.DataFrame()
 
@@ -1550,27 +1767,70 @@ def get_opportunities(
         )
 
         for _, group in grouped:
-            selected = best_line_for_group(group)
-            if selected is None:
+            selected_model_candidate = group.sort_values("rank").iloc[0]
+            if selected_model_candidate is None:
                 continue
+
+            event_id = str(selected_model_candidate.get("api_event_id") or "")
+            market = _market_key(str(selected_model_candidate.get("market") or ""))
+            side = str(selected_model_candidate.get("side") or "")
+
+            approved_rows, fresh_rows, execution_meta = _current_market_group_for_candidate(
+                event_id=event_id,
+                market=market,
+                side=side,
+                max_quote_age_minutes=CURRENT_ACTIONABLE_MAX_ODDS_AGE_MINUTES,
+            )
+
+            selected_execution_row = select_best_line_row(fresh_rows) if not fresh_rows.empty else None
+            current_selected_row = _prepare_current_execution_row(selected_model_candidate, selected_execution_row)
+            original_candidate = _build_original_candidate_snapshot(selected_model_candidate)
+            selected_provider_title = str(selected_execution_row.get("sportsbook") or "").strip() if selected_execution_row is not None else ""
+            selected_canonical = resolve_canonical_sportsbook(selected_provider_title)
+
+            current_execution = {
+                "status": execution_meta["status"],
+                "reason": execution_meta["reason"],
+                "sportsbook": selected_provider_title or None,
+                "sportsbookCanonicalKey": selected_canonical.get("canonicalKey"),
+                "sportsbookCanonicalDisplay": selected_canonical.get("canonicalDisplay"),
+                "sportsbookPolicyStatus": selected_canonical.get("status"),
+                "providerTitle": selected_provider_title or None,
+                "point": _safe_float(selected_execution_row.get("point")) if selected_execution_row is not None else None,
+                "price": _safe_float(selected_execution_row.get("price")) if selected_execution_row is not None else None,
+                "quoteTimestamp": selected_execution_row.get("quoteLastUpdated") if selected_execution_row is not None else None,
+                "quoteAgeMinutes": _safe_float(selected_execution_row.get("quoteAgeMinutes")) if selected_execution_row is not None else None,
+                "maxAllowedQuoteAgeMinutes": CURRENT_ACTIONABLE_MAX_ODDS_AGE_MINUTES,
+                "currentMarketTimestamp": market_meta.get("lastUpdated"),
+                "approvedRows": execution_meta["approvedRows"],
+                "freshRows": execution_meta["freshRows"],
+            }
+
             group_min_rank = int(group["rank"].min()) if "rank" in group.columns else 9999
-            model_prob = _unit_probability(safe_float(selected.get("model_prob")))
-            implied_prob = _unit_probability(safe_float(selected.get("implied_prob_raw")))
+            model_prob = _unit_probability(safe_float(current_selected_row.get("model_prob")))
+            implied_prob = _unit_probability(safe_float(current_selected_row.get("implied_prob_raw")))
             calibrated_prob = apply_guarded_isotonic(model_prob)
             calibrated_edge = (calibrated_prob - implied_prob) if calibrated_prob is not None and implied_prob is not None else -999.0
+
+            alternates_group = fresh_rows if not fresh_rows.empty else pd.DataFrame()
+            all_books = make_all_available_books(alternates_group, selected_execution_row) if selected_execution_row is not None else []
+            alternates = make_alternate_books(alternates_group, selected_execution_row) if selected_execution_row is not None else []
+
             candidate_rows.append(
                 {
-                    "selected": selected,
-                    "group": group,
-                    "alternates": make_alternate_books(group, selected),
-                    "allAvailableBooks": make_all_available_books(group, selected),
+                    "selected": current_selected_row,
+                    "group": alternates_group,
+                    "alternates": alternates,
+                    "allAvailableBooks": all_books,
                     "groupMinRank": group_min_rank,
                     "calibratedEdge": float(calibrated_edge),
-                    "ev": float(safe_float(selected.get("ev_per_dollar")) or 0.0),
-                    "confidence": float(safe_float(selected.get("confidence_score")) or 0.0),
-                    "eventId": str(selected.get("api_event_id") or ""),
-                    "market": _market_key(str(selected.get("market") or "")),
-                    "side": str(selected.get("side") or ""),
+                    "ev": float(safe_float(current_selected_row.get("ev_per_dollar")) or 0.0),
+                    "confidence": float(safe_float(current_selected_row.get("confidence_score")) or 0.0),
+                    "eventId": str(current_selected_row.get("api_event_id") or ""),
+                    "market": _market_key(str(current_selected_row.get("market") or "")),
+                    "side": str(current_selected_row.get("side") or ""),
+                    "originalCandidate": original_candidate,
+                    "currentExecution": current_execution,
                 }
             )
 
@@ -1615,12 +1875,35 @@ def get_opportunities(
                 "eventId": str(selected.get("api_event_id") or ""),
                 "market": _market_key(str(selected.get("market") or "")),
                 "side": str(selected.get("side") or ""),
+                "originalCandidate": _build_original_candidate_snapshot(selected),
+                "currentExecution": {
+                    "status": "AVAILABLE",
+                    "reason": "Generated candidate already reflects current approved market state.",
+                    "sportsbook": selected.get("sportsbook"),
+                    "sportsbookCanonicalKey": resolve_canonical_sportsbook(selected.get("sportsbook")).get("canonicalKey"),
+                    "sportsbookCanonicalDisplay": resolve_canonical_sportsbook(selected.get("sportsbook")).get("canonicalDisplay"),
+                    "sportsbookPolicyStatus": resolve_canonical_sportsbook(selected.get("sportsbook")).get("status"),
+                    "providerTitle": selected.get("sportsbook"),
+                    "point": _safe_float(selected.get("point")),
+                    "price": _safe_float(selected.get("price")),
+                    "quoteTimestamp": market_meta.get("lastUpdated"),
+                    "quoteAgeMinutes": _quote_age_minutes(market_meta.get("lastUpdated")),
+                    "maxAllowedQuoteAgeMinutes": CURRENT_ACTIONABLE_MAX_ODDS_AGE_MINUTES,
+                    "currentMarketTimestamp": market_meta.get("lastUpdated"),
+                    "approvedRows": 1,
+                    "freshRows": 1,
+                },
             }
         )
 
     # Keep spread-first ordering for continuity; rank within each family by calibrated edge.
     market_priority = {"spread": 0, "moneyline": 1, "total": 2}
-    candidate_rows.sort(
+    actionable_candidates = [
+        row for row in candidate_rows
+        if str((row.get("currentExecution") or {}).get("status") or "") == "AVAILABLE"
+    ]
+
+    actionable_candidates.sort(
         key=lambda r: (
             market_priority.get(r["market"], 3),
             -r["calibratedEdge"],
@@ -1632,10 +1915,10 @@ def get_opportunities(
             r["side"],
         )
     )
-    candidate_rows = candidate_rows[:limit]
+    ranked_candidates = candidate_rows[:limit] if include_experimental else actionable_candidates[:limit]
 
     all_rows = []
-    for week_rank, candidate in enumerate(candidate_rows, start=1):
+    for week_rank, candidate in enumerate(ranked_candidates, start=1):
         selected = candidate["selected"]
         item = row_to_opportunity(
             selected,
@@ -1645,6 +1928,8 @@ def get_opportunities(
             injury_ctx=shared_injury_ctx,
             group_rows=candidate["group"],
             game_projection_row=projection_lookup.get(str(selected["api_event_id"])),
+            original_candidate=candidate.get("originalCandidate"),
+            current_execution=candidate.get("currentExecution"),
         )
         # globalResearchRank is fallback ordering for research (not validated cross-market quality).
         item["globalResearchRank"] = week_rank
@@ -1667,7 +1952,12 @@ def get_opportunities(
         item["crossMarketComparable"] = False
         item["normalizedRankingScore"] = (item.get("sportsIntelligenceScore") or {}).get("score")
 
-    production_rows = [item for item in all_rows if bool(item.get("productionEligible"))]
+    production_rows = [
+        item
+        for item in all_rows
+        if bool(item.get("productionEligible"))
+        and bool((item.get("currentQualification") or {}).get("actionable"))
+    ]
     production_rows.sort(key=lambda r: int(r.get("globalResearchRank") or 9999))
     production_ids = {id(item) for item in production_rows}
     for idx, item in enumerate(production_rows, start=1):
@@ -1823,26 +2113,53 @@ def get_opportunity_analysis(
             ),
         )
 
-    selected = (
-        best_line_for_group(
-            match
-        )
+    model_candidate = match.sort_values("rank").iloc[0]
+    approved_rows, fresh_rows, execution_meta = _current_market_group_for_candidate(
+        event_id=str(model_candidate.get("api_event_id") or ""),
+        market=_market_key(str(model_candidate.get("market") or "")),
+        side=str(model_candidate.get("side") or ""),
+        max_quote_age_minutes=CURRENT_ACTIONABLE_MAX_ODDS_AGE_MINUTES,
     )
+    selected_execution_row = select_best_line_row(fresh_rows) if not fresh_rows.empty else None
+    selected = _prepare_current_execution_row(model_candidate, selected_execution_row)
 
-    if selected is None:
+    if selected_execution_row is None:
         raise HTTPException(
             status_code=404,
             detail=(
-                "No eligible current quote is available for this opportunity"
+                execution_meta.get("reason")
+                or "No eligible current quote is available for this opportunity"
             ),
         )
 
+    selected_provider_title = str(selected_execution_row.get("sportsbook") or "").strip()
+    selected_canonical = resolve_canonical_sportsbook(selected_provider_title)
+    current_execution = {
+        "status": execution_meta["status"],
+        "reason": execution_meta["reason"],
+        "sportsbook": selected_provider_title or None,
+        "sportsbookCanonicalKey": selected_canonical.get("canonicalKey"),
+        "sportsbookCanonicalDisplay": selected_canonical.get("canonicalDisplay"),
+        "sportsbookPolicyStatus": selected_canonical.get("status"),
+        "providerTitle": selected_provider_title or None,
+        "point": _safe_float(selected_execution_row.get("point")),
+        "price": _safe_float(selected_execution_row.get("price")),
+        "quoteTimestamp": selected_execution_row.get("quoteLastUpdated"),
+        "quoteAgeMinutes": _safe_float(selected_execution_row.get("quoteAgeMinutes")),
+        "maxAllowedQuoteAgeMinutes": CURRENT_ACTIONABLE_MAX_ODDS_AGE_MINUTES,
+        "currentMarketTimestamp": market_data_service.metadata().get("lastUpdated"),
+        "approvedRows": execution_meta["approvedRows"],
+        "freshRows": execution_meta["freshRows"],
+    }
+
     alternates = (
         make_alternate_books(
-            match,
-            selected,
+            fresh_rows,
+            selected_execution_row,
         )
     )
+
+    all_available_books = make_all_available_books(fresh_rows, selected_execution_row)
 
     projection_lookup = load_game_projection_lookup()
 
@@ -1852,9 +2169,12 @@ def get_opportunity_analysis(
             include_alternates=(
                 alternates
             ),
+            include_all_available_books=all_available_books,
             market_snapshot=market_data_service.event_market_snapshot(str(selected["api_event_id"])),
-            group_rows=match,
+            group_rows=approved_rows,
             game_projection_row=projection_lookup.get(str(selected["api_event_id"])),
+            original_candidate=_build_original_candidate_snapshot(model_candidate),
+            current_execution=current_execution,
         )
     )
 

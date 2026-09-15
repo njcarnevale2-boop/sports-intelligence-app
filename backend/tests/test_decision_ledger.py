@@ -604,6 +604,8 @@ def test_official_preview_filters_non_production_markets(tmp_path, monkeypatch):
             "book": "DraftKings",
             "qualificationStatus": "QUALIFIED",
             "productionEligible": True,
+            "currentExecution": {"status": "AVAILABLE", "sportsbook": "DraftKings", "point": 3.0, "price": -110},
+            "currentQualification": {"status": "QUALIFIED", "actionable": True},
         },
     ]
 
@@ -611,6 +613,64 @@ def test_official_preview_filters_non_production_markets(tmp_path, monkeypatch):
     decisions = [s.get("decision") for s in preview.get("slots", []) if s.get("decision")]
     assert decisions
     assert all(str(d.get("market") or "").lower() in {"spread", "spreads"} for d in decisions)
+
+
+def test_official_preview_excludes_candidates_without_available_current_execution(tmp_path, monkeypatch):
+    import app.services.decision_ledger as dl
+
+    monkeypatch.setattr(dl, "_DB_PATH", tmp_path / "ledger.db")
+    monkeypatch.setattr(
+        dl,
+        "_snapshot_linkage",
+        lambda **kwargs: {
+            "verified": True,
+            "reason": "VERIFIED",
+            "sourceSnapshotId": "snap-1",
+            "oddsTimestamp": "2026-09-13T15:00:00+00:00",
+            "snapshotAgeMinutes": 1.0,
+            "linePriceMatch": True,
+        },
+    )
+
+    opportunities = [
+        {
+            "eventId": "evt-stale",
+            "commenceTime": "2026-09-13T17:00:00+00:00",
+            "awayTeam": "NYG",
+            "homeTeam": "LAR",
+            "pick": "NYG +8.5",
+            "market": "spread",
+            "side": "away",
+            "point": 8.5,
+            "price": -110,
+            "book": "DraftKings",
+            "qualificationStatus": "QUALIFIED",
+            "productionEligible": True,
+            "currentExecution": {"status": "STALE_APPROVED_MARKET", "sportsbook": "DraftKings"},
+            "currentQualification": {"status": "NOT_QUALIFIED", "actionable": False},
+        },
+        {
+            "eventId": "evt-live",
+            "commenceTime": "2026-09-13T17:00:00+00:00",
+            "awayTeam": "NO",
+            "homeTeam": "ATL",
+            "pick": "NO +3",
+            "market": "spread",
+            "side": "away",
+            "point": 3.0,
+            "price": -110,
+            "book": "DraftKings",
+            "qualificationStatus": "QUALIFIED",
+            "productionEligible": True,
+            "currentExecution": {"status": "AVAILABLE", "sportsbook": "DraftKings", "point": 3.0, "price": -110},
+            "currentQualification": {"status": "QUALIFIED", "actionable": True},
+        },
+    ]
+
+    preview = dl.build_official_sia3_preview(opportunities, season=2026, week=1)
+    decisions = [s.get("decision") for s in preview.get("slots", []) if s.get("decision")]
+    assert len(decisions) == 1
+    assert decisions[0]["eventId"] == "evt-live"
 
 
 def test_official_publish_rejects_non_production_market_family(tmp_path, monkeypatch):

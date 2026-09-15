@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -90,6 +91,9 @@ def test_current_market_policy_filters_raw_history_without_mutating_source() -> 
     assert is_current_market_sportsbook_allowed("LowVig.ag") is False
     assert is_current_market_sportsbook_allowed("low vig ag") is False
     assert is_current_market_sportsbook_allowed("LOW-VIG.AG") is False
+    assert is_current_market_sportsbook_allowed("BetUS") is False
+    assert is_current_market_sportsbook_allowed("BetOnline") is False
+    assert is_current_market_sportsbook_allowed("Bovada") is False
     assert list(filtered["sportsbook"]) == ["DraftKings"]
     assert raw.equals(original)
 
@@ -217,6 +221,32 @@ def test_current_opportunities_skip_lowvig_and_recompute_from_remaining_quotes(t
         },
     )
     monkeypatch.setattr(opportunities, "load_game_projection_lookup", lambda: {"evt-lowvig": {"model_margin_home": 2.7, "model_total_baseline": 47.5}})
+    monkeypatch.setattr(
+        opportunities.market_data_service,
+        "records_for_event",
+        lambda event_id: [
+            {
+                "eventId": "evt-lowvig",
+                "market": "spread",
+                "side": "away",
+                "point": 3.0,
+                "americanOdds": -105,
+                "sportsbook": "LowVig.ag",
+                "lastUpdated": datetime.now(timezone.utc).isoformat(),
+            },
+            {
+                "eventId": "evt-lowvig",
+                "market": "spread",
+                "side": "away",
+                "point": 3.0,
+                "americanOdds": -110,
+                "sportsbook": "DraftKings",
+                "lastUpdated": datetime.now(timezone.utc).isoformat(),
+            },
+        ]
+        if str(event_id) == "evt-lowvig"
+        else [],
+    )
     monkeypatch.setattr(opportunities, "_build_generated_multimarket_candidates", lambda **kwargs: [])
     monkeypatch.setattr(opportunities, "get_market_intelligence", lambda **kwargs: {"booksTracked": 2, "booksMoving": 1, "signal": "CONFIRMED"})
 
@@ -228,15 +258,18 @@ def test_current_opportunities_skip_lowvig_and_recompute_from_remaining_quotes(t
     monkeypatch.setattr("app.services.games.service.list_games", lambda week=None, game_date=None: {"availableWeeks": [1], "games": [{"eventId": "evt-lowvig", "season": 2026, "week": 1}]})
     monkeypatch.setattr("app.services.probability_engine.load_historical_residuals", _mock_residuals)
 
-    payload = opportunities.get_opportunities(limit=10, best_lines_only=True, week=1)
+    payload = opportunities.get_opportunities(limit=10, best_lines_only=True, include_experimental=True, week=1)
 
     assert payload["count"] == 1
+    assert payload["productionCount"] == 0
     opp = payload["opportunities"][0]
     assert opp["book"] == "DraftKings"
     assert opp["point"] == 3.0
     assert opp["price"] == -110.0
+    assert opp["productionEligible"] is True
+    assert opp["currentQualification"]["actionable"] is False
     assert round(float(opp["evPerDollar"]), 3) == -0.036
-    assert opp["kelly20"] == 0.03
+    assert opp["kelly20"] == 0.11
     assert opp["allAvailableBooks"][0]["book"] == "DraftKings"
     assert all(book["book"] != "LowVig.ag" for book in opp["allAvailableBooks"])
 
@@ -274,6 +307,23 @@ def test_lowvig_only_current_opportunity_cannot_remain_actionable(tmp_path: Path
     monkeypatch.setattr(opportunities, "RANKED_BET_BOARD", board_path)
     monkeypatch.setattr(opportunities.market_data_service, "metadata", lambda: {"provider": "line_movement_board", "lastUpdated": "2026-09-07T00:00:00+00:00", "dataStatus": "FILE"})
     monkeypatch.setattr(opportunities.market_data_service, "all_event_snapshots", lambda: {})
+    monkeypatch.setattr(
+        opportunities.market_data_service,
+        "records_for_event",
+        lambda event_id: [
+            {
+                "eventId": "evt-lowvig-only",
+                "market": "spread",
+                "side": "away",
+                "point": 3.0,
+                "americanOdds": -105,
+                "sportsbook": "LowVig.ag",
+                "lastUpdated": datetime.now(timezone.utc).isoformat(),
+            }
+        ]
+        if str(event_id) == "evt-lowvig-only"
+        else [],
+    )
     monkeypatch.setattr(opportunities, "load_game_projection_lookup", lambda: {})
     monkeypatch.setattr(opportunities, "_build_generated_multimarket_candidates", lambda **kwargs: [])
     monkeypatch.setattr(opportunities, "get_market_intelligence", lambda **kwargs: {"booksTracked": 0, "booksMoving": 0, "signal": "UNSET"})
@@ -298,6 +348,8 @@ def test_official_preview_excludes_lowvig_and_publish_rejects_excluded_quotes(tm
             "price": -105,
             "qualificationStatus": "QUALIFIED",
             "productionEligible": True,
+            "currentExecution": {"status": "UNAVAILABLE_APPROVED_MARKET", "sportsbook": "LowVig.ag"},
+            "currentQualification": {"actionable": False},
         },
         {
             "eventId": "evt-preview",
@@ -309,6 +361,8 @@ def test_official_preview_excludes_lowvig_and_publish_rejects_excluded_quotes(tm
             "price": -110,
             "qualificationStatus": "QUALIFIED",
             "productionEligible": True,
+            "currentExecution": {"status": "AVAILABLE", "sportsbook": "DraftKings"},
+            "currentQualification": {"actionable": True},
         },
     ]
 
