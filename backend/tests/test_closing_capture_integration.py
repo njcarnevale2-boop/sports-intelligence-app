@@ -44,13 +44,17 @@ def db_path(tmp_path):
             snapshot_id VARCHAR PRIMARY KEY, event_id VARCHAR NOT NULL,
             recommended_at TIMESTAMP NOT NULL, market VARCHAR NOT NULL,
             side VARCHAR NOT NULL, point DOUBLE, price DOUBLE,
-            sportsbook VARCHAR, si_score DOUBLE, model_probability DOUBLE,
+            sportsbook VARCHAR, sportsbook_provider_key VARCHAR,
+            si_score DOUBLE, model_probability DOUBLE,
             edge_pp DOUBLE, ev_per_dollar DOUBLE,
             market_intelligence TEXT, injury_context TEXT, weather_context TEXT,
             commence_time TIMESTAMP, home_team VARCHAR, away_team VARCHAR,
             closing_status VARCHAR DEFAULT 'PENDING',
             closing_point DOUBLE, closing_price DOUBLE,
             closing_sportsbook VARCHAR, closing_at TIMESTAMP,
+            closing_reason_code VARCHAR,
+            closing_boundary_used_at TIMESTAMP,
+            closing_resolution_version VARCHAR,
             clv_points DOUBLE, clv_probability DOUBLE, clv_percent DOUBLE
         )
     """)
@@ -59,16 +63,16 @@ def db_path(tmp_path):
 
 
 def _insert_snap(db_path, event_id, market, side, rec_point, rec_price,
-                 sportsbook, kickoff_naive, status="PENDING"):
+                 sportsbook, kickoff_naive, provider_key=None, status="PENDING"):
     import duckdb
     sid = str(uuid.uuid4())
     con = duckdb.connect(str(db_path))
     con.execute(
         "INSERT INTO recommendation_snapshots "
         "(snapshot_id,event_id,recommended_at,market,side,"
-        "point,price,sportsbook,closing_status,commence_time) "
-        "VALUES (?,?,CURRENT_TIMESTAMP,?,?,?,?,?,?,?)",
-        [sid, event_id, market, side, rec_point, rec_price, sportsbook, status, kickoff_naive],
+        "point,price,sportsbook,sportsbook_provider_key,closing_status,commence_time) "
+        "VALUES (?,?,CURRENT_TIMESTAMP,?,?,?,?,?,?,?,?)",
+        [sid, event_id, market, side, rec_point, rec_price, sportsbook, provider_key, status, kickoff_naive],
     )
     con.close()
     return sid
@@ -89,14 +93,20 @@ def _insert_odds(db_path, event_id, market, side, point, price, bookmaker_key, f
     con.close()
 
 
-def _run_capture(db_path):
+def _run_capture(db_path, *, max_quote_age_minutes=None):
     import app.services.recommendation_snapshot as rs
     import app.services.closing_line as cl
-    with (
+    patchers = [
         patch.object(rs, "_DB_PATH", db_path),
         patch.object(cl, "_DB_PATH", db_path),
         patch.object(rs, "_kickoff_for_event", return_value=None),
-    ):
+    ]
+    if max_quote_age_minutes is not None:
+        patchers.append(patch.object(rs, "_CLOSING_MAX_QUOTE_AGE_MINUTES", int(max_quote_age_minutes)))
+    with patchers[0], patchers[1], patchers[2]:
+        if len(patchers) == 4:
+            with patchers[3]:
+                return rs.capture_closing_lines()
         return rs.capture_closing_lines()
 
 
@@ -104,7 +114,7 @@ def _fetch(db_path, event_id):
     import duckdb
     con = duckdb.connect(str(db_path), read_only=True)
     rows = con.execute(
-        "SELECT closing_status, closing_point, clv_points "
+        "SELECT closing_status, closing_point, clv_points, closing_reason_code "
         "FROM recommendation_snapshots WHERE event_id=? ORDER BY recommended_at",
         [event_id],
     ).fetchall()
@@ -115,8 +125,8 @@ def _fetch(db_path, event_id):
 def test_game_not_started_remains_pending(db_path):
     """Kickoff in the future -> snapshot stays PENDING."""
     kickoff = _naive(_utc(+2))
-    _insert_snap(db_path, "evt1", "spreads", "away", 7.0, -110.0, "DK", kickoff)
-    _insert_odds(db_path, "evt1", "spreads", "away", 7.0, -110.0, "DK", _naive(_utc(-1)))
+    _insert_snap(db_path, "evt1", "SPREAD", "AWAY", 7.0, -110.0, "DraftKings", kickoff, provider_key="draftkings")
+    _insert_odds(db_path, "evt1", "spreads", "away", 7.0, -110.0, "draftkings", _naive(_utc(-1)))
     counts = _run_capture(db_path)
     assert counts["pending"] == 1 and counts["captured"] == 0
     assert _fetch(db_path, "evt1")[0][0] == "PENDING"
@@ -125,12 +135,12 @@ def test_game_not_started_remains_pending(db_path):
 def test_game_started_valid_pre_kick_snapshot_available(db_path):
     """Kickoff passed, pre-kick odds exist -> AVAILABLE + correct spread CLV."""
     kickoff = _naive(_utc(-1))
-    _insert_snap(db_path, "evt2", "spreads", "away", 7.0, -110.0, "DK", kickoff)
-    _insert_odds(db_path, "evt2", "spreads", "away", 5.5, -110.0, "DK", _naive(_utc(-1.5)))
+    _insert_snap(db_path, "evt2", "SPREAD", "AWAY", 7.0, -110.0, "DraftKings", kickoff, provider_key="draftkings")
+    _insert_odds(db_path, "evt2", "spreads", "away", 5.5, -110.0, "draftkings", _naive(_utc(-1.5)))
     counts = _run_capture(db_path)
     assert counts["captured"] == 1
-    status, close_pt, clv_pts = _fetch(db_path, "evt2")[0]
-    assert status == "AVAILABLE"
+    status, close_pt, clv_pts, _ = _fetch(db_path, "evt2")[0]
+    assert status == "CAPTURED"
     assert close_pt == pytest.approx(5.5)
     assert clv_pts == pytest.approx(1.5, abs=0.01)
 
@@ -138,19 +148,19 @@ def test_game_started_valid_pre_kick_snapshot_available(db_path):
 def test_repeated_capture_is_idempotent(db_path):
     """Running capture twice must not change an AVAILABLE record."""
     kickoff = _naive(_utc(-1))
-    _insert_snap(db_path, "evt3", "spreads", "home", -3.5, -110.0, "FD", kickoff)
-    _insert_odds(db_path, "evt3", "spreads", "home", -2.5, -110.0, "FD", _naive(_utc(-1.5)))
+    _insert_snap(db_path, "evt3", "SPREAD", "HOME", -3.5, -110.0, "FanDuel", kickoff, provider_key="fanduel")
+    _insert_odds(db_path, "evt3", "spreads", "home", -2.5, -110.0, "fanduel", _naive(_utc(-1.5)))
     assert _run_capture(db_path)["captured"] == 1
     assert _run_capture(db_path)["captured"] == 0
     rows = _fetch(db_path, "evt3")
-    assert len(rows) == 1 and rows[0][0] == "AVAILABLE"
+    assert len(rows) == 1 and rows[0][0] == "CAPTURED"
 
 
 def test_already_captured_line_is_skipped(db_path):
     """AVAILABLE snapshots are not reprocessed by later capture runs."""
     kickoff = _naive(_utc(-1))
-    _insert_snap(db_path, "evt3b", "spreads", "home", -3.5, -110.0, "FD", kickoff, status="AVAILABLE")
-    _insert_odds(db_path, "evt3b", "spreads", "home", -2.5, -110.0, "FD", _naive(_utc(-1.5)))
+    _insert_snap(db_path, "evt3b", "SPREAD", "HOME", -3.5, -110.0, "FanDuel", kickoff, provider_key="fanduel", status="AVAILABLE")
+    _insert_odds(db_path, "evt3b", "spreads", "home", -2.5, -110.0, "fanduel", _naive(_utc(-1.5)))
     counts = _run_capture(db_path)
     assert counts["eligible"] == 0
     assert counts["captured"] == 0
@@ -161,21 +171,23 @@ def test_already_captured_line_is_skipped(db_path):
 def test_no_eligible_pre_kick_snapshot_marks_not_captured(db_path):
     """All odds snaps fall within the 2-min cutoff -> NOT_CAPTURED."""
     kickoff = _naive(_utc(-1))
-    _insert_snap(db_path, "evt4", "spreads", "away", 6.0, -110.0, "BM", kickoff)
-    _insert_odds(db_path, "evt4", "spreads", "away", 5.5, -110.0, "BM", kickoff)
+    _insert_snap(db_path, "evt4", "SPREAD", "AWAY", 6.0, -110.0, "BetMGM", kickoff, provider_key="betmgm")
+    _insert_odds(db_path, "evt4", "spreads", "away", 5.5, -110.0, "betmgm", kickoff)
     counts = _run_capture(db_path)
     assert counts["missing"] == 1
-    assert _fetch(db_path, "evt4")[0][0] == "NOT_CAPTURED"
+    status, _, _, reason = _fetch(db_path, "evt4")[0]
+    assert status == "UNAVAILABLE"
+    assert reason == "NO_ELIGIBLE_SAME_BOOK_QUOTE"
 
 
 def test_post_kick_odds_excluded_from_closing_line(db_path):
     """Pre-kick AND post-kick snapshots exist - only pre-kick is used."""
     kickoff = _naive(_utc(-1))
-    _insert_snap(db_path, "evt5", "totals", "under", 48.5, -110.0, "DK", kickoff)
-    _insert_odds(db_path, "evt5", "totals", "under", 47.0, -110.0, "DK", _naive(_utc(-1.5)))
-    _insert_odds(db_path, "evt5", "totals", "under", 44.0, -110.0, "DK", _naive(_utc(-0.3)))
+    _insert_snap(db_path, "evt5", "TOTAL", "UNDER", 48.5, -110.0, "DraftKings", kickoff, provider_key="draftkings")
+    _insert_odds(db_path, "evt5", "totals", "under", 47.0, -110.0, "draftkings", _naive(_utc(-1.5)))
+    _insert_odds(db_path, "evt5", "totals", "under", 44.0, -110.0, "draftkings", _naive(_utc(-0.3)))
     _run_capture(db_path)
-    _, close_pt, _ = _fetch(db_path, "evt5")[0]
+    _, close_pt, _, _ = _fetch(db_path, "evt5")[0]
     assert close_pt == pytest.approx(47.0)
 
 
@@ -183,10 +195,10 @@ def test_multiple_recommendations_same_game(db_path):
     """Two recommendations for the same event are captured independently."""
     kickoff = _naive(_utc(-1))
     pre = _naive(_utc(-1.5))
-    _insert_snap(db_path, "evt6", "spreads", "away",  7.0, -110.0, "DK", kickoff)
-    _insert_snap(db_path, "evt6", "totals",  "over", 48.5, -110.0, "DK", kickoff)
-    _insert_odds(db_path, "evt6", "spreads", "away",  5.5, -110.0, "DK", pre)
-    _insert_odds(db_path, "evt6", "totals",  "over", 50.0, -110.0, "DK", pre)
+    _insert_snap(db_path, "evt6", "SPREAD", "AWAY",  7.0, -110.0, "DraftKings", kickoff, provider_key="draftkings")
+    _insert_snap(db_path, "evt6", "TOTAL",  "OVER", 48.5, -110.0, "DraftKings", kickoff, provider_key="draftkings")
+    _insert_odds(db_path, "evt6", "spreads", "away",  5.5, -110.0, "draftkings", pre)
+    _insert_odds(db_path, "evt6", "totals",  "over", 50.0, -110.0, "draftkings", pre)
     counts = _run_capture(db_path)
     assert counts["captured"] == 2
     import duckdb
@@ -196,18 +208,18 @@ def test_multiple_recommendations_same_game(db_path):
         "WHERE event_id='evt6' ORDER BY market"
     ).fetchall()}
     con.close()
-    assert row_dict["spreads"] == pytest.approx(5.5)
-    assert row_dict["totals"]  == pytest.approx(50.0)
+    assert row_dict["SPREAD"] == pytest.approx(5.5)
+    assert row_dict["TOTAL"]  == pytest.approx(50.0)
 
 
 def test_different_sportsbooks_captured_separately(db_path):
     """Two sportsbooks for same event/market produce separate records."""
     kickoff = _naive(_utc(-1))
     pre = _naive(_utc(-1.5))
-    _insert_snap(db_path, "evt7", "spreads", "away", 7.0, -110.0, "DraftKings", kickoff)
-    _insert_snap(db_path, "evt7", "spreads", "away", 7.0, -110.0, "FanDuel",    kickoff)
-    _insert_odds(db_path, "evt7", "spreads", "away", 5.5, -110.0, "DraftKings", pre)
-    _insert_odds(db_path, "evt7", "spreads", "away", 6.0, -110.0, "FanDuel",    pre)
+    _insert_snap(db_path, "evt7", "SPREAD", "AWAY", 7.0, -110.0, "DraftKings", kickoff, provider_key="draftkings")
+    _insert_snap(db_path, "evt7", "SPREAD", "AWAY", 7.0, -110.0, "FanDuel",    kickoff, provider_key="fanduel")
+    _insert_odds(db_path, "evt7", "spreads", "away", 5.5, -110.0, "draftkings", pre)
+    _insert_odds(db_path, "evt7", "spreads", "away", 6.0, -110.0, "fanduel",    pre)
     counts = _run_capture(db_path)
     assert counts["captured"] == 2
     import duckdb
@@ -219,6 +231,29 @@ def test_different_sportsbooks_captured_separately(db_path):
     con.close()
     assert book_dict["DraftKings"] == pytest.approx(5.5)
     assert book_dict["FanDuel"]    == pytest.approx(6.0)
+
+
+def test_fanatics_without_verified_provider_mapping_becomes_mapping_blocked(db_path):
+    kickoff = _naive(_utc(-1))
+    _insert_snap(db_path, "evt8", "SPREAD", "AWAY", 7.0, -110.0, "Fanatics Sportsbook", kickoff, provider_key=None)
+    _insert_odds(db_path, "evt8", "spreads", "away", 5.5, -110.0, "fanatics", _naive(_utc(-1.5)))
+    counts = _run_capture(db_path)
+    assert counts["missing"] == 1
+    status, _, _, reason = _fetch(db_path, "evt8")[0]
+    assert status == "MAPPING_BLOCKED"
+    assert reason == "UNVERIFIED_PROVIDER_MAPPING"
+
+
+def test_stale_pre_kick_quote_is_unavailable_with_reason_code(db_path):
+    kickoff = _naive(_utc(-1))
+    old_quote = kickoff - timedelta(hours=6)
+    _insert_snap(db_path, "evt9", "SPREAD", "AWAY", 7.0, -110.0, "DraftKings", kickoff, provider_key="draftkings")
+    _insert_odds(db_path, "evt9", "spreads", "away", 5.5, -110.0, "draftkings", old_quote)
+    _run_capture(db_path, max_quote_age_minutes=30)
+    status, close_pt, _, reason = _fetch(db_path, "evt9")[0]
+    assert status == "UNAVAILABLE"
+    assert close_pt is None
+    assert reason == "STALE_PRE_KICK_EVIDENCE"
 
 
 def test_get_refresh_status_includes_clv_fields(tmp_path):

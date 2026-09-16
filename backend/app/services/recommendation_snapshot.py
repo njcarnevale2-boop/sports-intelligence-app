@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -18,12 +19,16 @@ from typing import Any, Dict, List, Optional
 
 from app.runtime_paths import runtime_paths
 from app.services.closing_line import calculate_clv, get_closing_line
+from app.services.sportsbook_policy import resolve_closing_provider_key
 
 
 log = logging.getLogger("recommendation_snapshot")
 
 _DB_PATH = runtime_paths.nfl_model_duckdb
 _SCHEDULE_CSV = runtime_paths.current_game_projections_csv
+_CLOSING_CUTOFF_MINUTES = int(os.getenv("CLOSING_LINE_CUTOFF_MINUTES", "2"))
+_CLOSING_MAX_QUOTE_AGE_MINUTES = int(os.getenv("CLOSING_MAX_QUOTE_AGE_MINUTES", "120"))
+_CLOSING_RESOLUTION_VERSION = "sia_closing_v3a4"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS recommendation_snapshots (
@@ -38,6 +43,7 @@ CREATE TABLE IF NOT EXISTS recommendation_snapshots (
     point              DOUBLE,
     price              DOUBLE,
     sportsbook         VARCHAR,
+    sportsbook_provider_key VARCHAR,
     quote_timestamp    TIMESTAMP,
     market_timestamp   TIMESTAMP,
     si_score           DOUBLE,
@@ -70,6 +76,9 @@ CREATE TABLE IF NOT EXISTS recommendation_snapshots (
     closing_price      DOUBLE,
     closing_sportsbook VARCHAR,
     closing_at         TIMESTAMP,
+    closing_reason_code VARCHAR,
+    closing_boundary_used_at TIMESTAMP,
+    closing_resolution_version VARCHAR,
     clv_points         DOUBLE,
     clv_probability    DOUBLE,
     clv_percent        DOUBLE,
@@ -104,6 +113,7 @@ def _ensure_schema() -> None:
         "selection": "VARCHAR",
         "quote_timestamp": "TIMESTAMP",
         "market_timestamp": "TIMESTAMP",
+        "sportsbook_provider_key": "VARCHAR",
         "raw_model_probability": "DOUBLE",
         "calibrated_probability": "DOUBLE",
         "push_probability": "DOUBLE",
@@ -126,6 +136,9 @@ def _ensure_schema() -> None:
         "qualification_policy_version": "VARCHAR",
         "model_timestamp": "TIMESTAMP",
         "decision_id": "VARCHAR",
+        "closing_reason_code": "VARCHAR",
+        "closing_boundary_used_at": "TIMESTAMP",
+        "closing_resolution_version": "VARCHAR",
     }
     for name, sql_type in required_columns.items():
         if name in existing_columns:
@@ -220,6 +233,24 @@ def _normalize_snapshot_id_seed(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _normalize_snapshot_market(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if text in {"SPREAD", "SPREADS"}:
+        return "SPREAD"
+    if text in {"TOTAL", "TOTALS"}:
+        return "TOTAL"
+    if text in {"MONEYLINE", "H2H"}:
+        return "MONEYLINE"
+    return text
+
+
+def _normalize_snapshot_side(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if text in {"HOME", "AWAY", "OVER", "UNDER"}:
+        return text
+    return text
+
+
 def build_snapshot_id(payload: Dict[str, Any]) -> str:
     """Deterministic id for idempotent Add-to-My-Card tracking writes."""
     seed = _normalize_snapshot_id_seed(payload)
@@ -305,6 +336,12 @@ def store_snapshot(payload: Dict[str, Any]) -> str:
 
     snapshot_id = build_snapshot_id(payload)
     now = datetime.now(timezone.utc).replace(tzinfo=None)
+    normalized_market = _normalize_snapshot_market(payload.get("market"))
+    normalized_side = _normalize_snapshot_side(payload.get("side"))
+    sportsbook_provider_key = payload.get("sportsbookProviderKey")
+    if not sportsbook_provider_key:
+        resolved_closing_mapping = resolve_closing_provider_key(payload.get("sportsbook"))
+        sportsbook_provider_key = resolved_closing_mapping.get("providerKey")
 
     values = [
         snapshot_id,
@@ -313,11 +350,12 @@ def store_snapshot(payload: Dict[str, Any]) -> str:
         payload.get("eventId", ""),
         now,
         payload.get("selection"),
-        payload.get("market", ""),
-        payload.get("side", ""),
+        normalized_market,
+        normalized_side,
         payload.get("point"),
         payload.get("price"),
         payload.get("sportsbook"),
+        sportsbook_provider_key,
         payload.get("quoteTimestamp"),
         payload.get("marketTimestamp"),
         payload.get("siScore"),
@@ -346,6 +384,9 @@ def store_snapshot(payload: Dict[str, Any]) -> str:
         payload.get("homeTeam"),
         payload.get("awayTeam"),
         "PENDING",
+        None,
+        None,
+        None,
         payload.get("modelVersion"),
         payload.get("probabilityEngineVersion"),
         payload.get("calibrationVersion"),
@@ -360,7 +401,7 @@ def store_snapshot(payload: Dict[str, Any]) -> str:
         f"""
         INSERT OR IGNORE INTO recommendation_snapshots
         (snapshot_id, season, week, event_id, recommended_at, selection, market, side, point, price,
-         sportsbook, quote_timestamp, market_timestamp, si_score, model_probability,
+         sportsbook, sportsbook_provider_key, quote_timestamp, market_timestamp, si_score, model_probability,
          raw_model_probability, calibrated_probability, push_probability, loss_probability,
          implied_probability, market_no_vig_probability,
          edge_pp, raw_edge, calibrated_edge, ev_per_dollar,
@@ -368,6 +409,7 @@ def store_snapshot(payload: Dict[str, Any]) -> str:
          recommended_amount, recommended_units, unit_size_at_bet, bankroll_basis,
          market_intelligence, injury_context, weather_context,
          commence_time, home_team, away_team, closing_status,
+         closing_reason_code, closing_boundary_used_at, closing_resolution_version,
          model_version, probability_engine_version, calibration_version,
          ranking_version, qualification_policy_version, model_timestamp, decision_id)
         VALUES ({','.join(['?'] * len(values))})
@@ -397,8 +439,9 @@ def capture_closing_lines() -> Dict[str, int]:
     con = _open_db()
     try:
         pending = con.execute(
-            "SELECT snapshot_id, event_id, market, side, point, price, sportsbook, commence_time "
-            "FROM recommendation_snapshots WHERE closing_status = 'PENDING'"
+            "SELECT snapshot_id, event_id, market, side, point, price, sportsbook, sportsbook_provider_key, commence_time, closing_status "
+            "FROM recommendation_snapshots "
+            "WHERE closing_status IN ('PENDING', 'AWAITING_FINALIZATION', 'ERROR')"
         ).fetchall()
     except Exception:
         con.close()
@@ -414,7 +457,7 @@ def capture_closing_lines() -> Dict[str, int]:
     errors = 0
 
     for row in pending:
-        snap_id, event_id, market, side, rec_point, rec_price, sportsbook, commence_raw = row
+        snap_id, event_id, market, side, rec_point, rec_price, sportsbook, sportsbook_provider_key, commence_raw, closing_status = row
 
         kickoff = None
         if commence_raw:
@@ -433,26 +476,79 @@ def capture_closing_lines() -> Dict[str, int]:
             if kickoff_dt:
                 kickoff = kickoff_dt.astimezone(timezone.utc).replace(tzinfo=None)
 
-        if kickoff is None or now_naive < kickoff:
+        if kickoff is None:
+            _update_closing(snap_id, status="ERROR", reason_code="MISSING_KICKOFF", resolution_version=_CLOSING_RESOLUTION_VERSION)
+            errors += 1
+            continue
+
+        boundary_naive = (kickoff - timedelta(minutes=_CLOSING_CUTOFF_MINUTES))
+
+        if now_naive < boundary_naive:
+            if str(closing_status or "") != "PENDING":
+                _update_closing(
+                    snap_id,
+                    status="PENDING",
+                    reason_code="PRE_BOUNDARY",
+                    boundary_used_at=boundary_naive,
+                    resolution_version=_CLOSING_RESOLUTION_VERSION,
+                )
             still_pending += 1
             continue
+
+        if str(closing_status or "") == "PENDING":
+            _update_closing(
+                snap_id,
+                status="AWAITING_FINALIZATION",
+                reason_code="BOUNDARY_REACHED",
+                boundary_used_at=boundary_naive,
+                resolution_version=_CLOSING_RESOLUTION_VERSION,
+            )
 
         # Game has kicked off – attempt closing line capture
         eligible += 1
 
         try:
             kickoff_aware = kickoff.replace(tzinfo=timezone.utc)
+            provider_key = str(sportsbook_provider_key or "").strip()
+            if not provider_key:
+                _update_closing(
+                    snap_id,
+                    status="MAPPING_BLOCKED",
+                    reason_code="UNVERIFIED_PROVIDER_MAPPING",
+                    boundary_used_at=boundary_naive,
+                    resolution_version=_CLOSING_RESOLUTION_VERSION,
+                )
+                missing += 1
+                continue
+
             closing = get_closing_line(
                 event_id=event_id,
-                bookmaker_key=sportsbook or "",
+                bookmaker_key=provider_key,
                 market_key=market,
                 outcome_code=side,
                 kickoff_utc=kickoff_aware,
+                closing_max_quote_age_minutes=_CLOSING_MAX_QUOTE_AGE_MINUTES,
             )
 
-            if closing.closing_status != "AVAILABLE":
+            if closing.closing_status != "CAPTURED":
                 missing += 1
-                _update_status(snap_id, "NOT_CAPTURED")
+                status = "UNAVAILABLE"
+                if closing.closing_status == "ERROR":
+                    status = "ERROR"
+                    errors += 1
+                elif closing.closing_status == "PENDING":
+                    status = "PENDING"
+                elif closing.closing_status == "AWAITING_FINALIZATION":
+                    status = "AWAITING_FINALIZATION"
+                    still_pending += 1
+
+                _update_closing(
+                    snap_id,
+                    status=status,
+                    reason_code=closing.closing_reason_code,
+                    boundary_used_at=boundary_naive,
+                    resolution_version=_CLOSING_RESOLUTION_VERSION,
+                )
                 continue
 
             clv = calculate_clv(
@@ -472,11 +568,14 @@ def capture_closing_lines() -> Dict[str, int]:
             con.execute(
                 """
                 UPDATE recommendation_snapshots SET
-                    closing_status     = 'AVAILABLE',
+                    closing_status     = 'CAPTURED',
                     closing_point      = ?,
                     closing_price      = ?,
                     closing_sportsbook = ?,
                     closing_at         = ?,
+                    closing_reason_code = ?,
+                    closing_boundary_used_at = ?,
+                    closing_resolution_version = ?,
                     clv_points         = ?,
                     clv_probability    = ?,
                     clv_percent        = ?
@@ -485,8 +584,11 @@ def capture_closing_lines() -> Dict[str, int]:
                 [
                     closing.closing_point,
                     closing.closing_price,
-                    sportsbook,
+                    closing.closing_sportsbook or sportsbook,
                     closing_ts,
+                    closing.closing_reason_code,
+                    boundary_naive,
+                    _CLOSING_RESOLUTION_VERSION,
                     clv.clv_points,
                     clv.clv_probability,
                     clv.clv_percent,
@@ -497,7 +599,13 @@ def capture_closing_lines() -> Dict[str, int]:
             captured += 1
         except Exception as exc:
             errors += 1
-            still_pending += 1
+            _update_closing(
+                snap_id,
+                status="ERROR",
+                reason_code="CAPTURE_EXCEPTION",
+                boundary_used_at=boundary_naive,
+                resolution_version=_CLOSING_RESOLUTION_VERSION,
+            )
             log.warning(
                 "Closing capture failed for snapshot=%s event=%s market=%s side=%s: %s",
                 snap_id,
@@ -528,10 +636,28 @@ def capture_closing_lines() -> Dict[str, int]:
 
 
 def _update_status(snapshot_id: str, status: str) -> None:
+    _update_closing(snapshot_id, status=status)
+
+
+def _update_closing(
+    snapshot_id: str,
+    *,
+    status: str,
+    reason_code: Optional[str] = None,
+    boundary_used_at: Optional[datetime] = None,
+    resolution_version: Optional[str] = None,
+) -> None:
     con = _open_db()
     con.execute(
-        "UPDATE recommendation_snapshots SET closing_status = ? WHERE snapshot_id = ?",
-        [status, snapshot_id],
+        """
+        UPDATE recommendation_snapshots
+        SET closing_status = ?,
+            closing_reason_code = ?,
+            closing_boundary_used_at = COALESCE(?, closing_boundary_used_at),
+            closing_resolution_version = COALESCE(?, closing_resolution_version)
+        WHERE snapshot_id = ?
+        """,
+        [status, reason_code, boundary_used_at, resolution_version, snapshot_id],
     )
     con.close()
 
@@ -550,6 +676,7 @@ def get_clv_for_event(event_id: str) -> List[Dict[str, Any]]:
             SELECT snapshot_id, recommended_at, market, side, point, price,
                    sportsbook, si_score, closing_status,
                    closing_point, closing_price, closing_at,
+                     closing_reason_code, closing_boundary_used_at, closing_resolution_version,
                    clv_points, clv_probability, clv_percent
             FROM recommendation_snapshots
             WHERE event_id = ?
@@ -565,6 +692,7 @@ def get_clv_for_event(event_id: str) -> List[Dict[str, Any]]:
         "snapshotId", "recommendedAt", "market", "side", "point", "price",
         "sportsbook", "siScore", "closingStatus",
         "closingPoint", "closingPrice", "closingAt",
+        "closingReasonCode", "closingBoundaryUsedAt", "closingResolutionVersion",
         "clvPoints", "clvProbability", "clvPercent",
     ]
     return [dict(zip(cols, row)) for row in rows]
@@ -600,16 +728,16 @@ def get_clv_summary() -> Dict[str, Any]:
             SELECT market, side, si_score, sportsbook,
                    clv_points, clv_probability, clv_percent
             FROM recommendation_snapshots
-            WHERE closing_status = 'AVAILABLE'
+            WHERE closing_status IN ('CAPTURED', 'AVAILABLE')
             """
         ).fetchall()
         con.close()
     except Exception:
         return empty
 
-    captured = status_map.get("AVAILABLE", 0)
-    pending  = status_map.get("PENDING",   0)
-    missing  = status_map.get("NOT_CAPTURED", 0)
+    captured = status_map.get("CAPTURED", 0) + status_map.get("AVAILABLE", 0)
+    pending  = status_map.get("PENDING", 0) + status_map.get("AWAITING_FINALIZATION", 0) + status_map.get("ERROR", 0)
+    missing  = status_map.get("UNAVAILABLE", 0) + status_map.get("NOT_CAPTURED", 0) + status_map.get("MAPPING_BLOCKED", 0)
 
     all_clv_pts = [float(r[4]) for r in rows if r[4] is not None]
     avg_clv  = round(sum(all_clv_pts) / len(all_clv_pts), 3) if all_clv_pts else None

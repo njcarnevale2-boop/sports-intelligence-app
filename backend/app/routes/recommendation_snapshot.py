@@ -13,6 +13,7 @@ from app.services.recommendation_snapshot import (
 from app.services.decision_ledger import record_my_card_decision_from_payload
 from app.services.decision_ledger import get_personal_wager_dashboard, record_personal_wager_from_payload
 from app.services.games import service as games_service
+from app.services.sportsbook_policy import resolve_canonical_sportsbook, resolve_closing_provider_key
 
 router = APIRouter(prefix="/api/recommendation", tags=["recommendation"])
 
@@ -119,6 +120,42 @@ def _apply_current_execution_and_sizing(payload: dict) -> dict:
     return normalized
 
 
+def _normalize_market_for_snapshot(value: object) -> str:
+    token = str(value or "").strip().upper()
+    if token in {"SPREAD", "SPREADS"}:
+        return "SPREAD"
+    if token in {"TOTAL", "TOTALS"}:
+        return "TOTAL"
+    if token in {"MONEYLINE", "H2H"}:
+        return "MONEYLINE"
+    return token
+
+
+def _normalize_side_for_snapshot(value: object) -> str:
+    token = str(value or "").strip().upper()
+    if token in {"HOME", "AWAY", "OVER", "UNDER"}:
+        return token
+    return token
+
+
+def _apply_closing_identity(payload: dict) -> dict:
+    normalized = dict(payload)
+    market = _normalize_market_for_snapshot(normalized.get("market"))
+    side = _normalize_side_for_snapshot(normalized.get("side"))
+    normalized["market"] = market
+    normalized["side"] = side
+
+    sportsbook = normalized.get("sportsbook")
+    if sportsbook is not None:
+        canonical = resolve_canonical_sportsbook(sportsbook)
+        if canonical.get("canonicalDisplay"):
+            normalized["sportsbook"] = canonical.get("canonicalDisplay")
+    closing_identity = resolve_closing_provider_key(normalized.get("sportsbook"))
+    normalized["sportsbookProviderKey"] = closing_identity.get("providerKey")
+    normalized["sportsbookClosingMappingStatus"] = closing_identity.get("status")
+    return normalized
+
+
 def _resolve_identity(payload: dict) -> dict:
     resolved = dict(payload)
     event_id = str(resolved.get("eventId") or "").strip()
@@ -150,6 +187,7 @@ def create_snapshot(payload: dict):
     """Store an immutable recommendation snapshot when a bet is added to My Card."""
     with_current_state = _apply_current_execution_and_sizing(payload)
     normalized = _resolve_identity(with_current_state)
+    normalized = _apply_closing_identity(normalized)
     event_id = str(normalized.get("eventId") or "").strip()
     if not event_id or normalized.get("season") is None or normalized.get("week") is None:
         return {

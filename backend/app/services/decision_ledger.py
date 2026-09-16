@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.config import settings
-from app.services.closing_line import calculate_clv, get_closing_line
+from app.runtime_paths import runtime_paths
+from app.services.closing_line import calculate_clv
 from app.services.market_data import market_data_service, normalize_market, normalize_side
 from app.services.sportsbook_policy import is_current_market_sportsbook_allowed
 
@@ -27,6 +28,7 @@ def _resolve_db_path() -> Path:
 
 
 _DB_PATH = _resolve_db_path()
+_SNAPSHOT_DB_PATH = runtime_paths.nfl_model_duckdb
 
 
 _SCHEMA = """
@@ -290,6 +292,54 @@ def _connect() -> sqlite3.Connection:
     con = sqlite3.connect(str(_DB_PATH))
     con.row_factory = sqlite3.Row
     return con
+
+
+def _read_snapshot_close_evidence(snapshot_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    sid = str(snapshot_id or "").strip()
+    if not sid or not _SNAPSHOT_DB_PATH.exists():
+        return None
+
+    try:
+        import duckdb  # type: ignore
+
+        con = duckdb.connect(str(_SNAPSHOT_DB_PATH), read_only=True)
+        row = con.execute(
+            """
+            SELECT closing_status, closing_point, closing_price, closing_sportsbook, closing_at
+            FROM recommendation_snapshots
+            WHERE snapshot_id = ?
+            LIMIT 1
+            """,
+            [sid],
+        ).fetchone()
+        con.close()
+    except Exception:
+        return None
+
+    if row is None:
+        return None
+
+    status = str(row[0] or "").upper()
+    if status not in {"CAPTURED", "AVAILABLE"}:
+        return {
+            "status": status,
+            "closingLine": None,
+            "closingPrice": None,
+            "closingSportsbook": None,
+            "closingTimestamp": None,
+        }
+
+    closing_timestamp = row[4]
+    if isinstance(closing_timestamp, datetime):
+        closing_timestamp = closing_timestamp.isoformat()
+
+    return {
+        "status": status,
+        "closingLine": row[1],
+        "closingPrice": row[2],
+        "closingSportsbook": row[3],
+        "closingTimestamp": closing_timestamp,
+    }
 
 
 def _migrate_personal_wager_nullable_sizing(con: sqlite3.Connection) -> None:
@@ -1735,20 +1785,15 @@ def append_outcome(payload: Dict[str, Any]) -> Dict[str, Any]:
     clv_type = payload.get("clvType")
     source_snapshot_id = payload.get("sourceSnapshotId")
 
-    if (closing_line is None and closing_price is None) and decision_row["commence_time"]:
-        kickoff = datetime.fromisoformat(str(decision_row["commence_time"]).replace("Z", "+00:00"))
-        closing = get_closing_line(
-            event_id=str(decision_row["event_id"]),
-            bookmaker_key=str(decision_row["sportsbook"] or ""),
-            market_key=str(decision_row["market"] or ""),
-            outcome_code=str(decision_row["side"] or ""),
-            kickoff_utc=kickoff,
-        )
-        if closing.closing_status == "AVAILABLE":
-            closing_line = closing.closing_point
-            closing_price = closing.closing_price
-            closing_sportsbook = closing_sportsbook or decision_row["sportsbook"]
-            closing_timestamp = closing.closing_timestamp.isoformat() if closing.closing_timestamp else None
+    if not source_snapshot_id and decision_row["source_snapshot_id"]:
+        source_snapshot_id = decision_row["source_snapshot_id"]
+
+    snapshot_evidence = _read_snapshot_close_evidence(source_snapshot_id)
+    if snapshot_evidence is not None:
+        closing_line = snapshot_evidence.get("closingLine")
+        closing_price = snapshot_evidence.get("closingPrice")
+        closing_sportsbook = snapshot_evidence.get("closingSportsbook")
+        closing_timestamp = snapshot_evidence.get("closingTimestamp")
 
     if clv_value is None and (closing_line is not None or closing_price is not None):
         clv = calculate_clv(

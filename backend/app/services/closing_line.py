@@ -27,6 +27,19 @@ _DB_PATH = runtime_paths.nfl_model_duckdb
 
 _CUTOFF_MINUTES = int(os.getenv("CLOSING_LINE_CUTOFF_MINUTES", "2"))
 
+MARKET_TO_ODDS_KEY = {
+    "SPREAD": "spreads",
+    "TOTAL": "totals",
+    "MONEYLINE": "h2h",
+}
+
+SIDE_TO_ODDS_KEY = {
+    "HOME": "home",
+    "AWAY": "away",
+    "OVER": "over",
+    "UNDER": "under",
+}
+
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -54,7 +67,10 @@ class ClosingLineResult:
     closing_point: Optional[float] = None
     closing_price: Optional[float] = None
     closing_timestamp: Optional[datetime] = None
-    closing_status: str = "NOT_CAPTURED"   # AVAILABLE | NOT_CAPTURED | PENDING
+    closing_status: str = "UNAVAILABLE"
+    closing_reason_code: Optional[str] = None
+    closing_boundary_used_at: Optional[datetime] = None
+    closing_sportsbook: Optional[str] = None
 
 
 @dataclass
@@ -83,6 +99,8 @@ def get_closing_line(
     market_key: str,
     outcome_code: str,
     kickoff_utc: datetime,
+    *,
+    closing_max_quote_age_minutes: Optional[int] = None,
 ) -> ClosingLineResult:
     """Return the closing snapshot for a specific event/book/market/side."""
     result = ClosingLineResult(
@@ -104,15 +122,30 @@ def get_closing_line(
     now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
     kickoff_naive = kickoff_utc.astimezone(timezone.utc).replace(tzinfo=None)
 
-    # If game has not yet kicked off, status is PENDING
-    if now_naive < kickoff_naive:
+    if now_naive < cutoff_naive:
         result.closing_status = "PENDING"
+        result.closing_reason_code = "PRE_BOUNDARY"
+        result.closing_boundary_used_at = cutoff_naive
+        return result
+
+    result.closing_status = "AWAITING_FINALIZATION"
+    result.closing_reason_code = "BOUNDARY_REACHED"
+    result.closing_boundary_used_at = cutoff_naive
+
+    market = str(market_key or "").strip().upper()
+    side = str(outcome_code or "").strip().upper()
+    odds_market_key = MARKET_TO_ODDS_KEY.get(market)
+    odds_side_key = SIDE_TO_ODDS_KEY.get(side)
+    if not odds_market_key or not odds_side_key:
+        result.closing_status = "ERROR"
+        result.closing_reason_code = "INVALID_MARKET_OR_SIDE"
+        return result
 
     try:
         con = _open_db()
         rows = con.execute(
             """
-            SELECT fetched_at, point, price
+            SELECT fetched_at, point, price, bookmaker_title
             FROM odds_snapshots
             WHERE api_event_id = ?
               AND bookmaker_key = ?
@@ -121,13 +154,17 @@ def get_closing_line(
               AND fetched_at   <= ?
             ORDER BY fetched_at ASC
             """,
-            [event_id, bookmaker_key, market_key, outcome_code, cutoff_naive],
+            [event_id, bookmaker_key, odds_market_key, odds_side_key, cutoff_naive],
         ).fetchall()
         con.close()
     except Exception:
+        result.closing_status = "ERROR"
+        result.closing_reason_code = "QUERY_FAILURE"
         return result
 
     if not rows:
+        result.closing_status = "UNAVAILABLE"
+        result.closing_reason_code = "NO_ELIGIBLE_SAME_BOOK_QUOTE"
         return result
 
     first = rows[0]
@@ -138,7 +175,24 @@ def get_closing_line(
     result.closing_point    = float(last[1])  if last[1]  is not None else None
     result.closing_price    = float(last[2])  if last[2]  is not None else None
     result.closing_timestamp = last[0]
-    result.closing_status   = "AVAILABLE"
+    result.closing_sportsbook = str(last[3]) if last[3] is not None else None
+
+    if closing_max_quote_age_minutes is not None and result.closing_timestamp is not None:
+        closing_ts = result.closing_timestamp
+        if isinstance(closing_ts, datetime) and closing_ts.tzinfo is not None:
+            closing_ts = closing_ts.astimezone(timezone.utc).replace(tzinfo=None)
+        age_minutes = (cutoff_naive - closing_ts).total_seconds() / 60.0
+        if age_minutes > float(closing_max_quote_age_minutes):
+            result.closing_status = "UNAVAILABLE"
+            result.closing_reason_code = "STALE_PRE_KICK_EVIDENCE"
+            result.closing_point = None
+            result.closing_price = None
+            result.closing_timestamp = None
+            result.closing_sportsbook = None
+            return result
+
+    result.closing_status = "CAPTURED"
+    result.closing_reason_code = None
     return result
 
 
@@ -160,7 +214,7 @@ def calculate_clv(
         recommended_price=recommended_price,
         closing_point=closing_point,
         closing_price=closing_price,
-        closing_status="AVAILABLE" if closing_point is not None or closing_price is not None else "NOT_CAPTURED",
+        closing_status="CAPTURED" if closing_point is not None or closing_price is not None else "UNAVAILABLE",
     )
 
     mkt = market.lower().strip()

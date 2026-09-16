@@ -12,6 +12,8 @@ class CanonicalSportsbook:
     canonical_display: str
     approved_for_actionable: bool
     mapping_verified: bool
+    closing_provider_key: str | None
+    closing_mapping_verified: bool
     aliases: frozenset[str]
 
 
@@ -26,6 +28,8 @@ CANONICAL_SPORTSBOOKS: tuple[CanonicalSportsbook, ...] = (
         canonical_display="DraftKings",
         approved_for_actionable=True,
         mapping_verified=True,
+        closing_provider_key="draftkings",
+        closing_mapping_verified=True,
         aliases=frozenset({"draftkings", "dk"}),
     ),
     CanonicalSportsbook(
@@ -33,6 +37,8 @@ CANONICAL_SPORTSBOOKS: tuple[CanonicalSportsbook, ...] = (
         canonical_display="FanDuel",
         approved_for_actionable=True,
         mapping_verified=True,
+        closing_provider_key="fanduel",
+        closing_mapping_verified=True,
         aliases=frozenset({"fanduel", "fd"}),
     ),
     CanonicalSportsbook(
@@ -40,6 +46,8 @@ CANONICAL_SPORTSBOOKS: tuple[CanonicalSportsbook, ...] = (
         canonical_display="BetMGM",
         approved_for_actionable=True,
         mapping_verified=True,
+        closing_provider_key="betmgm",
+        closing_mapping_verified=True,
         aliases=frozenset({"betmgm", "mgm"}),
     ),
     CanonicalSportsbook(
@@ -47,6 +55,8 @@ CANONICAL_SPORTSBOOKS: tuple[CanonicalSportsbook, ...] = (
         canonical_display="Fanatics Sportsbook",
         approved_for_actionable=True,
         mapping_verified=True,
+        closing_provider_key=None,
+        closing_mapping_verified=False,
         aliases=frozenset({"fanatics", "fanaticssportsbook"}),
     ),
     CanonicalSportsbook(
@@ -54,6 +64,8 @@ CANONICAL_SPORTSBOOKS: tuple[CanonicalSportsbook, ...] = (
         canonical_display="BetRivers",
         approved_for_actionable=True,
         mapping_verified=True,
+        closing_provider_key="betrivers",
+        closing_mapping_verified=True,
         aliases=frozenset({"betrivers"}),
     ),
     CanonicalSportsbook(
@@ -61,6 +73,8 @@ CANONICAL_SPORTSBOOKS: tuple[CanonicalSportsbook, ...] = (
         canonical_display="Caesars Sportsbook",
         approved_for_actionable=True,
         mapping_verified=True,
+        closing_provider_key="williamhill_us",
+        closing_mapping_verified=True,
         aliases=frozenset({"caesars", "caesarssportsbook", "williamhillus", "czr"}),
     ),
     CanonicalSportsbook(
@@ -68,6 +82,8 @@ CANONICAL_SPORTSBOOKS: tuple[CanonicalSportsbook, ...] = (
         canonical_display="bet365",
         approved_for_actionable=True,
         mapping_verified=False,
+        closing_provider_key=None,
+        closing_mapping_verified=False,
         aliases=frozenset({"bet365"}),
     ),
     CanonicalSportsbook(
@@ -75,6 +91,8 @@ CANONICAL_SPORTSBOOKS: tuple[CanonicalSportsbook, ...] = (
         canonical_display="Hard Rock Bet",
         approved_for_actionable=True,
         mapping_verified=False,
+        closing_provider_key=None,
+        closing_mapping_verified=False,
         aliases=frozenset({"hardrockbet"}),
     ),
     CanonicalSportsbook(
@@ -82,6 +100,8 @@ CANONICAL_SPORTSBOOKS: tuple[CanonicalSportsbook, ...] = (
         canonical_display="theScore Bet",
         approved_for_actionable=True,
         mapping_verified=False,
+        closing_provider_key=None,
+        closing_mapping_verified=False,
         aliases=frozenset({"thescorebet"}),
     ),
 )
@@ -129,9 +149,32 @@ def resolve_canonical_sportsbook(value: Any) -> dict[str, Any]:
         "canonicalDisplay": canonical.canonical_display,
         "approvedForActionable": approved,
         "mappingVerified": verified,
+        "closingProviderKey": canonical.closing_provider_key,
+        "closingMappingVerified": bool(canonical.closing_mapping_verified),
         "actionableAllowed": actionable_allowed,
         "knownSportsbook": True,
         "status": status,
+    }
+
+
+def resolve_closing_provider_key(value: Any) -> dict[str, Any]:
+    resolved = resolve_canonical_sportsbook(value)
+    provider_key = resolved.get("closingProviderKey")
+    verified = bool(resolved.get("closingMappingVerified"))
+    if not verified or not provider_key:
+        return {
+            "providerTitle": resolved.get("providerTitle"),
+            "canonicalKey": resolved.get("canonicalKey"),
+            "providerKey": None,
+            "verified": False,
+            "status": "MAPPING_BLOCKED",
+        }
+    return {
+        "providerTitle": resolved.get("providerTitle"),
+        "canonicalKey": resolved.get("canonicalKey"),
+        "providerKey": str(provider_key),
+        "verified": True,
+        "status": "VERIFIED",
     }
 
 

@@ -131,6 +131,79 @@ def test_snapshot_contract_complete(monkeypatch):
     assert body["decisionId"] == "decision-1"
 
 
+def test_snapshot_payload_normalizes_market_side_and_provider_key(monkeypatch):
+    captured_payload = {}
+
+    def _capture_store(payload: dict):
+        captured_payload.update(payload)
+        return "snap-normalized"
+
+    monkeypatch.setattr(snapshot_route, "build_snapshot_id", lambda payload: "snap-normalized")
+    monkeypatch.setattr(snapshot_route, "snapshot_exists", lambda snapshot_id: False)
+    monkeypatch.setattr(snapshot_route, "store_snapshot", _capture_store)
+    monkeypatch.setattr(snapshot_route, "record_personal_wager_from_payload", lambda payload, decision_id=None, source_snapshot_id=None: {"wagerId": "wager-1"})
+    monkeypatch.setattr(
+        snapshot_route,
+        "record_my_card_decision_from_payload",
+        lambda payload: {"decisionId": "decision-1", "decisionVersion": 1, "created": True},
+    )
+
+    payload = _actionable_payload("evt-normalized")
+    payload["market"] = "spreads"
+    payload["side"] = "away"
+    payload["currentExecution"] = {
+        "status": "AVAILABLE",
+        "sportsbook": "Caesars",
+        "point": 7.0,
+        "price": -110.0,
+        "quoteTimestamp": "2026-09-13T14:59:00+00:00",
+        "currentMarketTimestamp": "2026-09-13T15:00:00+00:00",
+    }
+
+    response = client.post("/api/recommendation/snapshot", json=payload)
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    assert captured_payload["market"] == "SPREAD"
+    assert captured_payload["side"] == "AWAY"
+    assert captured_payload["sportsbook"] == "Caesars Sportsbook"
+    assert captured_payload["sportsbookProviderKey"] == "williamhill_us"
+
+
+def test_snapshot_payload_fanatics_mapping_unverified_for_closing(monkeypatch):
+    captured_payload = {}
+
+    def _capture_store(payload: dict):
+        captured_payload.update(payload)
+        return "snap-fanatics"
+
+    monkeypatch.setattr(snapshot_route, "build_snapshot_id", lambda payload: "snap-fanatics")
+    monkeypatch.setattr(snapshot_route, "snapshot_exists", lambda snapshot_id: False)
+    monkeypatch.setattr(snapshot_route, "store_snapshot", _capture_store)
+    monkeypatch.setattr(snapshot_route, "record_personal_wager_from_payload", lambda payload, decision_id=None, source_snapshot_id=None: {"wagerId": "wager-1"})
+    monkeypatch.setattr(
+        snapshot_route,
+        "record_my_card_decision_from_payload",
+        lambda payload: {"decisionId": "decision-1", "decisionVersion": 1, "created": True},
+    )
+
+    payload = _actionable_payload("evt-fanatics")
+    payload["currentExecution"] = {
+        "status": "AVAILABLE",
+        "sportsbook": "Fanatics Sportsbook",
+        "point": 7.0,
+        "price": -110.0,
+        "quoteTimestamp": "2026-09-13T14:59:00+00:00",
+        "currentMarketTimestamp": "2026-09-13T15:00:00+00:00",
+    }
+
+    response = client.post("/api/recommendation/snapshot", json=payload)
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    assert captured_payload["sportsbook"] == "Fanatics Sportsbook"
+    assert captured_payload["sportsbookProviderKey"] is None
+    assert captured_payload["sportsbookClosingMappingStatus"] == "MAPPING_BLOCKED"
+
+
 def test_snapshot_contract_missing_identity_fails_closed(monkeypatch):
     store_calls = {"count": 0}
 

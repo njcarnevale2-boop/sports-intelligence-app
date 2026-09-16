@@ -371,28 +371,91 @@ def test_outcome_append_and_profit_win_loss_push(tmp_path, monkeypatch):
 
 
 def test_outcome_missing_closing_line_and_snapshot_linkage(tmp_path, monkeypatch):
+    import duckdb
     import app.services.decision_ledger as dl
 
     monkeypatch.setattr(dl, "_DB_PATH", tmp_path / "ledger.db")
+    snapshot_db = tmp_path / "snapshots.duckdb"
+    con = duckdb.connect(str(snapshot_db))
+    con.execute(
+        """
+        CREATE TABLE recommendation_snapshots (
+            snapshot_id VARCHAR,
+            closing_status VARCHAR,
+            closing_point DOUBLE,
+            closing_price DOUBLE,
+            closing_sportsbook VARCHAR,
+            closing_at TIMESTAMP
+        )
+        """
+    )
+    con.execute(
+        "INSERT INTO recommendation_snapshots VALUES (?,?,?,?,?,?)",
+        ["close-snap-none", "UNAVAILABLE", None, None, None, None],
+    )
+    con.close()
+    monkeypatch.setattr(dl, "_SNAPSHOT_DB_PATH", snapshot_db)
 
     decision_id = _post_decision(_decision_payload("evt-missing-closing")).json()["decisionId"]
 
-    with patch.object(dl, "get_closing_line") as mocked_closing:
-        mocked_closing.return_value = type("C", (), {"closing_status": "NOT_CAPTURED", "closing_point": None, "closing_price": None, "closing_timestamp": None})()
+    response = client.post(
+        "/api/admin/ledger/outcomes",
+        headers=ADMIN_HEADERS,
+        json={
+            "decisionId": decision_id,
+            "betResult": "LOSS",
+            "sourceSnapshotId": "close-snap-none",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["closingLine"] is None
+    assert body["closingPrice"] is None
 
-        response = client.post(
-            "/api/admin/ledger/outcomes",
-            headers=ADMIN_HEADERS,
-            json={
-                "decisionId": decision_id,
-                "betResult": "LOSS",
-                "sourceSnapshotId": "close-snap-none",
-            },
+
+def test_outcome_uses_linked_snapshot_closing_evidence(tmp_path, monkeypatch):
+    import duckdb
+    import app.services.decision_ledger as dl
+
+    monkeypatch.setattr(dl, "_DB_PATH", tmp_path / "ledger.db")
+    snapshot_db = tmp_path / "snapshots2.duckdb"
+    con = duckdb.connect(str(snapshot_db))
+    con.execute(
+        """
+        CREATE TABLE recommendation_snapshots (
+            snapshot_id VARCHAR,
+            closing_status VARCHAR,
+            closing_point DOUBLE,
+            closing_price DOUBLE,
+            closing_sportsbook VARCHAR,
+            closing_at TIMESTAMP
         )
-        assert response.status_code == 200
-        body = response.json()
-        assert body["closingLine"] is None
-        assert body["closingPrice"] is None
+        """
+    )
+    con.execute(
+        "INSERT INTO recommendation_snapshots VALUES (?,?,?,?,?,?)",
+        ["snap-close-1", "CAPTURED", 2.5, -105.0, "DraftKings", "2026-09-13 16:58:00"],
+    )
+    con.close()
+    monkeypatch.setattr(dl, "_SNAPSHOT_DB_PATH", snapshot_db)
+
+    decision = _decision_payload("evt-with-close")
+    decision["sourceSnapshotId"] = "snap-close-1"
+    decision_id = _post_decision(decision).json()["decisionId"]
+
+    response = client.post(
+        "/api/admin/ledger/outcomes",
+        headers=ADMIN_HEADERS,
+        json={
+            "decisionId": decision_id,
+            "betResult": "WIN",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["closingLine"] == pytest.approx(2.5)
+    assert body["closingPrice"] == pytest.approx(-105.0)
+    assert body["closingSportsbook"] == "DraftKings"
 
 
 def test_decision_list_and_model_version_fields(tmp_path, monkeypatch):
@@ -901,18 +964,17 @@ def test_official_postgame_lifecycle_win_idempotent_three_runs(tmp_path, monkeyp
     publication = _publish_official_slot(decision_id, week=1)
     assert publication.status_code == 200
 
-    with patch.object(dl, "get_closing_line") as mocked_closing:
-        mocked_closing.return_value = type(
-            "C",
-            (),
-            {
-                "closing_status": "AVAILABLE",
-                "closing_point": -4.0,
-                "closing_price": -110.0,
-                "closing_timestamp": datetime.fromisoformat("2026-09-13T16:59:00+00:00"),
-            },
-        )()
-
+    with patch.object(
+        dl,
+        "_read_snapshot_close_evidence",
+        return_value={
+            "status": "CAPTURED",
+            "closingLine": -4.0,
+            "closingPrice": -110.0,
+            "closingSportsbook": "DraftKings",
+            "closingTimestamp": "2026-09-13T16:59:00+00:00",
+        },
+    ):
         run1 = dl.run_official_postgame_lifecycle(
             fetch_scores_fn=lambda event_id: {
                 "status": "FINAL",
@@ -984,18 +1046,17 @@ def test_official_postgame_lifecycle_loss_and_push(tmp_path, monkeypatch):
     assert _publish_official_slot(loss_id, week=2).status_code == 200
     assert _publish_official_slot(push_id, week=3).status_code == 200
 
-    with patch.object(dl, "get_closing_line") as mocked_closing:
-        mocked_closing.return_value = type(
-            "C",
-            (),
-            {
-                "closing_status": "AVAILABLE",
-                "closing_point": -3.5,
-                "closing_price": -110.0,
-                "closing_timestamp": datetime.fromisoformat("2026-09-13T16:59:00+00:00"),
-            },
-        )()
-
+    with patch.object(
+        dl,
+        "_read_snapshot_close_evidence",
+        return_value={
+            "status": "CAPTURED",
+            "closingLine": -3.5,
+            "closingPrice": -110.0,
+            "closingSportsbook": "DraftKings",
+            "closingTimestamp": "2026-09-13T16:59:00+00:00",
+        },
+    ):
         result = dl.run_official_postgame_lifecycle(
             fetch_scores_fn=lambda event_id: {
                 "evt-official-loss": {"status": "FINAL", "finalAwayScore": 24, "finalHomeScore": 20},
@@ -1021,18 +1082,17 @@ def test_official_postgame_lifecycle_missing_closing_line_still_grades(tmp_path,
     decision_id = _post_decision(payload).json()["decisionId"]
     assert _publish_official_slot(decision_id, week=4).status_code == 200
 
-    with patch.object(dl, "get_closing_line") as mocked_closing:
-        mocked_closing.return_value = type(
-            "C",
-            (),
-            {
-                "closing_status": "NOT_CAPTURED",
-                "closing_point": None,
-                "closing_price": None,
-                "closing_timestamp": None,
-            },
-        )()
-
+    with patch.object(
+        dl,
+        "_read_snapshot_close_evidence",
+        return_value={
+            "status": "UNAVAILABLE",
+            "closingLine": None,
+            "closingPrice": None,
+            "closingSportsbook": None,
+            "closingTimestamp": None,
+        },
+    ):
         result = dl.run_official_postgame_lifecycle(
             fetch_scores_fn=lambda event_id: {
                 "status": "FINAL",

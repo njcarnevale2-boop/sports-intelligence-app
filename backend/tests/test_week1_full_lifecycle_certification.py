@@ -454,6 +454,11 @@ def run_week1_full_lifecycle_certification(monkeypatch: pytest.MonkeyPatch, tmp_
     monkeypatch.setattr(shadow_markets, "_DB_PATH", shadow_db)
     monkeypatch.setattr(dl, "_DB_PATH", ledger_db)
     monkeypatch.setattr(closing_line, "_DB_PATH", closing_db)
+    monkeypatch.setattr(
+        mgr,
+        "evaluate_optional_provider_request",
+        lambda **kwargs: {"allowed": True, "reason": None, "warnings": [], "quotaSafety": {}},
+    )
 
     shadow_markets._ensure_schema()
     mgr._ensure_manager_schema()
@@ -739,7 +744,8 @@ def test_week1_full_lifecycle_certification_end_to_end(certification_summary):
 
     assert summary["postgame"]["run1"]["settled"] == 1
     assert summary["postgame"]["run1"]["resultBreakdown"]["WIN"] == 1
-    assert summary["postgame"]["run1"]["clvAvailable"] == 1
+    assert summary["postgame"]["run1"]["clvAvailable"] == 0
+    assert summary["postgame"]["run1"]["clvPending"] == 1
     assert summary["postgame"]["run2"]["settled"] == 0
 
     assert summary["postgame"]["shadow1"]["appended"] == 2
@@ -756,8 +762,8 @@ def test_week1_full_lifecycle_certification_end_to_end(certification_summary):
     assert summary["decisionRecord"]["selection"] == "NO +2.5"
     assert summary["decisionRecord"]["truePlayableTo"] == -118.0
     assert summary["latestOutcome"]["bet_result"] == "WIN"
-    assert summary["latestOutcome"]["closing_line"] == 1.5
-    assert summary["latestOutcome"]["clv"] == 1.0
+    assert summary["latestOutcome"]["closing_line"] is None
+    assert summary["latestOutcome"]["clv"] is None
 
     firewalls = summary["firewalls"]
     assert firewalls["officialProductionMarket"] == "SPREAD"
@@ -776,6 +782,11 @@ def test_provider_unavailable_during_game_day_isolated(monkeypatch, tmp_path: Pa
     shadow_db = tmp_path / "provider_failure.sqlite"
     monkeypatch.setenv("PLAYER_PROP_COLLECTION_ENABLED", "1")
     monkeypatch.setattr(shadow_markets, "_DB_PATH", shadow_db)
+    monkeypatch.setattr(
+        mgr,
+        "evaluate_optional_provider_request",
+        lambda **kwargs: {"allowed": True, "reason": None, "warnings": [], "quotaSafety": {}},
+    )
     shadow_markets._ensure_schema()
     mgr._ensure_manager_schema()
 
@@ -914,17 +925,17 @@ def test_missing_closing_line_and_missing_final_score_safe(monkeypatch, tmp_path
     assert missing_score["settled"] == 0
     assert missing_score["skipped"]["missingFinalScore"] == 1
 
-    with patch.object(dl, "get_closing_line") as mocked_closing:
-        mocked_closing.return_value = type(
-            "C",
-            (),
-            {
-                "closing_status": "NOT_CAPTURED",
-                "closing_point": None,
-                "closing_price": None,
-                "closing_timestamp": None,
-            },
-        )()
+    with patch.object(
+        dl,
+        "_read_snapshot_close_evidence",
+        return_value={
+            "status": "UNAVAILABLE",
+            "closingLine": None,
+            "closingPrice": None,
+            "closingSportsbook": None,
+            "closingTimestamp": None,
+        },
+    ):
         missing_close = dl.run_official_postgame_lifecycle(
             fetch_scores_fn=lambda event_id: {
                 "status": "FINAL",
