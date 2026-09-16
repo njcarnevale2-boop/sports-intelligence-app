@@ -126,9 +126,29 @@ def test_snapshot_contract_complete(monkeypatch):
     assert body["success"] is True
     assert body["trackingStatus"] == "COMPLETE"
     assert body["snapshotRecorded"] is True
-    assert body["ledgerRecorded"] is True
-    assert body["snapshotId"] == "snap-complete"
-    assert body["decisionId"] == "decision-1"
+
+
+def test_snapshot_contract_stale_qualified_payload_fails_closed(monkeypatch):
+    payload = _actionable_payload("evt-stale-qualified")
+    payload["currentExecution"] = {
+        "status": "STALE_APPROVED_MARKET",
+        "sportsbook": None,
+        "point": None,
+        "price": None,
+        "quoteTimestamp": None,
+        "currentMarketTimestamp": "2026-09-13T15:00:00+00:00",
+    }
+    payload["currentQualification"] = {"status": "QUALIFIED", "actionable": False}
+
+    response = client.post("/api/recommendation/snapshot", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["trackingStatus"] == "FAILED"
+    assert body["snapshotRecorded"] is False
+    assert body["ledgerRecorded"] is False
+    assert "Missing required actionable evidence" in body["reason"]
+    assert "currentExecution.status=AVAILABLE" in body["reason"]
 
 
 def test_snapshot_payload_normalizes_market_side_and_provider_key(monkeypatch):

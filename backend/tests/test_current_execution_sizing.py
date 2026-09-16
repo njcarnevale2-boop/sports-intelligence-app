@@ -277,10 +277,55 @@ def test_stale_quote_has_no_sizing(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     fair = _FakeFairPriceResult()
     _patch_current_execution_fixture(monkeypatch, tmp_path, artifact_row=artifact_row, current_quotes=current_quotes, fair_price_result=fair)
 
-    opp = opportunities_route.get_opportunities(limit=10, best_lines_only=True, include_experimental=True, week=1)["opportunities"][0]
+    prod_payload = opportunities_route.get_opportunities(limit=10, best_lines_only=True, week=1)
+    assert prod_payload["count"] == 1
+
+    opp = prod_payload["opportunities"][0]
     assert opp["currentExecution"]["status"] == "STALE_APPROVED_MARKET"
+    assert opp["qualificationStatus"] == "QUALIFIED"
+    assert opp["recommendation"] == "STRONG BET"
+    assert opp["productionEligible"] is True
+    assert opp["currentQualification"]["status"] == "QUALIFIED"
+    assert opp["currentQualification"]["actionable"] is False
+    assert opp["book"] is None
+    assert opp["point"] is None
+    assert opp["price"] is None
     assert opp["currentSizing"]["status"] == "UNAVAILABLE"
     assert opp["recommendedUnits"] is None
+
+    board = build_decision_board_payload([opp], limit=1)
+    assert board["count"] == 0
+
+
+def test_freshness_changes_do_not_change_opportunity_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    artifact_row = _base_artifact_row()
+
+    fresh_quotes = [_current_quote(point=4.0, price=-105.0, minutes_old=5)]
+    fresh_fair = _FakeFairPriceResult(current_win_probability=0.62, current_push_probability=0.02, current_loss_probability=0.36, current_ev=0.123, best_available_line=4.0, best_available_price=-105.0)
+    _patch_current_execution_fixture(monkeypatch, tmp_path, artifact_row=artifact_row, current_quotes=fresh_quotes, fair_price_result=fresh_fair)
+    fresh = opportunities_route.get_opportunities(limit=10, best_lines_only=True, week=1)["opportunities"][0]
+
+    stale_tmp = tmp_path / "stale"
+    stale_tmp.mkdir()
+    stale_quotes = [_current_quote(point=4.0, price=-105.0, minutes_old=45)]
+    stale_fair = _FakeFairPriceResult()
+    _patch_current_execution_fixture(monkeypatch, stale_tmp, artifact_row=artifact_row, current_quotes=stale_quotes, fair_price_result=stale_fair)
+    stale = opportunities_route.get_opportunities(limit=10, best_lines_only=True, week=1)["opportunities"][0]
+
+    restored_tmp = tmp_path / "restored"
+    restored_tmp.mkdir()
+    restored_quotes = [_current_quote(point=4.0, price=-105.0, minutes_old=5)]
+    restored_fair = _FakeFairPriceResult(current_win_probability=0.62, current_push_probability=0.02, current_loss_probability=0.36, current_ev=0.123, best_available_line=4.0, best_available_price=-105.0)
+    _patch_current_execution_fixture(monkeypatch, restored_tmp, artifact_row=artifact_row, current_quotes=restored_quotes, fair_price_result=restored_fair)
+    restored = opportunities_route.get_opportunities(limit=10, best_lines_only=True, week=1)["opportunities"][0]
+
+    assert fresh["id"] == stale["id"] == restored["id"]
+    assert fresh["currentExecution"]["status"] == "AVAILABLE"
+    assert stale["currentExecution"]["status"] == "STALE_APPROVED_MARKET"
+    assert restored["currentExecution"]["status"] == "AVAILABLE"
+    assert stale["qualificationStatus"] == "QUALIFIED"
+    assert stale["currentQualification"]["actionable"] is False
+    assert restored["currentQualification"]["actionable"] is True
 
 
 def test_better_unapproved_sportsbook_is_ignored_for_current_sizing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -581,14 +581,20 @@ def test_ranked_candidate_without_fresh_approved_quote_fails_closed_but_preserve
     )
 
     prod_payload = opportunities_route.get_opportunities(limit=10, best_lines_only=True, week=1)
-    assert prod_payload["count"] == 0
-    assert prod_payload["opportunities"] == []
+    assert prod_payload["count"] == 1
+    assert prod_payload["productionCount"] == 1
+    prod_opp = prod_payload["opportunities"][0]
+    assert prod_opp["currentExecution"]["status"] == "STALE_APPROVED_MARKET"
+    assert prod_opp["qualificationStatus"] == "QUALIFIED"
+    assert prod_opp["currentQualification"]["actionable"] is False
 
     audit_payload = opportunities_route.get_opportunities(limit=10, best_lines_only=True, include_experimental=True, week=1)
     assert audit_payload["count"] == 1
-    assert audit_payload["productionCount"] == 0
+    assert audit_payload["productionCount"] == 1
+    assert audit_payload["experimentalCount"] == 0
     opp = audit_payload["opportunities"][0]
     assert opp["currentExecution"]["status"] == "STALE_APPROVED_MARKET"
+    assert opp["qualificationStatus"] == "QUALIFIED"
     assert opp["book"] is None
     assert opp["point"] is None
     assert opp["price"] is None

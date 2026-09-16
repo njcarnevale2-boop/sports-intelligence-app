@@ -1231,19 +1231,9 @@ def row_to_opportunity(
     result["marketValidationStatus"] = validation_status
 
     if execution_status != "AVAILABLE":
-        result["productionEligible"] = False
-        result["qualificationStatus"] = "NOT_QUALIFIED"
-        result["qualificationReasons"] = [str((current_execution or {}).get("reason") or "No current executable approved quote is available.")]
-        result["recommendation"] = "PASS"
         result["book"] = None
         result["point"] = None
         result["price"] = None
-        result["currentQualification"] = {
-            "status": result["qualificationStatus"],
-            "recommendation": result["recommendation"],
-            "actionable": False,
-            "reason": (current_execution or {}).get("reason"),
-        }
 
     # -----------------------------------------------------
     # MARKET INTELLIGENCE
@@ -2141,12 +2131,8 @@ def _get_opportunities_payload(
 
     # Keep spread-first ordering for continuity; rank within each family by calibrated edge.
     market_priority = {"spread": 0, "moneyline": 1, "total": 2}
-    actionable_candidates = [
-        row for row in candidate_rows
-        if str((row.get("currentExecution") or {}).get("status") or "") == "AVAILABLE"
-    ]
-
-    actionable_candidates.sort(
+    ordered_candidates = sorted(
+        candidate_rows,
         key=lambda r: (
             market_priority.get(r["market"], 3),
             -r["calibratedEdge"],
@@ -2158,10 +2144,9 @@ def _get_opportunities_payload(
             r["side"],
         )
     )
-    ranked_candidates = candidate_rows[:limit] if include_experimental else actionable_candidates[:limit]
 
     all_rows = []
-    for week_rank, candidate in enumerate(ranked_candidates, start=1):
+    for week_rank, candidate in enumerate(ordered_candidates, start=1):
         selected = candidate["selected"]
         item = row_to_opportunity(
             selected,
@@ -2200,7 +2185,7 @@ def _get_opportunities_payload(
         item
         for item in all_rows
         if bool(item.get("productionEligible"))
-        and bool((item.get("currentQualification") or {}).get("actionable"))
+        and str(item.get("qualificationStatus") or "").upper() == "QUALIFIED"
     ]
     production_rows.sort(key=lambda r: int(r.get("globalResearchRank") or 9999))
     production_ids = {id(item) for item in production_rows}
@@ -2210,7 +2195,7 @@ def _get_opportunities_payload(
         if id(item) not in production_ids:
             item["productionRank"] = None
 
-    best_rows = all_rows if include_experimental else production_rows
+    best_rows = all_rows[:limit] if include_experimental else production_rows[:limit]
     for idx, item in enumerate(best_rows, start=1):
         item["rank"] = idx
         item["weekRank"] = idx

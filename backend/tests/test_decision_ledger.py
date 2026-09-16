@@ -779,7 +779,7 @@ def test_official_preview_excludes_candidates_without_available_current_executio
             "qualificationStatus": "QUALIFIED",
             "productionEligible": True,
             "currentExecution": {"status": "STALE_APPROVED_MARKET", "sportsbook": "DraftKings"},
-            "currentQualification": {"status": "NOT_QUALIFIED", "actionable": False},
+            "currentQualification": {"status": "QUALIFIED", "actionable": False},
         },
         {
             "eventId": "evt-live",
