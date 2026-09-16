@@ -29,6 +29,17 @@ def _base_payload() -> dict:
     }
 
 
+def _provenance_payload() -> dict:
+    return {
+        "modelTimestamp": "2026-09-13T14:58:00+00:00",
+        "modelVersion": "sia_model_v2026_preseason",
+        "probabilityEngineVersion": "empirical_residual_engine_v2026_preseason",
+        "calibrationVersion": "guarded_isotonic_v2026_preseason",
+        "rankingVersion": "ranking_calibrated_edge_v2026",
+        "qualificationPolicyVersion": "qualification_explicit_policy_v2026",
+    }
+
+
 def test_snapshot_contract_complete(monkeypatch):
     monkeypatch.setattr(snapshot_route, "build_snapshot_id", lambda payload: "snap-complete")
     monkeypatch.setattr(snapshot_route, "snapshot_exists", lambda snapshot_id: False)
@@ -102,6 +113,90 @@ def test_snapshot_contract_ledger_error_rolls_back_new_snapshot(monkeypatch):
     assert body["ledgerRecorded"] is False
     assert body["reason"] == "season, week, and eventId are required"
     assert rollback_calls["count"] == 1
+
+
+def test_snapshot_contract_missing_actionable_provenance_fails_closed(monkeypatch, tmp_path):
+    import duckdb
+    import app.services.decision_ledger as dl
+    import app.services.recommendation_snapshot as rs
+
+    ledger_db = tmp_path / "ledger-missing-provenance.db"
+    snapshot_db = tmp_path / "snapshots-missing-provenance.duckdb"
+    duckdb.connect(str(snapshot_db)).close()
+    monkeypatch.setattr(dl, "_DB_PATH", ledger_db)
+    monkeypatch.setattr(rs, "_DB_PATH", snapshot_db)
+
+    rollback_calls = {"count": 0}
+
+    monkeypatch.setattr(snapshot_route, "build_snapshot_id", lambda payload: "snap-missing-provenance")
+    monkeypatch.setattr(snapshot_route, "snapshot_exists", lambda snapshot_id: False)
+    monkeypatch.setattr(snapshot_route, "store_snapshot", lambda payload: "snap-missing-provenance")
+    monkeypatch.setattr(snapshot_route, "record_personal_wager_from_payload", lambda payload, decision_id=None, source_snapshot_id=None: {"wagerId": "wager-should-not-exist"})
+
+    def _delete_snapshot(snapshot_id: str):
+        rollback_calls["count"] += 1
+        return True
+
+    monkeypatch.setattr(snapshot_route, "delete_snapshot", _delete_snapshot)
+
+    payload = {
+        **_base_payload(),
+        "qualificationStatus": "QUALIFIED",
+        "currentQualification": {"status": "QUALIFIED", "actionable": True},
+    }
+    response = client.post("/api/recommendation/snapshot", json=payload)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is False
+    assert body["trackingStatus"] == "FAILED"
+    assert body["snapshotRecorded"] is False
+    assert body["ledgerRecorded"] is False
+    assert "Missing required provenance for actionable tracked decision" in body["reason"]
+    assert rollback_calls["count"] == 1
+
+
+def test_snapshot_contract_missing_actionable_provenance_keeps_existing_snapshot(monkeypatch, tmp_path):
+    import duckdb
+    import app.services.decision_ledger as dl
+    import app.services.recommendation_snapshot as rs
+
+    ledger_db = tmp_path / "ledger-existing-missing-provenance.db"
+    snapshot_db = tmp_path / "snapshots-existing-missing-provenance.duckdb"
+    duckdb.connect(str(snapshot_db)).close()
+    monkeypatch.setattr(dl, "_DB_PATH", ledger_db)
+    monkeypatch.setattr(rs, "_DB_PATH", snapshot_db)
+
+    rollback_calls = {"count": 0}
+    store_calls = {"count": 0}
+
+    monkeypatch.setattr(snapshot_route, "build_snapshot_id", lambda payload: "snap-existing-missing-provenance")
+    monkeypatch.setattr(snapshot_route, "snapshot_exists", lambda snapshot_id: True)
+
+    def _store_snapshot(payload: dict):
+        store_calls["count"] += 1
+        return "snap-existing-missing-provenance"
+
+    monkeypatch.setattr(snapshot_route, "store_snapshot", _store_snapshot)
+
+    def _delete_snapshot(snapshot_id: str):
+        rollback_calls["count"] += 1
+        return True
+
+    monkeypatch.setattr(snapshot_route, "delete_snapshot", _delete_snapshot)
+
+    payload = {
+        **_base_payload(),
+        "qualificationStatus": "QUALIFIED",
+        "currentQualification": {"status": "QUALIFIED", "actionable": True},
+    }
+    response = client.post("/api/recommendation/snapshot", json=payload)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is False
+    assert body["trackingStatus"] == "FAILED"
+    assert "Missing required provenance for actionable tracked decision" in body["reason"]
+    assert store_calls["count"] == 0
+    assert rollback_calls["count"] == 0
 
 
 def test_snapshot_contract_repeat_uses_existing_snapshot_without_rollback(monkeypatch):
@@ -215,6 +310,7 @@ def test_snapshot_contract_exact_retry_is_idempotent(monkeypatch, tmp_path):
         "amountRisked": 50.0,
         "unitsRisked": 0.5,
         "unitSizeAtBet": 100.0,
+        **_provenance_payload(),
     }
 
     r1 = client.post("/api/recommendation/snapshot", json=payload)
@@ -236,6 +332,10 @@ def test_snapshot_contract_exact_retry_is_idempotent(monkeypatch, tmp_path):
 
     con = sqlite3.connect(str(ledger_db))
     con.row_factory = sqlite3.Row
+    decision_row = con.execute(
+        "SELECT model_version, probability_engine_version, calibration_version, ranking_version, qualification_policy_version, model_timestamp, market_timestamp, published_at_utc FROM decision_ledger WHERE decision_id = ?",
+        [b1["decisionId"]],
+    ).fetchone()
     decision_rows = con.execute(
         "SELECT decision_id, decision_version, season, week, event_id, publication_type FROM decision_ledger WHERE source_snapshot_id = ?",
         [b1["snapshotId"]],
@@ -267,6 +367,68 @@ def test_snapshot_contract_exact_retry_is_idempotent(monkeypatch, tmp_path):
     assert wager_rows[0]["decision_id"] == b1["decisionId"]
     assert int(publications_count) == 0
     assert int(slots_count) == 0
+    assert decision_row["model_version"] == payload["modelVersion"]
+    assert decision_row["probability_engine_version"] == payload["probabilityEngineVersion"]
+    assert decision_row["calibration_version"] == payload["calibrationVersion"]
+    assert decision_row["ranking_version"] == payload["rankingVersion"]
+    assert decision_row["qualification_policy_version"] == payload["qualificationPolicyVersion"]
+    assert decision_row["model_timestamp"] == payload["modelTimestamp"]
+    assert decision_row["market_timestamp"] == payload["marketTimestamp"]
+
+    dcon = duckdb.connect(str(snapshot_db), read_only=True)
+    snapshot_row = dcon.execute(
+        "SELECT model_version, probability_engine_version, calibration_version, ranking_version, qualification_policy_version, model_timestamp FROM recommendation_snapshots WHERE snapshot_id = ?",
+        [b1["snapshotId"]],
+    ).fetchone()
+    dcon.close()
+    assert snapshot_row[0] == payload["modelVersion"]
+    assert snapshot_row[1] == payload["probabilityEngineVersion"]
+    assert snapshot_row[2] == payload["calibrationVersion"]
+    assert snapshot_row[3] == payload["rankingVersion"]
+    assert snapshot_row[4] == payload["qualificationPolicyVersion"]
+    assert str(snapshot_row[5]).startswith("2026-09-13 14:58:00")
+
+
+def test_snapshot_schema_preserves_null_provenance_for_rows_without_values(monkeypatch, tmp_path):
+    import duckdb
+    import app.services.recommendation_snapshot as rs
+
+    snapshot_db = tmp_path / "snapshots-null-provenance.duckdb"
+    duckdb.connect(str(snapshot_db)).close()
+    monkeypatch.setattr(rs, "_DB_PATH", snapshot_db)
+
+    snapshot_id = rs.store_snapshot(
+        {
+            "season": 2026,
+            "week": 1,
+            "eventId": "evt-null-snapshot-provenance",
+            "commenceTime": "2026-09-13T17:00:00+00:00",
+            "market": "spreads",
+            "side": "away",
+            "point": 7.0,
+            "price": -110.0,
+            "sportsbook": "DraftKings",
+            "selection": "NO +7",
+            "modelProbability": 0.58,
+            "edge": 0.04,
+            "evPerDollar": 0.06,
+        }
+    )
+    assert snapshot_id
+
+    con = duckdb.connect(str(snapshot_db), read_only=True)
+    row = con.execute(
+        "SELECT model_version, probability_engine_version, calibration_version, ranking_version, qualification_policy_version, model_timestamp FROM recommendation_snapshots WHERE snapshot_id = ?",
+        [snapshot_id],
+    ).fetchone()
+    con.close()
+
+    assert row[0] is None
+    assert row[1] is None
+    assert row[2] is None
+    assert row[3] is None
+    assert row[4] is None
+    assert row[5] is None
 
 
 def test_snapshot_contract_material_quote_change_creates_new_decision(monkeypatch, tmp_path):
@@ -329,6 +491,7 @@ def test_snapshot_contract_material_quote_change_creates_new_decision(monkeypatc
         "amountRisked": 50.0,
         "unitsRisked": 0.5,
         "unitSizeAtBet": 100.0,
+        **_provenance_payload(),
     }
     changed = dict(base)
     changed["price"] = -105.0

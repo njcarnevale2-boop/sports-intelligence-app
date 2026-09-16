@@ -399,6 +399,39 @@ def test_opportunity_history_missing_prior_state_remains_unavailable(tmp_path, m
     assert record["transitionReason"] == "NO_PRIOR_STATE"
 
 
+def test_opportunity_history_preserves_historical_null_model_probability_provenance(tmp_path, monkeypatch) -> None:
+    import app.services.opportunity_history as oh
+
+    monkeypatch.setattr(oh, "_DB_PATH", tmp_path / "opp-history-null-provenance.db")
+    oh._ensure_schema()
+
+    record = oh.record_history_snapshot({
+        "eventId": "evt-null-prov-1",
+        "market": "spread",
+        "side": "away",
+        "sportsbook": "DraftKings",
+        "point": 3.5,
+        "price": -110,
+        "qualificationStatus": "WATCH",
+        "recommendation": "WATCH",
+        "productionEligible": False,
+        "sourceSnapshotId": "snap-null-prov-1",
+        "calibrationVersion": "guarded_isotonic_v2026_preseason",
+        "rankingVersion": None,
+        "qualificationPolicyVersion": None,
+    })
+
+    assert record["modelVersion"] is None
+    assert record["probabilityEngineVersion"] is None
+
+    latest = oh.latest_history_for_opportunity("evt-null-prov-1", "spread", "away")
+    assert latest is not None
+    assert latest["modelVersion"] is None
+    assert latest["probabilityEngineVersion"] is None
+    assert latest["rankingVersion"] is None
+    assert latest["qualificationPolicyVersion"] is None
+
+
 def test_opportunity_history_database_has_no_unique_same_source_constraint(tmp_path, monkeypatch) -> None:
     import sqlite3
 

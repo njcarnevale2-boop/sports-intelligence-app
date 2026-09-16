@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -213,6 +214,8 @@ def test_opportunities_rank_by_calibrated_edge_and_emit_snapshot_metadata(tmp_pa
     assert payload["snapshotId"]
     assert payload["calibrationStatus"] == "ACTIVE"
     assert payload["calibrationMethod"] == "GUARDED_ISOTONIC"
+    assert payload["modelVersion"]
+    assert payload["probabilityEngineVersion"]
     assert payload["calibrationVersion"]
     assert payload["rankingVersion"]
     assert payload["qualificationPolicyVersion"]
@@ -221,6 +224,12 @@ def test_opportunities_rank_by_calibrated_edge_and_emit_snapshot_metadata(tmp_pa
     assert opps[0]["eventId"] == "evt-2"
     assert opps[0]["rank"] == 1
     assert opps[0]["rawRank"] == 2
+    assert opps[0]["modelVersion"]
+    assert opps[0]["probabilityEngineVersion"]
+    assert opps[0]["calibrationVersion"]
+    assert opps[0]["rankingVersion"]
+    assert opps[0]["qualificationPolicyVersion"]
+    assert opps[0]["modelTimestamp"]
     assert opps[1]["eventId"] == "evt-1"
 
     # Advanced probability and boundary fields remain exposed for deep analytics.
@@ -288,6 +297,126 @@ def test_opportunity_qualification_and_si_inputs_use_push_aware_semantics(tmp_pa
     # SI expected value component should reflect 0.123 EV, not raw board EV.
     si = opp["sportsIntelligenceScore"]
     assert abs(float(si["components"]["expectedValue"]) - 24.6) < 0.2
+
+
+def test_model_timestamp_for_ranked_rows_uses_artifact_time_and_not_api_now(tmp_path, monkeypatch):
+    rows = [
+        {
+            "api_event_id": "evt-ts-1",
+            "commence_time": "2026-09-13T17:00:00+00:00",
+            "away_team": "NO",
+            "home_team": "ATL",
+            "market": "spread",
+            "side": "away",
+            "point": 3.0,
+            "sportsbook": "DraftKings",
+            "price": -110,
+            "model_prob": 0.58,
+            "implied_prob_raw": 0.55,
+            "fair_odds": -120,
+            "edge_pp": 0.03,
+            "ev_per_dollar": 0.04,
+            "kelly_full": 0.03,
+            "kelly_20pct": 0.006,
+            "recommendation": "BET",
+            "confidence_score": 68,
+            "data_completeness": 0.95,
+            "market_confidence": 0.8,
+            "model_confidence": 0.7,
+            "rank": 1,
+        }
+    ]
+
+    opportunities_route = _patch_dependencies(monkeypatch, tmp_path, rows)
+
+    artifact_epoch = 1756720800
+    os.utime(opportunities_route.RANKED_BET_BOARD, (artifact_epoch, artifact_epoch))
+    expected_model_timestamp = datetime.fromtimestamp(artifact_epoch, tz=timezone.utc).isoformat()
+
+    class _FakeDateTime:
+        _idx = 0
+        _values = [
+            "2026-09-16T10:00:00+00:00",
+            "2026-09-16T10:05:00+00:00",
+        ]
+
+        @classmethod
+        def now(cls, tz=None):
+            value = cls._values[min(cls._idx, len(cls._values) - 1)]
+            cls._idx += 1
+            return datetime.fromisoformat(value)
+
+        @classmethod
+        def fromisoformat(cls, value: str):
+            return datetime.fromisoformat(value)
+
+        @classmethod
+        def fromtimestamp(cls, ts: float, tz=None):
+            return datetime.fromtimestamp(ts, tz=tz)
+
+    monkeypatch.setattr(opportunities_route, "datetime", _FakeDateTime)
+
+    payload1 = opportunities_route.get_opportunities(limit=10, best_lines_only=True, week=1)
+    payload2 = opportunities_route.get_opportunities(limit=10, best_lines_only=True, week=1)
+
+    opp1 = payload1["opportunities"][0]
+    opp2 = payload2["opportunities"][0]
+
+    assert opp1["rawModelProbability"] == opp2["rawModelProbability"]
+    assert opp1["calibratedProbability"] == opp2["calibratedProbability"]
+    assert opp1["modelTimestamp"] == expected_model_timestamp
+    assert opp2["modelTimestamp"] == expected_model_timestamp
+    assert opp1["modelTimestamp"] != opp1["marketLastUpdated"]
+
+
+def test_model_timestamp_changes_when_new_ranked_artifact_is_generated(tmp_path, monkeypatch):
+    rows = [
+        {
+            "api_event_id": "evt-ts-regen",
+            "commence_time": "2026-09-13T17:00:00+00:00",
+            "away_team": "NO",
+            "home_team": "ATL",
+            "market": "spread",
+            "side": "away",
+            "point": 3.0,
+            "sportsbook": "DraftKings",
+            "price": -110,
+            "model_prob": 0.58,
+            "implied_prob_raw": 0.55,
+            "fair_odds": -120,
+            "edge_pp": 0.03,
+            "ev_per_dollar": 0.04,
+            "kelly_full": 0.03,
+            "kelly_20pct": 0.006,
+            "recommendation": "BET",
+            "confidence_score": 68,
+            "data_completeness": 0.95,
+            "market_confidence": 0.8,
+            "model_confidence": 0.7,
+            "rank": 1,
+        }
+    ]
+
+    opportunities_route = _patch_dependencies(monkeypatch, tmp_path, rows)
+
+    first_epoch = 1756720800
+    second_epoch = 1756724400
+    os.utime(opportunities_route.RANKED_BET_BOARD, (first_epoch, first_epoch))
+
+    first = opportunities_route.get_opportunities(limit=10, best_lines_only=True, week=1)
+    first_opp = first["opportunities"][0]
+
+    regenerated_rows = [dict(rows[0])]
+    regenerated_rows[0]["model_prob"] = 0.61
+    _write_ranked_board(opportunities_route.RANKED_BET_BOARD, regenerated_rows)
+    os.utime(opportunities_route.RANKED_BET_BOARD, (second_epoch, second_epoch))
+
+    second = opportunities_route.get_opportunities(limit=10, best_lines_only=True, week=1)
+    second_opp = second["opportunities"][0]
+
+    assert first_opp["rawModelProbability"] != second_opp["rawModelProbability"]
+    assert first_opp["modelTimestamp"] == datetime.fromtimestamp(first_epoch, tz=timezone.utc).isoformat()
+    assert second_opp["modelTimestamp"] == datetime.fromtimestamp(second_epoch, tz=timezone.utc).isoformat()
 
 
 def test_spread_opportunity_emits_boundary_research_metadata(tmp_path, monkeypatch):

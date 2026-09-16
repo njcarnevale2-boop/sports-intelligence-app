@@ -52,7 +52,13 @@ CREATE TABLE IF NOT EXISTS recommendation_snapshots (
     closing_at         TIMESTAMP,
     clv_points         DOUBLE,
     clv_probability    DOUBLE,
-    clv_percent        DOUBLE
+    clv_percent        DOUBLE,
+    model_version      VARCHAR,
+    probability_engine_version VARCHAR,
+    calibration_version VARCHAR,
+    ranking_version    VARCHAR,
+    qualification_policy_version VARCHAR,
+    model_timestamp    TIMESTAMP
 )
 """
 
@@ -67,6 +73,22 @@ def _ensure_schema() -> None:
         return
     con = _open_db()
     con.execute(_SCHEMA)
+    existing_columns = {
+        str(row[1])
+        for row in con.execute("PRAGMA table_info('recommendation_snapshots')").fetchall()
+    }
+    required_columns = {
+        "model_version": "VARCHAR",
+        "probability_engine_version": "VARCHAR",
+        "calibration_version": "VARCHAR",
+        "ranking_version": "VARCHAR",
+        "qualification_policy_version": "VARCHAR",
+        "model_timestamp": "TIMESTAMP",
+    }
+    for name, sql_type in required_columns.items():
+        if name in existing_columns:
+            continue
+        con.execute(f"ALTER TABLE recommendation_snapshots ADD COLUMN {name} {sql_type}")
     con.close()
 
 
@@ -168,8 +190,10 @@ def store_snapshot(payload: Dict[str, Any]) -> str:
         (snapshot_id, event_id, recommended_at, market, side, point, price,
          sportsbook, si_score, model_probability, edge_pp, ev_per_dollar,
          market_intelligence, injury_context, weather_context,
-         commence_time, home_team, away_team, closing_status)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'PENDING')
+         commence_time, home_team, away_team, closing_status,
+         model_version, probability_engine_version, calibration_version,
+         ranking_version, qualification_policy_version, model_timestamp)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'PENDING',?,?,?,?,?,?)
         """,
         [
             snapshot_id,
@@ -190,6 +214,12 @@ def store_snapshot(payload: Dict[str, Any]) -> str:
             payload.get("commenceTime"),
             payload.get("homeTeam"),
             payload.get("awayTeam"),
+            payload.get("modelVersion"),
+            payload.get("probabilityEngineVersion"),
+            payload.get("calibrationVersion"),
+            payload.get("rankingVersion"),
+            payload.get("qualificationPolicyVersion"),
+            payload.get("modelTimestamp"),
         ],
     )
     con.close()

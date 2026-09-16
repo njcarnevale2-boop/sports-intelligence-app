@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from app.config import settings
 from app.runtime_paths import runtime_paths
 
 _DB_PATH: Path | None = None
@@ -246,8 +245,8 @@ def build_history_snapshot_from_opportunity(opportunity: Dict[str, Any], *, sour
         "modelVersion": opportunity.get("modelVersion"),
         "probabilityEngineVersion": opportunity.get("probabilityEngineVersion"),
         "calibrationVersion": opportunity.get("calibrationVersion"),
-        "rankingVersion": opportunity.get("rankingVersion") or settings.DEFAULT_RANKING_VERSION,
-        "qualificationPolicyVersion": opportunity.get("qualificationPolicyVersion") or settings.DEFAULT_QUALIFICATION_POLICY_VERSION,
+        "rankingVersion": opportunity.get("rankingVersion"),
+        "qualificationPolicyVersion": opportunity.get("qualificationPolicyVersion"),
         "gitCommitHash": opportunity.get("gitCommitHash"),
     }
 

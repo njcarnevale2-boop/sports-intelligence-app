@@ -1168,9 +1168,15 @@ def _decision_payload_from_opportunity(opportunity: Dict[str, Any], published_at
         "qualificationReasons": [str(r) for r in qualification_reasons],
         "oddsProvider": opportunity.get("marketProvider") or "line_movement_board",
         "oddsTimestamp": linkage["oddsTimestamp"] or opportunity.get("marketLastUpdated"),
-        "modelTimestamp": _utc_now_iso(),
+        "modelTimestamp": opportunity.get("modelTimestamp"),
         "marketTimestamp": opportunity.get("marketLastUpdated"),
         "sourceSnapshotId": linkage["sourceSnapshotId"],
+        "modelVersion": opportunity.get("modelVersion"),
+        "probabilityEngineVersion": opportunity.get("probabilityEngineVersion"),
+        "calibrationVersion": opportunity.get("calibrationVersion"),
+        "rankingVersion": opportunity.get("rankingVersion"),
+        "qualificationPolicyVersion": opportunity.get("qualificationPolicyVersion"),
+        "gitCommitHash": opportunity.get("gitCommitHash"),
     }
 
     decision["_snapshotLinkage"] = linkage
@@ -1179,6 +1185,35 @@ def _decision_payload_from_opportunity(opportunity: Dict[str, Any], published_at
 
 def record_my_card_decision_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     published_at_utc = _utc_now_iso()
+
+    def _is_actionable_qualified(source: Dict[str, Any]) -> bool:
+        qualification = str(source.get("qualificationStatus") or "").upper()
+        if qualification == "QUALIFIED":
+            return True
+        current_qualification = source.get("currentQualification")
+        if isinstance(current_qualification, dict):
+            return str(current_qualification.get("status") or "").upper() == "QUALIFIED" and bool(current_qualification.get("actionable"))
+        return False
+
+    def _missing_required_provenance(source: Dict[str, Any]) -> List[str]:
+        required = [
+            "modelVersion",
+            "probabilityEngineVersion",
+            "calibrationVersion",
+            "rankingVersion",
+            "qualificationPolicyVersion",
+            "modelTimestamp",
+        ]
+        missing: List[str] = []
+        for field in required:
+            value = source.get(field)
+            if value is None:
+                missing.append(field)
+                continue
+            if isinstance(value, str) and not value.strip():
+                missing.append(field)
+        return missing
+
     opportunity = {
         "season": payload.get("season"),
         "week": payload.get("week"),
@@ -1221,6 +1256,13 @@ def record_my_card_decision_from_payload(payload: Dict[str, Any]) -> Dict[str, A
         "rank": payload.get("siRank"),
         "marketProvider": payload.get("oddsProvider") or "line_movement_board",
         "marketLastUpdated": payload.get("marketTimestamp") or payload.get("oddsTimestamp"),
+        "modelVersion": payload.get("modelVersion"),
+        "probabilityEngineVersion": payload.get("probabilityEngineVersion"),
+        "calibrationVersion": payload.get("calibrationVersion"),
+        "rankingVersion": payload.get("rankingVersion"),
+        "qualificationPolicyVersion": payload.get("qualificationPolicyVersion"),
+        "modelTimestamp": payload.get("modelTimestamp"),
+        "gitCommitHash": payload.get("gitCommitHash"),
     }
 
     decision_payload = _decision_payload_from_opportunity(opportunity, published_at_utc)
@@ -1251,6 +1293,14 @@ def record_my_card_decision_from_payload(payload: Dict[str, Any]) -> Dict[str, A
             out["isLatestDecision"] = _is_latest_decision(existing["decision_id"])
             out["created"] = False
             return out
+
+    if _is_actionable_qualified(payload):
+        missing = _missing_required_provenance(decision_payload)
+        if missing:
+            raise ValueError(
+                "Missing required provenance for actionable tracked decision: "
+                + ", ".join(missing)
+            )
 
     decision_payload.pop("_snapshotLinkage", None)
     return record_decision(decision_payload, publication_type="MY_CARD")

@@ -229,6 +229,13 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
+def _artifact_timestamp_iso(path: Path) -> str | None:
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
+    except Exception:
+        return None
+
+
 def _american_profit_multiplier(american_odds: float | None) -> float | None:
     if american_odds is None:
         return None
@@ -520,6 +527,12 @@ def _history_entry_for_api(row: dict[str, Any]) -> dict[str, Any]:
         "observedAtUTC": row.get("observedAtUTC"),
         "createdAtUTC": row.get("createdAtUTC"),
         "previousSnapshotAvailable": row.get("previousSnapshotAvailable"),
+        "modelVersion": row.get("modelVersion"),
+        "probabilityEngineVersion": row.get("probabilityEngineVersion"),
+        "calibrationVersion": row.get("calibrationVersion"),
+        "rankingVersion": row.get("rankingVersion"),
+        "qualificationPolicyVersion": row.get("qualificationPolicyVersion"),
+        "gitCommitHash": row.get("gitCommitHash"),
     }
 
 
@@ -1074,6 +1087,7 @@ def row_to_opportunity(
     game_projection_row=None,
     original_candidate: dict[str, Any] | None = None,
     current_execution: dict[str, Any] | None = None,
+    evaluation_timestamp: str | None = None,
 ):
     away_code = normalize_team_code(row.get("away_team", ""))
     home_code = normalize_team_code(row.get("home_team", ""))
@@ -1099,6 +1113,13 @@ def row_to_opportunity(
         quality_reasons = [str(quality_reasons)] if quality_reasons else ["Qualification metadata not provided."]
 
     cinfo = calibration_info()
+    model_timestamp = (
+        row.get("model_timestamp")
+        or row.get("modelTimestamp")
+        or row.get("snapshot_timestamp")
+        or row.get("snapshotTimestamp")
+        or evaluation_timestamp
+    )
 
     fair_odds = safe_float(row.get("fair_odds"))
     ev_per_dollar = safe_float(row.get("ev_per_dollar"))
@@ -1150,9 +1171,12 @@ def row_to_opportunity(
         "marketQualificationPolicy": MARKET_QUALIFICATION_POLICY.get(market_key),
         "qualificationPolicyVersion": settings.DEFAULT_QUALIFICATION_POLICY_VERSION,
         "rankingVersion": settings.DEFAULT_RANKING_VERSION,
+        "modelVersion": settings.DEFAULT_MODEL_VERSION,
+        "probabilityEngineVersion": settings.DEFAULT_PROBABILITY_ENGINE_VERSION,
         "calibrationStatus": cinfo.status,
         "calibrationMethod": cinfo.method,
         "calibrationVersion": cinfo.version,
+        "modelTimestamp": model_timestamp,
         "marketProvider": market_snapshot.get("provider") if market_snapshot else None,
         "marketLastUpdated": market_snapshot.get("lastUpdated") if market_snapshot else None,
         "marketDataStatus": market_snapshot.get("dataStatus") if market_snapshot else "UNAVAILABLE",
@@ -1824,6 +1848,15 @@ def _prepare_current_execution_row(original_row: pd.Series, selected_execution_r
     return row
 
 
+def _ensure_model_timestamp(row: pd.Series, fallback_timestamp: str | None) -> pd.Series:
+    out = row.copy()
+    if out.get("model_timestamp") or out.get("modelTimestamp") or out.get("snapshot_timestamp") or out.get("snapshotTimestamp"):
+        return out
+    if fallback_timestamp:
+        out["model_timestamp"] = fallback_timestamp
+    return out
+
+
 # ---------------------------------------------------------
 # OPPORTUNITIES
 # ---------------------------------------------------------
@@ -1850,6 +1883,7 @@ def _get_opportunities_payload(
         df = pd.read_csv(RANKED_BET_BOARD)
     else:
         df = pd.DataFrame()
+    ranked_board_model_timestamp = _artifact_timestamp_iso(RANKED_BET_BOARD) if RANKED_BET_BOARD.exists() else None
 
     if (
         available_weeks_override is None
@@ -1886,6 +1920,8 @@ def _get_opportunities_payload(
     if not df.empty and "api_event_id" in df.columns:
         df["api_event_id"] = df["api_event_id"].astype(str)
         df = df[df["api_event_id"].isin(week_event_ids)]
+    if not df.empty and "model_timestamp" not in df.columns and ranked_board_model_timestamp is not None:
+        df["model_timestamp"] = ranked_board_model_timestamp
 
     # One InjuryMatchupContext per request — one ESPN fetch total.
     shared_injury_ctx = InjuryMatchupContext()
@@ -1893,6 +1929,7 @@ def _get_opportunities_payload(
     cinfo = calibration_info()
     market_snapshots = market_data_service.all_event_snapshots()
     projection_lookup = load_game_projection_lookup()
+    evaluation_timestamp = datetime.now(timezone.utc).isoformat()
 
     if not best_lines_only:
         if df.empty:
@@ -1913,6 +1950,10 @@ def _get_opportunities_payload(
                 "calibrationStatus": cinfo.status,
                 "calibrationMethod": cinfo.method,
                 "calibrationVersion": cinfo.version,
+                "modelVersion": settings.DEFAULT_MODEL_VERSION,
+                "probabilityEngineVersion": settings.DEFAULT_PROBABILITY_ENGINE_VERSION,
+                "rankingVersion": settings.DEFAULT_RANKING_VERSION,
+                "qualificationPolicyVersion": settings.DEFAULT_QUALIFICATION_POLICY_VERSION,
                 "opportunities": [],
             }
 
@@ -1926,6 +1967,7 @@ def _get_opportunities_payload(
                 injury_ctx=shared_injury_ctx,
                 group_rows=df[(df["api_event_id"] == row["api_event_id"]) & (df["market"] == row["market"]) & (df["side"] == row["side"])],
                 game_projection_row=projection_lookup.get(str(row["api_event_id"])),
+                evaluation_timestamp=evaluation_timestamp,
             )
             opp["weekRank"] = week_rank
             opportunities.append(opp)
@@ -1947,6 +1989,10 @@ def _get_opportunities_payload(
             "calibrationStatus": cinfo.status,
             "calibrationMethod": cinfo.method,
             "calibrationVersion": cinfo.version,
+            "modelVersion": settings.DEFAULT_MODEL_VERSION,
+            "probabilityEngineVersion": settings.DEFAULT_PROBABILITY_ENGINE_VERSION,
+            "rankingVersion": settings.DEFAULT_RANKING_VERSION,
+            "qualificationPolicyVersion": settings.DEFAULT_QUALIFICATION_POLICY_VERSION,
             "opportunities": opportunities,
         }
 
@@ -2046,7 +2092,8 @@ def _get_opportunities_payload(
     }
 
     for gen in generated_candidates:
-        selected = gen["selected"]
+        selected = gen["selected"].copy()
+        selected["model_timestamp"] = evaluation_timestamp
         key = (
             str(selected.get("api_event_id") or ""),
             _market_key(str(selected.get("market") or "")),
@@ -2126,6 +2173,7 @@ def _get_opportunities_payload(
             game_projection_row=projection_lookup.get(str(selected["api_event_id"])),
             original_candidate=candidate.get("originalCandidate"),
             current_execution=candidate.get("currentExecution"),
+            evaluation_timestamp=evaluation_timestamp,
         )
         # globalResearchRank is fallback ordering for research (not validated cross-market quality).
         item["globalResearchRank"] = week_rank
@@ -2227,6 +2275,8 @@ def _get_opportunities_payload(
         "calibrationStatus": cinfo.status,
         "calibrationMethod": cinfo.method,
         "calibrationVersion": cinfo.version,
+        "modelVersion": settings.DEFAULT_MODEL_VERSION,
+        "probabilityEngineVersion": settings.DEFAULT_PROBABILITY_ENGINE_VERSION,
         "rankingVersion": settings.DEFAULT_RANKING_VERSION,
         "qualificationPolicyVersion": settings.DEFAULT_QUALIFICATION_POLICY_VERSION,
         "opportunities": best_rows,
@@ -2379,17 +2429,18 @@ def get_opportunity_analysis(
     all_available_books = make_all_available_books(fresh_rows, selected_execution_row)
 
     projection_lookup = load_game_projection_lookup()
+    selected_with_model_timestamp = _ensure_model_timestamp(selected, _artifact_timestamp_iso(RANKED_BET_BOARD))
 
     opportunity = (
         row_to_opportunity(
-            selected,
+            selected_with_model_timestamp,
             include_alternates=(
                 alternates
             ),
             include_all_available_books=all_available_books,
-            market_snapshot=market_data_service.event_market_snapshot(str(selected["api_event_id"])),
+            market_snapshot=market_data_service.event_market_snapshot(str(selected_with_model_timestamp["api_event_id"])),
             group_rows=approved_rows,
-            game_projection_row=projection_lookup.get(str(selected["api_event_id"])),
+            game_projection_row=projection_lookup.get(str(selected_with_model_timestamp["api_event_id"])),
             original_candidate=_build_original_candidate_snapshot(model_candidate),
             current_execution=current_execution,
         )
@@ -2511,7 +2562,7 @@ def get_opportunity_timeline(
 
     opportunity = (
         row_to_opportunity(
-            selected,
+            _ensure_model_timestamp(selected, _artifact_timestamp_iso(RANKED_BET_BOARD)),
             include_alternates=False,
             market_snapshot=market_data_service.event_market_snapshot(str(selected["api_event_id"])),
         )
@@ -2592,7 +2643,7 @@ def get_opportunity(
 
     return (
         row_to_opportunity(
-            selected,
+            _ensure_model_timestamp(selected, _artifact_timestamp_iso(RANKED_BET_BOARD)),
             include_alternates=(
                 alternates
             ),

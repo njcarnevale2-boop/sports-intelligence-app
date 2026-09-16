@@ -499,8 +499,15 @@ def test_recommendation_snapshot_auto_records_my_card_decision(tmp_path, monkeyp
         "siGrade": "A-",
         "siRank": 1,
         "recommendation": "BET",
+        "qualificationStatus": "QUALIFIED",
         "qualificationReasons": ["edge", "ev"],
+        "modelVersion": "sia_model_v2026_preseason",
+        "probabilityEngineVersion": "empirical_residual_engine_v2026_preseason",
+        "calibrationVersion": "guarded_isotonic_v2026_preseason",
+        "rankingVersion": "ranking_calibrated_edge_v2026",
+        "qualificationPolicyVersion": "qualification_explicit_policy_v2026",
         "oddsProvider": "the_odds_api",
+        "modelTimestamp": "2026-09-13T14:58:00+00:00",
         "oddsTimestamp": "2026-09-13T15:00:00+00:00",
         "marketTimestamp": "2026-09-13T15:00:00+00:00",
     }
@@ -519,6 +526,43 @@ def test_recommendation_snapshot_auto_records_my_card_decision(tmp_path, monkeyp
     stored = decision.json()
     assert stored["publicationType"] == "MY_CARD"
     assert stored["sourceSnapshotId"] == "snap-123"
+    assert stored["modelVersion"] == "sia_model_v2026_preseason"
+    assert stored["probabilityEngineVersion"] == "empirical_residual_engine_v2026_preseason"
+    assert stored["calibrationVersion"] == "guarded_isotonic_v2026_preseason"
+    assert stored["rankingVersion"] == "ranking_calibrated_edge_v2026"
+    assert stored["qualificationPolicyVersion"] == "qualification_explicit_policy_v2026"
+    assert stored["modelTimestamp"] == "2026-09-13T14:58:00+00:00"
+
+
+def test_my_card_actionable_missing_provenance_fails_closed_before_defaults(tmp_path, monkeypatch):
+    import app.services.decision_ledger as dl
+
+    monkeypatch.setattr(dl, "_DB_PATH", tmp_path / "ledger-my-card-provenance.db")
+
+    with pytest.raises(ValueError, match="Missing required provenance for actionable tracked decision"):
+        dl.record_my_card_decision_from_payload(
+            {
+                "season": 2026,
+                "week": 1,
+                "eventId": "evt-my-card-missing-provenance",
+                "commenceTime": "2026-09-13T17:00:00+00:00",
+                "awayTeam": "NO",
+                "homeTeam": "ATL",
+                "selection": "NO +7",
+                "market": "spreads",
+                "side": "away",
+                "point": 7.0,
+                "price": -110.0,
+                "sportsbook": "DraftKings",
+                "recommendation": "BET",
+                "qualificationStatus": "QUALIFIED",
+                "qualificationReasons": ["edge", "ev"],
+                "modelTimestamp": "2026-09-13T14:58:00+00:00",
+                "oddsTimestamp": "2026-09-13T15:00:00+00:00",
+                "marketTimestamp": "2026-09-13T15:00:00+00:00",
+                "sourceSnapshotId": "snap-provenance-missing-1",
+            }
+        )
 
 
 def test_publish_official_sia3_from_preview_requires_overrides(tmp_path, monkeypatch):
