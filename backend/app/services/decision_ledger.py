@@ -1197,6 +1197,22 @@ def record_my_card_decision_from_payload(payload: Dict[str, Any]) -> Dict[str, A
 
     def _missing_required_provenance(source: Dict[str, Any]) -> List[str]:
         required = [
+            "season",
+            "week",
+            "eventId",
+            "market",
+            "side",
+            "sportsbook",
+            "price",
+            "oddsTimestamp",
+            "marketTimestamp",
+            "rawProbability",
+            "calibratedProbability",
+            "pushProbability",
+            "lossProbability",
+            "rawEdge",
+            "calibratedEdge",
+            "currentEV",
             "modelVersion",
             "probabilityEngineVersion",
             "calibrationVersion",
@@ -1263,6 +1279,8 @@ def record_my_card_decision_from_payload(payload: Dict[str, Any]) -> Dict[str, A
         "qualificationPolicyVersion": payload.get("qualificationPolicyVersion"),
         "modelTimestamp": payload.get("modelTimestamp"),
         "gitCommitHash": payload.get("gitCommitHash"),
+        "currentExecution": payload.get("currentExecution") if isinstance(payload.get("currentExecution"), dict) else None,
+        "currentQualification": payload.get("currentQualification") if isinstance(payload.get("currentQualification"), dict) else None,
     }
 
     decision_payload = _decision_payload_from_opportunity(opportunity, published_at_utc)

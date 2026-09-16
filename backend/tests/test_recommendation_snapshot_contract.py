@@ -40,6 +40,73 @@ def _provenance_payload() -> dict:
     }
 
 
+def _actionable_payload(event_id: str = "evt-actionable-1") -> dict:
+    return {
+        "season": 2026,
+        "week": 1,
+        "eventId": event_id,
+        "commenceTime": "2026-09-13T17:00:00+00:00",
+        "awayTeam": "NO",
+        "homeTeam": "ATL",
+        "selection": "NO +7",
+        "market": "spread",
+        "side": "away",
+        "point": 7.0,
+        "price": -110.0,
+        "sportsbook": "DraftKings",
+        "recommendation": "BET",
+        "qualificationStatus": "QUALIFIED",
+        "qualificationReasons": ["edge", "ev"],
+        "siScore": 86.0,
+        "siGrade": "A-",
+        "siRank": 1,
+        "modelProbability": 0.58,
+        "rawModelProbability": 0.58,
+        "calibratedProbability": 0.57,
+        "pushProbability": 0.0,
+        "lossProbability": 0.43,
+        "impliedProbability": 0.5238,
+        "marketNoVigProbability": 0.519,
+        "edge": 0.04,
+        "rawEdge": 0.04,
+        "calibratedEdge": 0.03,
+        "currentEV": 0.06,
+        "evPerDollar": 0.06,
+        "oddsProvider": "line_movement_board",
+        "quoteTimestamp": "2026-09-13T14:59:00+00:00",
+        "marketTimestamp": "2026-09-13T15:00:00+00:00",
+        "amountRisked": 50.0,
+        "unitsRisked": 0.5,
+        "unitSizeAtBet": 100.0,
+        "fullKellyFraction": 0.024,
+        "fractionalKellyFraction": 0.0048,
+        "bankrollPercent": 0.48,
+        "recommendedAmount": 4.8,
+        "recommendedUnits": 0.05,
+        "bankrollBasis": 1000.0,
+        "currentExecution": {
+            "status": "AVAILABLE",
+            "sportsbook": "DraftKings",
+            "point": 7.0,
+            "price": -110.0,
+            "quoteTimestamp": "2026-09-13T14:59:00+00:00",
+            "currentMarketTimestamp": "2026-09-13T15:00:00+00:00",
+        },
+        "currentQualification": {"status": "QUALIFIED", "actionable": True},
+        "currentSizing": {
+            "status": "AVAILABLE",
+            "fullKellyFraction": 0.024,
+            "fractionalKellyFraction": 0.0048,
+            "bankrollPercent": 0.48,
+            "recommendedAmount": 4.8,
+            "recommendedUnits": 0.05,
+            "unitSize": 100.0,
+            "bankrollBasis": 1000.0,
+        },
+        **_provenance_payload(),
+    }
+
+
 def test_snapshot_contract_complete(monkeypatch):
     monkeypatch.setattr(snapshot_route, "build_snapshot_id", lambda payload: "snap-complete")
     monkeypatch.setattr(snapshot_route, "snapshot_exists", lambda snapshot_id: False)
@@ -139,11 +206,8 @@ def test_snapshot_contract_missing_actionable_provenance_fails_closed(monkeypatc
 
     monkeypatch.setattr(snapshot_route, "delete_snapshot", _delete_snapshot)
 
-    payload = {
-        **_base_payload(),
-        "qualificationStatus": "QUALIFIED",
-        "currentQualification": {"status": "QUALIFIED", "actionable": True},
-    }
+    payload = _actionable_payload("evt-missing-provenance")
+    payload.pop("modelVersion")
     response = client.post("/api/recommendation/snapshot", json=payload)
     assert response.status_code == 200
     body = response.json()
@@ -151,8 +215,8 @@ def test_snapshot_contract_missing_actionable_provenance_fails_closed(monkeypatc
     assert body["trackingStatus"] == "FAILED"
     assert body["snapshotRecorded"] is False
     assert body["ledgerRecorded"] is False
-    assert "Missing required provenance for actionable tracked decision" in body["reason"]
-    assert rollback_calls["count"] == 1
+    assert "Missing required actionable evidence" in body["reason"]
+    assert rollback_calls["count"] == 0
 
 
 def test_snapshot_contract_missing_actionable_provenance_keeps_existing_snapshot(monkeypatch, tmp_path):
@@ -184,17 +248,14 @@ def test_snapshot_contract_missing_actionable_provenance_keeps_existing_snapshot
 
     monkeypatch.setattr(snapshot_route, "delete_snapshot", _delete_snapshot)
 
-    payload = {
-        **_base_payload(),
-        "qualificationStatus": "QUALIFIED",
-        "currentQualification": {"status": "QUALIFIED", "actionable": True},
-    }
+    payload = _actionable_payload("evt-existing-missing-provenance")
+    payload.pop("modelVersion")
     response = client.post("/api/recommendation/snapshot", json=payload)
     assert response.status_code == 200
     body = response.json()
     assert body["success"] is False
     assert body["trackingStatus"] == "FAILED"
-    assert "Missing required provenance for actionable tracked decision" in body["reason"]
+    assert "Missing required actionable evidence" in body["reason"]
     assert store_calls["count"] == 0
     assert rollback_calls["count"] == 0
 
@@ -279,39 +340,7 @@ def test_snapshot_contract_exact_retry_is_idempotent(monkeypatch, tmp_path):
 
     monkeypatch.setattr(snapshot_route.games_service, "list_games", _list_games)
 
-    payload = {
-        "eventId": "evt-idem-1",
-        "commenceTime": "2026-09-13T17:00:00+00:00",
-        "awayTeam": "NO",
-        "homeTeam": "ATL",
-        "selection": "NO +7",
-        "market": "spreads",
-        "side": "away",
-        "point": 7.0,
-        "price": -110.0,
-        "sportsbook": "DraftKings",
-        "recommendation": "BET",
-        "qualificationStatus": "QUALIFIED",
-        "qualificationReasons": ["edge", "ev"],
-        "siScore": 86.0,
-        "siGrade": "A-",
-        "siRank": 1,
-        "modelProbability": 0.58,
-        "calibratedProbability": 0.57,
-        "pushProbability": 0.0,
-        "lossProbability": 0.43,
-        "edge": 0.04,
-        "rawEdge": 0.04,
-        "calibratedEdge": 0.03,
-        "currentEV": 0.06,
-        "evPerDollar": 0.06,
-        "oddsProvider": "line_movement_board",
-        "marketTimestamp": "2026-09-13T15:00:00+00:00",
-        "amountRisked": 50.0,
-        "unitsRisked": 0.5,
-        "unitSizeAtBet": 100.0,
-        **_provenance_payload(),
-    }
+    payload = _actionable_payload("evt-idem-1")
 
     r1 = client.post("/api/recommendation/snapshot", json=payload)
     assert r1.status_code == 200
@@ -377,7 +406,7 @@ def test_snapshot_contract_exact_retry_is_idempotent(monkeypatch, tmp_path):
 
     dcon = duckdb.connect(str(snapshot_db), read_only=True)
     snapshot_row = dcon.execute(
-        "SELECT model_version, probability_engine_version, calibration_version, ranking_version, qualification_policy_version, model_timestamp FROM recommendation_snapshots WHERE snapshot_id = ?",
+        "SELECT model_version, probability_engine_version, calibration_version, ranking_version, qualification_policy_version, model_timestamp, raw_model_probability, calibrated_probability, push_probability, loss_probability, implied_probability, market_no_vig_probability, raw_edge, calibrated_edge, full_kelly_fraction, fractional_kelly_fraction, bankroll_percent, recommended_amount, recommended_units, unit_size_at_bet, bankroll_basis, quote_timestamp, market_timestamp, decision_id FROM recommendation_snapshots WHERE snapshot_id = ?",
         [b1["snapshotId"]],
     ).fetchone()
     dcon.close()
@@ -387,6 +416,24 @@ def test_snapshot_contract_exact_retry_is_idempotent(monkeypatch, tmp_path):
     assert snapshot_row[3] == payload["rankingVersion"]
     assert snapshot_row[4] == payload["qualificationPolicyVersion"]
     assert str(snapshot_row[5]).startswith("2026-09-13 14:58:00")
+    assert float(snapshot_row[6]) == payload["rawModelProbability"]
+    assert float(snapshot_row[7]) == payload["calibratedProbability"]
+    assert float(snapshot_row[8]) == payload["pushProbability"]
+    assert float(snapshot_row[9]) == payload["lossProbability"]
+    assert float(snapshot_row[10]) == payload["impliedProbability"]
+    assert float(snapshot_row[11]) == payload["marketNoVigProbability"]
+    assert float(snapshot_row[12]) == payload["rawEdge"]
+    assert float(snapshot_row[13]) == payload["calibratedEdge"]
+    assert float(snapshot_row[14]) == payload["fullKellyFraction"]
+    assert float(snapshot_row[15]) == payload["fractionalKellyFraction"]
+    assert float(snapshot_row[16]) == payload["bankrollPercent"]
+    assert float(snapshot_row[17]) == payload["recommendedAmount"]
+    assert float(snapshot_row[18]) == payload["recommendedUnits"]
+    assert float(snapshot_row[19]) == payload["unitSizeAtBet"]
+    assert float(snapshot_row[20]) == payload["bankrollBasis"]
+    assert str(snapshot_row[21]).startswith("2026-09-13 14:59:00")
+    assert str(snapshot_row[22]).startswith("2026-09-13 15:00:00")
+    assert snapshot_row[23] == b1["decisionId"]
 
 
 def test_snapshot_schema_preserves_null_provenance_for_rows_without_values(monkeypatch, tmp_path):
@@ -418,7 +465,7 @@ def test_snapshot_schema_preserves_null_provenance_for_rows_without_values(monke
 
     con = duckdb.connect(str(snapshot_db), read_only=True)
     row = con.execute(
-        "SELECT model_version, probability_engine_version, calibration_version, ranking_version, qualification_policy_version, model_timestamp FROM recommendation_snapshots WHERE snapshot_id = ?",
+        "SELECT model_version, probability_engine_version, calibration_version, ranking_version, qualification_policy_version, model_timestamp, quote_timestamp, market_timestamp, raw_model_probability, calibrated_probability, push_probability, loss_probability, implied_probability, market_no_vig_probability, raw_edge, calibrated_edge, full_kelly_fraction, fractional_kelly_fraction, bankroll_percent, recommended_amount, recommended_units, unit_size_at_bet, bankroll_basis, decision_id FROM recommendation_snapshots WHERE snapshot_id = ?",
         [snapshot_id],
     ).fetchone()
     con.close()
@@ -429,6 +476,24 @@ def test_snapshot_schema_preserves_null_provenance_for_rows_without_values(monke
     assert row[3] is None
     assert row[4] is None
     assert row[5] is None
+    assert row[6] is None
+    assert row[7] is None
+    assert row[8] is None
+    assert row[9] is None
+    assert row[10] is None
+    assert row[11] is None
+    assert row[12] is None
+    assert row[13] is None
+    assert row[14] is None
+    assert row[15] is None
+    assert row[16] is None
+    assert row[17] is None
+    assert row[18] is None
+    assert row[19] is None
+    assert row[20] is None
+    assert row[21] is None
+    assert row[22] is None
+    assert row[23] is None
 
 
 def test_snapshot_contract_material_quote_change_creates_new_decision(monkeypatch, tmp_path):
@@ -460,41 +525,11 @@ def test_snapshot_contract_material_quote_change_creates_new_decision(monkeypatc
 
     monkeypatch.setattr(snapshot_route.games_service, "list_games", _list_games)
 
-    base = {
-        "eventId": "evt-idem-2",
-        "commenceTime": "2026-09-13T17:00:00+00:00",
-        "awayTeam": "NO",
-        "homeTeam": "ATL",
-        "selection": "NO +7",
-        "market": "spreads",
-        "side": "away",
-        "point": 7.0,
-        "price": -110.0,
-        "sportsbook": "DraftKings",
-        "recommendation": "BET",
-        "qualificationStatus": "QUALIFIED",
-        "qualificationReasons": ["edge", "ev"],
-        "siScore": 86.0,
-        "siGrade": "A-",
-        "siRank": 1,
-        "modelProbability": 0.58,
-        "calibratedProbability": 0.57,
-        "pushProbability": 0.0,
-        "lossProbability": 0.43,
-        "edge": 0.04,
-        "rawEdge": 0.04,
-        "calibratedEdge": 0.03,
-        "currentEV": 0.06,
-        "evPerDollar": 0.06,
-        "oddsProvider": "line_movement_board",
-        "marketTimestamp": "2026-09-13T15:00:00+00:00",
-        "amountRisked": 50.0,
-        "unitsRisked": 0.5,
-        "unitSizeAtBet": 100.0,
-        **_provenance_payload(),
-    }
+    base = _actionable_payload("evt-idem-2")
     changed = dict(base)
     changed["price"] = -105.0
+    changed["currentExecution"] = dict(base["currentExecution"])
+    changed["currentExecution"]["price"] = -105.0
 
     r1 = client.post("/api/recommendation/snapshot", json=base)
     r2 = client.post("/api/recommendation/snapshot", json=changed)
@@ -518,3 +553,307 @@ def test_snapshot_contract_material_quote_change_creates_new_decision(monkeypatc
 
     assert len(decisions) == 2
     assert len(wagers) == 2
+
+
+def test_snapshot_identity_changes_on_model_probability_change(monkeypatch, tmp_path):
+    import duckdb
+    import app.services.decision_ledger as dl
+    import app.services.recommendation_snapshot as rs
+
+    ledger_db = tmp_path / "ledger-modelprob.db"
+    snapshot_db = tmp_path / "snapshots-modelprob.duckdb"
+    duckdb.connect(str(snapshot_db)).close()
+
+    monkeypatch.setattr(dl, "_DB_PATH", ledger_db)
+    monkeypatch.setattr(rs, "_DB_PATH", snapshot_db)
+
+    def _list_games(week=None):
+        if week is None:
+            return {"availableWeeks": [1]}
+        return {"games": [{"eventId": "evt-modelprob", "season": 2026, "week": 1}]}
+
+    monkeypatch.setattr(snapshot_route.games_service, "list_games", _list_games)
+
+    base = _actionable_payload("evt-modelprob")
+    changed = dict(base)
+    changed["rawModelProbability"] = 0.61
+    changed["modelProbability"] = 0.61
+
+    r1 = client.post("/api/recommendation/snapshot", json=base).json()
+    r2 = client.post("/api/recommendation/snapshot", json=changed).json()
+    assert r1["success"] is True and r2["success"] is True
+    assert r1["snapshotId"] != r2["snapshotId"]
+
+
+def test_snapshot_identity_changes_on_ev_change(monkeypatch, tmp_path):
+    import duckdb
+    import app.services.decision_ledger as dl
+    import app.services.recommendation_snapshot as rs
+
+    ledger_db = tmp_path / "ledger-ev.db"
+    snapshot_db = tmp_path / "snapshots-ev.duckdb"
+    duckdb.connect(str(snapshot_db)).close()
+
+    monkeypatch.setattr(dl, "_DB_PATH", ledger_db)
+    monkeypatch.setattr(rs, "_DB_PATH", snapshot_db)
+
+    def _list_games(week=None):
+        if week is None:
+            return {"availableWeeks": [1]}
+        return {"games": [{"eventId": "evt-ev", "season": 2026, "week": 1}]}
+
+    monkeypatch.setattr(snapshot_route.games_service, "list_games", _list_games)
+
+    base = _actionable_payload("evt-ev")
+    changed = dict(base)
+    changed["evPerDollar"] = 0.08
+    changed["currentEV"] = 0.08
+
+    r1 = client.post("/api/recommendation/snapshot", json=base).json()
+    r2 = client.post("/api/recommendation/snapshot", json=changed).json()
+    assert r1["success"] is True and r2["success"] is True
+    assert r1["snapshotId"] != r2["snapshotId"]
+
+
+def test_snapshot_identity_changes_on_sizing_change(monkeypatch, tmp_path):
+    import duckdb
+    import app.services.decision_ledger as dl
+    import app.services.recommendation_snapshot as rs
+
+    ledger_db = tmp_path / "ledger-sizing.db"
+    snapshot_db = tmp_path / "snapshots-sizing.duckdb"
+    duckdb.connect(str(snapshot_db)).close()
+
+    monkeypatch.setattr(dl, "_DB_PATH", ledger_db)
+    monkeypatch.setattr(rs, "_DB_PATH", snapshot_db)
+
+    def _list_games(week=None):
+        if week is None:
+            return {"availableWeeks": [1]}
+        return {"games": [{"eventId": "evt-sizing", "season": 2026, "week": 1}]}
+
+    monkeypatch.setattr(snapshot_route.games_service, "list_games", _list_games)
+
+    base = _actionable_payload("evt-sizing")
+    changed = dict(base)
+    changed["recommendedUnits"] = 0.09
+    changed["currentSizing"] = dict(base["currentSizing"])
+    changed["currentSizing"]["recommendedUnits"] = 0.09
+
+    r1 = client.post("/api/recommendation/snapshot", json=base).json()
+    r2 = client.post("/api/recommendation/snapshot", json=changed).json()
+    assert r1["success"] is True and r2["success"] is True
+    assert r1["snapshotId"] != r2["snapshotId"]
+
+
+def test_snapshot_identity_changes_on_provenance_change(monkeypatch, tmp_path):
+    import duckdb
+    import app.services.decision_ledger as dl
+    import app.services.recommendation_snapshot as rs
+
+    ledger_db = tmp_path / "ledger-provenance.db"
+    snapshot_db = tmp_path / "snapshots-provenance.duckdb"
+    duckdb.connect(str(snapshot_db)).close()
+
+    monkeypatch.setattr(dl, "_DB_PATH", ledger_db)
+    monkeypatch.setattr(rs, "_DB_PATH", snapshot_db)
+
+    def _list_games(week=None):
+        if week is None:
+            return {"availableWeeks": [1]}
+        return {"games": [{"eventId": "evt-provenance", "season": 2026, "week": 1}]}
+
+    monkeypatch.setattr(snapshot_route.games_service, "list_games", _list_games)
+
+    base = _actionable_payload("evt-provenance")
+    changed = dict(base)
+    changed["modelVersion"] = "sia_model_v2026_postseason"
+
+    r1 = client.post("/api/recommendation/snapshot", json=base).json()
+    r2 = client.post("/api/recommendation/snapshot", json=changed).json()
+    assert r1["success"] is True and r2["success"] is True
+    assert r1["snapshotId"] != r2["snapshotId"]
+
+
+def test_snapshot_identity_ignores_recommended_at_request_time(monkeypatch, tmp_path):
+    import app.services.recommendation_snapshot as rs
+
+    snapshot_db = tmp_path / "snapshots-seed.duckdb"
+    monkeypatch.setattr(rs, "_DB_PATH", snapshot_db)
+
+    p1 = _actionable_payload("evt-seed")
+    p2 = dict(p1)
+    p2["requestTime"] = "2026-09-16T13:09:00+00:00"
+    p2["recommendedAt"] = "2026-09-16T13:09:01+00:00"
+
+    assert rs.build_snapshot_id(p1) == rs.build_snapshot_id(p2)
+
+
+def test_backlink_failure_after_canonical_success_is_non_fatal(monkeypatch, tmp_path):
+    import duckdb
+    import app.services.decision_ledger as dl
+    import app.services.recommendation_snapshot as rs
+
+    ledger_db = tmp_path / "ledger-backlink-failure.db"
+    snapshot_db = tmp_path / "snapshots-backlink-failure.duckdb"
+    duckdb.connect(str(snapshot_db)).close()
+
+    monkeypatch.setattr(dl, "_DB_PATH", ledger_db)
+    monkeypatch.setattr(rs, "_DB_PATH", snapshot_db)
+
+    def _list_games(week=None):
+        if week is None:
+            return {"availableWeeks": [1]}
+        return {"games": [{"eventId": "evt-backlink-failure", "season": 2026, "week": 1}]}
+
+    monkeypatch.setattr(snapshot_route.games_service, "list_games", _list_games)
+
+    def _raise_link_error(snapshot_id: str, decision_id: str):
+        raise RuntimeError("duckdb write unavailable")
+
+    monkeypatch.setattr(snapshot_route, "link_snapshot_decision", _raise_link_error)
+
+    payload = _actionable_payload("evt-backlink-failure")
+    response = client.post("/api/recommendation/snapshot", json=payload)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert body["trackingStatus"] == "COMPLETE"
+    assert "warning" in body
+
+    con = sqlite3.connect(str(ledger_db))
+    decision_count = con.execute("SELECT COUNT(*) FROM decision_ledger WHERE publication_type = 'MY_CARD'").fetchone()[0]
+    wager_count = con.execute("SELECT COUNT(*) FROM personal_wager_ledger").fetchone()[0]
+    linked_count = con.execute(
+        "SELECT COUNT(*) FROM decision_ledger WHERE source_snapshot_id = ?",
+        [body["snapshotId"]],
+    ).fetchone()[0]
+    con.close()
+
+    dcon = duckdb.connect(str(snapshot_db), read_only=True)
+    snapshot_count = dcon.execute(
+        "SELECT COUNT(*) FROM recommendation_snapshots WHERE snapshot_id = ?",
+        [body["snapshotId"]],
+    ).fetchone()[0]
+    dcon.close()
+
+    assert int(snapshot_count) == 1
+    assert int(decision_count) == 1
+    assert int(wager_count) == 1
+    assert int(linked_count) == 1
+
+
+def test_backlink_conflict_never_switches_and_no_duplicates(monkeypatch, tmp_path):
+    import duckdb
+    import app.services.decision_ledger as dl
+    import app.services.recommendation_snapshot as rs
+
+    ledger_db = tmp_path / "ledger-backlink-conflict.db"
+    snapshot_db = tmp_path / "snapshots-backlink-conflict.duckdb"
+    duckdb.connect(str(snapshot_db)).close()
+
+    monkeypatch.setattr(dl, "_DB_PATH", ledger_db)
+    monkeypatch.setattr(rs, "_DB_PATH", snapshot_db)
+
+    def _list_games(week=None):
+        if week is None:
+            return {"availableWeeks": [1]}
+        return {"games": [{"eventId": "evt-backlink-conflict", "season": 2026, "week": 1}]}
+
+    monkeypatch.setattr(snapshot_route.games_service, "list_games", _list_games)
+
+    payload = _actionable_payload("evt-backlink-conflict")
+    r1 = client.post("/api/recommendation/snapshot", json=payload)
+    assert r1.status_code == 200
+    b1 = r1.json()
+    assert b1["success"] is True
+
+    con = duckdb.connect(str(snapshot_db))
+    con.execute(
+        "UPDATE recommendation_snapshots SET decision_id = ? WHERE snapshot_id = ?",
+        ["different-decision-id", b1["snapshotId"]],
+    )
+    con.close()
+
+    r2 = client.post("/api/recommendation/snapshot", json=payload)
+    assert r2.status_code == 200
+    b2 = r2.json()
+    assert b2["success"] is True
+    assert b2["trackingStatus"] == "COMPLETE"
+    assert "warning" in b2
+    assert "conflict" in str(b2["warning"]).lower()
+    assert b2["decisionId"] == b1["decisionId"]
+
+    con = sqlite3.connect(str(ledger_db))
+    decision_count = con.execute("SELECT COUNT(*) FROM decision_ledger WHERE publication_type = 'MY_CARD'").fetchone()[0]
+    wager_count = con.execute("SELECT COUNT(*) FROM personal_wager_ledger").fetchone()[0]
+    con.close()
+
+    dcon = duckdb.connect(str(snapshot_db), read_only=True)
+    stored_decision = dcon.execute(
+        "SELECT decision_id FROM recommendation_snapshots WHERE snapshot_id = ?",
+        [b1["snapshotId"]],
+    ).fetchone()[0]
+    dcon.close()
+
+    assert int(decision_count) == 1
+    assert int(wager_count) == 1
+    assert stored_decision == "different-decision-id"
+
+
+def test_retry_repairs_backlink_without_duplicates(monkeypatch, tmp_path):
+    import duckdb
+    import app.services.decision_ledger as dl
+    import app.services.recommendation_snapshot as rs
+
+    ledger_db = tmp_path / "ledger-backlink-repair.db"
+    snapshot_db = tmp_path / "snapshots-backlink-repair.duckdb"
+    duckdb.connect(str(snapshot_db)).close()
+
+    monkeypatch.setattr(dl, "_DB_PATH", ledger_db)
+    monkeypatch.setattr(rs, "_DB_PATH", snapshot_db)
+
+    def _list_games(week=None):
+        if week is None:
+            return {"availableWeeks": [1]}
+        return {"games": [{"eventId": "evt-backlink-repair", "season": 2026, "week": 1}]}
+
+    monkeypatch.setattr(snapshot_route.games_service, "list_games", _list_games)
+
+    calls = {"n": 0}
+
+    def _flaky_link(snapshot_id: str, decision_id: str):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("transient duckdb issue")
+        return rs.link_snapshot_decision(snapshot_id, decision_id)
+
+    monkeypatch.setattr(snapshot_route, "link_snapshot_decision", _flaky_link)
+
+    payload = _actionable_payload("evt-backlink-repair")
+    r1 = client.post("/api/recommendation/snapshot", json=payload)
+    r2 = client.post("/api/recommendation/snapshot", json=payload)
+    assert r1.status_code == 200 and r2.status_code == 200
+    b1 = r1.json()
+    b2 = r2.json()
+
+    assert b1["success"] is True and b2["success"] is True
+    assert b1["snapshotId"] == b2["snapshotId"]
+    assert b1["decisionId"] == b2["decisionId"]
+
+    con = sqlite3.connect(str(ledger_db))
+    decision_count = con.execute("SELECT COUNT(*) FROM decision_ledger WHERE publication_type = 'MY_CARD'").fetchone()[0]
+    wager_count = con.execute("SELECT COUNT(*) FROM personal_wager_ledger").fetchone()[0]
+    con.close()
+
+    dcon = duckdb.connect(str(snapshot_db), read_only=True)
+    rows = dcon.execute(
+        "SELECT decision_id FROM recommendation_snapshots WHERE snapshot_id = ?",
+        [b1["snapshotId"]],
+    ).fetchall()
+    dcon.close()
+
+    assert len(rows) == 1
+    assert rows[0][0] == b1["decisionId"]
+    assert int(decision_count) == 1
+    assert int(wager_count) == 1

@@ -19,6 +19,20 @@ type CurrentSizing = {
   recommendedUnits?: number | null;
   recommendedAmount?: number | null;
   unitSize?: number | null;
+  fullKellyFraction?: number | null;
+  fractionalKellyFraction?: number | null;
+  bankrollPercent?: number | null;
+  bankrollBasis?: number | null;
+};
+
+type CurrentExecution = {
+  status?: string;
+  reason?: string;
+  sportsbook?: string | null;
+  point?: number | null;
+  price?: number | null;
+  quoteTimestamp?: string | null;
+  currentMarketTimestamp?: string | null;
 };
 
 type SnapshotTrackingStatus = "COMPLETE" | "FAILED";
@@ -113,6 +127,13 @@ export async function addToCard(item: SavedCardItem): Promise<AddToCardResult> {
     const unitsRisked = sizing.unitsRisked;
     const unitSizeAtBet = sizing.unitSizeAtBet;
     const amountRisked = sizing.amountRisked;
+    const currentExecution = (item.currentExecution as CurrentExecution | undefined) ?? undefined;
+    const currentSizing = (item.currentSizing as CurrentSizing | undefined) ?? undefined;
+    const executionSportsbook = currentExecution?.sportsbook ?? item.book;
+    const executionPoint = currentExecution?.point ?? item.point;
+    const executionPrice = currentExecution?.price ?? item.price;
+    const quoteTimestamp = currentExecution?.quoteTimestamp ?? item.quoteTimestamp ?? item.marketLastUpdated;
+    const marketTimestamp = currentExecution?.currentMarketTimestamp ?? item.marketLastUpdated;
 
     const snap = await fetchJson<SnapshotResponse>(
       "/api/recommendation/snapshot",
@@ -127,9 +148,10 @@ export async function addToCard(item: SavedCardItem): Promise<AddToCardResult> {
           market:            item.market,
           side:              item.side,
           selection:         item.pick,
-          point:             item.point,
-          price:             item.price,
-          sportsbook:        item.book,
+          point:             executionPoint,
+          price:             executionPrice,
+          sportsbook:        executionSportsbook,
+          quoteTimestamp,
           recommendation:    item.recommendation,
           qualificationStatus: item.qualificationStatus,
           qualificationReasons: item.qualificationReasons,
@@ -141,6 +163,8 @@ export async function addToCard(item: SavedCardItem): Promise<AddToCardResult> {
           calibratedProbability: item.calibratedProbability ?? item.currentWinProbability,
           pushProbability:   item.currentPushProbability,
           lossProbability:   item.currentLossProbability,
+          impliedProbability: item.impliedProbability,
+          marketNoVigProbability: item.marketNoVigProbability,
           edge:              item.edge,
           rawEdge:           item.rawEdge,
           calibratedEdge:    item.calibratedEdge,
@@ -150,7 +174,7 @@ export async function addToCard(item: SavedCardItem): Promise<AddToCardResult> {
           truePlayableTo:    item.truePlayableTo,
           truePlayableToStatus: item.truePlayableToStatus,
           oddsProvider:      item.marketProvider,
-          marketTimestamp:   item.marketLastUpdated,
+          marketTimestamp,
           modelTimestamp:    item.modelTimestamp,
           modelVersion:      item.modelVersion,
           probabilityEngineVersion: item.probabilityEngineVersion,
@@ -167,6 +191,15 @@ export async function addToCard(item: SavedCardItem): Promise<AddToCardResult> {
           amountRisked,
           unitsRisked,
           unitSizeAtBet,
+          recommendedAmount: currentSizing?.recommendedAmount,
+          recommendedUnits: currentSizing?.recommendedUnits,
+          fullKellyFraction: currentSizing?.fullKellyFraction,
+          fractionalKellyFraction: currentSizing?.fractionalKellyFraction,
+          bankrollPercent: currentSizing?.bankrollPercent,
+          bankrollBasis: currentSizing?.bankrollBasis,
+          currentExecution,
+          currentSizing,
+          currentQualification: item.currentQualification,
         }),
       }
     );

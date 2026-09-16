@@ -28,17 +28,37 @@ _SCHEDULE_CSV = runtime_paths.current_game_projections_csv
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS recommendation_snapshots (
     snapshot_id        VARCHAR PRIMARY KEY,
+    season             INTEGER,
+    week               INTEGER,
     event_id           VARCHAR NOT NULL,
     recommended_at     TIMESTAMP NOT NULL,
+    selection          VARCHAR,
     market             VARCHAR NOT NULL,
     side               VARCHAR NOT NULL,
     point              DOUBLE,
     price              DOUBLE,
     sportsbook         VARCHAR,
+    quote_timestamp    TIMESTAMP,
+    market_timestamp   TIMESTAMP,
     si_score           DOUBLE,
     model_probability  DOUBLE,
+    raw_model_probability DOUBLE,
+    calibrated_probability DOUBLE,
+    push_probability   DOUBLE,
+    loss_probability   DOUBLE,
+    implied_probability DOUBLE,
+    market_no_vig_probability DOUBLE,
     edge_pp            DOUBLE,
+    raw_edge           DOUBLE,
+    calibrated_edge    DOUBLE,
     ev_per_dollar      DOUBLE,
+    full_kelly_fraction DOUBLE,
+    fractional_kelly_fraction DOUBLE,
+    bankroll_percent   DOUBLE,
+    recommended_amount DOUBLE,
+    recommended_units  DOUBLE,
+    unit_size_at_bet   DOUBLE,
+    bankroll_basis     DOUBLE,
     market_intelligence TEXT,
     injury_context     TEXT,
     weather_context    TEXT,
@@ -58,7 +78,8 @@ CREATE TABLE IF NOT EXISTS recommendation_snapshots (
     calibration_version VARCHAR,
     ranking_version    VARCHAR,
     qualification_policy_version VARCHAR,
-    model_timestamp    TIMESTAMP
+    model_timestamp    TIMESTAMP,
+    decision_id        VARCHAR
 )
 """
 
@@ -78,12 +99,33 @@ def _ensure_schema() -> None:
         for row in con.execute("PRAGMA table_info('recommendation_snapshots')").fetchall()
     }
     required_columns = {
+        "season": "INTEGER",
+        "week": "INTEGER",
+        "selection": "VARCHAR",
+        "quote_timestamp": "TIMESTAMP",
+        "market_timestamp": "TIMESTAMP",
+        "raw_model_probability": "DOUBLE",
+        "calibrated_probability": "DOUBLE",
+        "push_probability": "DOUBLE",
+        "loss_probability": "DOUBLE",
+        "implied_probability": "DOUBLE",
+        "market_no_vig_probability": "DOUBLE",
+        "raw_edge": "DOUBLE",
+        "calibrated_edge": "DOUBLE",
+        "full_kelly_fraction": "DOUBLE",
+        "fractional_kelly_fraction": "DOUBLE",
+        "bankroll_percent": "DOUBLE",
+        "recommended_amount": "DOUBLE",
+        "recommended_units": "DOUBLE",
+        "unit_size_at_bet": "DOUBLE",
+        "bankroll_basis": "DOUBLE",
         "model_version": "VARCHAR",
         "probability_engine_version": "VARCHAR",
         "calibration_version": "VARCHAR",
         "ranking_version": "VARCHAR",
         "qualification_policy_version": "VARCHAR",
         "model_timestamp": "TIMESTAMP",
+        "decision_id": "VARCHAR",
     }
     for name, sql_type in required_columns.items():
         if name in existing_columns:
@@ -112,6 +154,36 @@ def _kickoff_for_event(event_id: str) -> Optional[datetime]:
 
 
 def _normalize_snapshot_id_seed(payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _normalize_probability(value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        if parsed > 1.0:
+            parsed = parsed / 100.0
+        return max(0.0, min(1.0, parsed))
+
+    def _normalize_edge(value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        if parsed > 1.0 or parsed < -1.0:
+            parsed = parsed / 100.0
+        return parsed
+
+    def _normalize_float(value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
     return {
         "season": payload.get("season"),
         "week": payload.get("week"),
@@ -123,6 +195,28 @@ def _normalize_snapshot_id_seed(payload: Dict[str, Any]) -> Dict[str, Any]:
         "price": payload.get("price"),
         "sportsbook": payload.get("sportsbook"),
         "selection": payload.get("selection"),
+        "rawModelProbability": _normalize_probability(payload.get("rawModelProbability")),
+        "calibratedProbability": _normalize_probability(payload.get("calibratedProbability")),
+        "pushProbability": _normalize_probability(payload.get("pushProbability")),
+        "lossProbability": _normalize_probability(payload.get("lossProbability")),
+        "evPerDollar": _normalize_float(payload.get("evPerDollar")),
+        "rawEdge": _normalize_edge(payload.get("rawEdge")),
+        "calibratedEdge": _normalize_edge(payload.get("calibratedEdge")),
+        "recommendedAmount": _normalize_float(payload.get("recommendedAmount")),
+        "recommendedUnits": _normalize_float(payload.get("recommendedUnits")),
+        "bankrollPercent": _normalize_float(payload.get("bankrollPercent")),
+        "fullKellyFraction": _normalize_float(payload.get("fullKellyFraction")),
+        "fractionalKellyFraction": _normalize_float(payload.get("fractionalKellyFraction")),
+        "unitSizeAtBet": _normalize_float(payload.get("unitSizeAtBet")),
+        "bankrollBasis": _normalize_float(payload.get("bankrollBasis")),
+        "modelVersion": payload.get("modelVersion"),
+        "probabilityEngineVersion": payload.get("probabilityEngineVersion"),
+        "calibrationVersion": payload.get("calibrationVersion"),
+        "rankingVersion": payload.get("rankingVersion"),
+        "qualificationPolicyVersion": payload.get("qualificationPolicyVersion"),
+        "modelTimestamp": payload.get("modelTimestamp"),
+        "marketTimestamp": payload.get("marketTimestamp"),
+        "quoteTimestamp": payload.get("quoteTimestamp"),
     }
 
 
@@ -147,6 +241,35 @@ def snapshot_exists(snapshot_id: str) -> bool:
         return bool(row and int(row[0]) > 0)
     except Exception:
         return False
+
+
+def link_snapshot_decision(snapshot_id: str, decision_id: str) -> bool:
+    """Safely link snapshot to canonical decision without allowing linkage switches."""
+    _ensure_schema()
+    if not _DB_PATH.exists() or not snapshot_id or not decision_id:
+        return False
+    con = _open_db()
+    try:
+        row = con.execute(
+            "SELECT decision_id FROM recommendation_snapshots WHERE snapshot_id = ?",
+            [snapshot_id],
+        ).fetchone()
+        if row is None:
+            return False
+
+        existing = row[0]
+        if existing is not None and str(existing).strip():
+            if str(existing) == str(decision_id):
+                return True
+            raise ValueError("Snapshot decision linkage conflict")
+
+        con.execute(
+            "UPDATE recommendation_snapshots SET decision_id = ? WHERE snapshot_id = ?",
+            [decision_id, snapshot_id],
+        )
+        return True
+    finally:
+        con.close()
 
 
 def delete_snapshot(snapshot_id: str) -> bool:
@@ -183,44 +306,73 @@ def store_snapshot(payload: Dict[str, Any]) -> str:
     snapshot_id = build_snapshot_id(payload)
     now = datetime.now(timezone.utc).replace(tzinfo=None)
 
+    values = [
+        snapshot_id,
+        payload.get("season"),
+        payload.get("week"),
+        payload.get("eventId", ""),
+        now,
+        payload.get("selection"),
+        payload.get("market", ""),
+        payload.get("side", ""),
+        payload.get("point"),
+        payload.get("price"),
+        payload.get("sportsbook"),
+        payload.get("quoteTimestamp"),
+        payload.get("marketTimestamp"),
+        payload.get("siScore"),
+        payload.get("modelProbability"),
+        payload.get("rawModelProbability"),
+        payload.get("calibratedProbability"),
+        payload.get("pushProbability"),
+        payload.get("lossProbability"),
+        payload.get("impliedProbability"),
+        payload.get("marketNoVigProbability"),
+        payload.get("edge"),
+        payload.get("rawEdge"),
+        payload.get("calibratedEdge"),
+        payload.get("evPerDollar"),
+        payload.get("fullKellyFraction"),
+        payload.get("fractionalKellyFraction"),
+        payload.get("bankrollPercent"),
+        payload.get("recommendedAmount"),
+        payload.get("recommendedUnits"),
+        payload.get("unitSizeAtBet"),
+        payload.get("bankrollBasis"),
+        json.dumps(payload.get("marketIntelligence") or {}),
+        json.dumps(payload.get("injuryContext") or {}),
+        json.dumps(payload.get("weatherContext") or {}),
+        payload.get("commenceTime"),
+        payload.get("homeTeam"),
+        payload.get("awayTeam"),
+        "PENDING",
+        payload.get("modelVersion"),
+        payload.get("probabilityEngineVersion"),
+        payload.get("calibrationVersion"),
+        payload.get("rankingVersion"),
+        payload.get("qualificationPolicyVersion"),
+        payload.get("modelTimestamp"),
+        None,
+    ]
+
     con = _open_db()
     con.execute(
-        """
+        f"""
         INSERT OR IGNORE INTO recommendation_snapshots
-        (snapshot_id, event_id, recommended_at, market, side, point, price,
-         sportsbook, si_score, model_probability, edge_pp, ev_per_dollar,
+        (snapshot_id, season, week, event_id, recommended_at, selection, market, side, point, price,
+         sportsbook, quote_timestamp, market_timestamp, si_score, model_probability,
+         raw_model_probability, calibrated_probability, push_probability, loss_probability,
+         implied_probability, market_no_vig_probability,
+         edge_pp, raw_edge, calibrated_edge, ev_per_dollar,
+         full_kelly_fraction, fractional_kelly_fraction, bankroll_percent,
+         recommended_amount, recommended_units, unit_size_at_bet, bankroll_basis,
          market_intelligence, injury_context, weather_context,
          commence_time, home_team, away_team, closing_status,
          model_version, probability_engine_version, calibration_version,
-         ranking_version, qualification_policy_version, model_timestamp)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'PENDING',?,?,?,?,?,?)
+         ranking_version, qualification_policy_version, model_timestamp, decision_id)
+        VALUES ({','.join(['?'] * len(values))})
         """,
-        [
-            snapshot_id,
-            payload.get("eventId", ""),
-            now,
-            payload.get("market", ""),
-            payload.get("side", ""),
-            payload.get("point"),
-            payload.get("price"),
-            payload.get("sportsbook"),
-            payload.get("siScore"),
-            payload.get("modelProbability"),
-            payload.get("edge"),
-            payload.get("evPerDollar"),
-            json.dumps(payload.get("marketIntelligence") or {}),
-            json.dumps(payload.get("injuryContext") or {}),
-            json.dumps(payload.get("weatherContext") or {}),
-            payload.get("commenceTime"),
-            payload.get("homeTeam"),
-            payload.get("awayTeam"),
-            payload.get("modelVersion"),
-            payload.get("probabilityEngineVersion"),
-            payload.get("calibrationVersion"),
-            payload.get("rankingVersion"),
-            payload.get("qualificationPolicyVersion"),
-            payload.get("modelTimestamp"),
-        ],
+        values,
     )
     con.close()
     return snapshot_id
