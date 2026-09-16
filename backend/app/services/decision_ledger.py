@@ -1227,6 +1227,31 @@ def record_my_card_decision_from_payload(payload: Dict[str, Any]) -> Dict[str, A
     # Preserve provided source snapshot when passed by caller.
     if payload.get("sourceSnapshotId"):
         decision_payload["sourceSnapshotId"] = payload.get("sourceSnapshotId")
+
+    # For My Card retries, sourceSnapshotId is the immutable decision anchor.
+    # If we already recorded this snapshot as a MY_CARD decision, reuse it.
+    source_snapshot_id = str(decision_payload.get("sourceSnapshotId") or "").strip()
+    if source_snapshot_id:
+        _ensure_schema()
+        con = _connect()
+        existing = con.execute(
+            """
+            SELECT *
+            FROM decision_ledger
+            WHERE publication_type = 'MY_CARD'
+              AND source_snapshot_id = ?
+            ORDER BY decision_version ASC, id ASC
+            LIMIT 1
+            """,
+            [source_snapshot_id],
+        ).fetchone()
+        con.close()
+        if existing is not None:
+            out = _row_to_decision(existing)
+            out["isLatestDecision"] = _is_latest_decision(existing["decision_id"])
+            out["created"] = False
+            return out
+
     decision_payload.pop("_snapshotLinkage", None)
     return record_decision(decision_payload, publication_type="MY_CARD")
 

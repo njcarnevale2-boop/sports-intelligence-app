@@ -1,21 +1,75 @@
 from fastapi import APIRouter
 
 from app.services.recommendation_snapshot import (
+    build_snapshot_id,
     capture_closing_lines,
+    delete_snapshot,
     get_clv_for_event,
     get_clv_summary,
+    snapshot_exists,
     store_snapshot,
 )
 from app.services.decision_ledger import record_my_card_decision_from_payload
 from app.services.decision_ledger import get_personal_wager_dashboard, record_personal_wager_from_payload
+from app.services.games import service as games_service
 
 router = APIRouter(prefix="/api/recommendation", tags=["recommendation"])
+
+
+def _resolve_identity(payload: dict) -> dict:
+    resolved = dict(payload)
+    event_id = str(resolved.get("eventId") or "").strip()
+    if not event_id:
+        return resolved
+
+    if resolved.get("season") is not None and resolved.get("week") is not None:
+        return resolved
+
+    try:
+        available = games_service.list_games()
+        for week in available.get("availableWeeks", []):
+            weekly = games_service.list_games(week=week)
+            for game in weekly.get("games", []):
+                if str(game.get("eventId") or "") == event_id:
+                    if resolved.get("season") is None and game.get("season") is not None:
+                        resolved["season"] = game.get("season")
+                    if resolved.get("week") is None and game.get("week") is not None:
+                        resolved["week"] = game.get("week")
+                    return resolved
+    except Exception:
+        return resolved
+
+    return resolved
 
 
 @router.post("/snapshot")
 def create_snapshot(payload: dict):
     """Store an immutable recommendation snapshot when a bet is added to My Card."""
-    snapshot_id = store_snapshot(payload)
+    normalized = _resolve_identity(payload)
+    event_id = str(normalized.get("eventId") or "").strip()
+    if not event_id or normalized.get("season") is None or normalized.get("week") is None:
+        return {
+            "success": False,
+            "snapshotRecorded": False,
+            "ledgerRecorded": False,
+            "trackingStatus": "FAILED",
+            "reason": "season, week, and eventId are required",
+        }
+
+    snapshot_id = build_snapshot_id(normalized)
+    existed_before = snapshot_exists(snapshot_id)
+    if not existed_before:
+        stored_snapshot_id = store_snapshot(normalized)
+        if not stored_snapshot_id:
+            return {
+                "success": False,
+                "snapshotRecorded": False,
+                "ledgerRecorded": False,
+                "trackingStatus": "FAILED",
+                "reason": "database unavailable",
+            }
+        snapshot_id = stored_snapshot_id
+
     if not snapshot_id:
         return {
             "success": False,
@@ -25,33 +79,33 @@ def create_snapshot(payload: dict):
             "reason": "database unavailable",
         }
 
-    decision_payload = dict(payload)
+    decision_payload = dict(normalized)
     decision_payload["sourceSnapshotId"] = snapshot_id
-    wager_payload = dict(payload)
+    wager_payload = dict(normalized)
     wager_payload["sourceSnapshotId"] = snapshot_id
 
     decision = None
     try:
         decision = record_my_card_decision_from_payload(decision_payload)
     except ValueError as exc:
-        wager = None
-        try:
-            wager = record_personal_wager_from_payload(
-                wager_payload,
-                decision_id=None,
-                source_snapshot_id=snapshot_id,
-            )
-        except ValueError:
-            wager = None
+        if not existed_before:
+            delete_snapshot(snapshot_id)
         return {
-            "success": True,
-            "snapshotRecorded": True,
+            "success": False,
+            "snapshotRecorded": False,
             "ledgerRecorded": False,
-            "trackingStatus": "PARTIAL",
-            "snapshotId": snapshot_id,
-            "wagerId": None if wager is None else wager.get("wagerId"),
-            "warning": "Added to My Card. Performance tracking could not be fully started.",
-            "trackingDetail": str(exc),
+            "trackingStatus": "FAILED",
+            "reason": str(exc),
+        }
+    except Exception:
+        if not existed_before:
+            delete_snapshot(snapshot_id)
+        return {
+            "success": False,
+            "snapshotRecorded": False,
+            "ledgerRecorded": False,
+            "trackingStatus": "FAILED",
+            "reason": "Performance tracking could not be fully started.",
         }
 
     wager = None

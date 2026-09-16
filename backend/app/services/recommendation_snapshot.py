@@ -89,6 +89,67 @@ def _kickoff_for_event(event_id: str) -> Optional[datetime]:
         return None
 
 
+def _normalize_snapshot_id_seed(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "season": payload.get("season"),
+        "week": payload.get("week"),
+        "eventId": payload.get("eventId"),
+        "commenceTime": payload.get("commenceTime"),
+        "market": payload.get("market"),
+        "side": payload.get("side"),
+        "point": payload.get("point"),
+        "price": payload.get("price"),
+        "sportsbook": payload.get("sportsbook"),
+        "selection": payload.get("selection"),
+    }
+
+
+def build_snapshot_id(payload: Dict[str, Any]) -> str:
+    """Deterministic id for idempotent Add-to-My-Card tracking writes."""
+    seed = _normalize_snapshot_id_seed(payload)
+    canonical = json.dumps(seed, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, canonical))
+
+
+def snapshot_exists(snapshot_id: str) -> bool:
+    _ensure_schema()
+    if not _DB_PATH.exists() or not snapshot_id:
+        return False
+    try:
+        con = _open_db(read_only=True)
+        row = con.execute(
+            "SELECT COUNT(*) FROM recommendation_snapshots WHERE snapshot_id = ?",
+            [snapshot_id],
+        ).fetchone()
+        con.close()
+        return bool(row and int(row[0]) > 0)
+    except Exception:
+        return False
+
+
+def delete_snapshot(snapshot_id: str) -> bool:
+    _ensure_schema()
+    if not _DB_PATH.exists() or not snapshot_id:
+        return False
+    try:
+        con = _open_db()
+        existed = con.execute(
+            "SELECT COUNT(*) FROM recommendation_snapshots WHERE snapshot_id = ?",
+            [snapshot_id],
+        ).fetchone()
+        if not existed or int(existed[0]) == 0:
+            con.close()
+            return False
+        con.execute(
+            "DELETE FROM recommendation_snapshots WHERE snapshot_id = ?",
+            [snapshot_id],
+        )
+        con.close()
+        return True
+    except Exception:
+        return False
+
+
 # ── public write ─────────────────────────────────────────────────────────────
 
 def store_snapshot(payload: Dict[str, Any]) -> str:
@@ -97,7 +158,7 @@ def store_snapshot(payload: Dict[str, Any]) -> str:
     if not _DB_PATH.exists():
         return ""
 
-    snapshot_id = str(uuid.uuid4())
+    snapshot_id = build_snapshot_id(payload)
     now = datetime.now(timezone.utc).replace(tzinfo=None)
 
     con = _open_db()

@@ -11,7 +11,6 @@ import { fetchJson } from "../app/lib/api.ts";
 export type SavedCardItem = Record<string, unknown>;
 
 const CARD_KEY = "sports-intelligence-card";
-const PARTIAL_TRACKING_WARNING = "Added to My Card. Performance tracking could not be fully started.";
 const DEFAULT_UNIT_SIZE = 100;
 
 type CurrentSizing = {
@@ -22,7 +21,7 @@ type CurrentSizing = {
   unitSize?: number | null;
 };
 
-type SnapshotTrackingStatus = "COMPLETE" | "PARTIAL" | "FAILED";
+type SnapshotTrackingStatus = "COMPLETE" | "FAILED";
 
 type SnapshotResponse = {
   success: boolean;
@@ -35,7 +34,7 @@ type SnapshotResponse = {
 };
 
 export type AddToCardResult =
-  | { success: true; alreadyExists: boolean; snapshotId?: string; trackingStatus: "COMPLETE" | "PARTIAL"; warning?: string }
+  | { success: true; alreadyExists: boolean; snapshotId?: string; trackingStatus: "COMPLETE" }
   | { success: false; error: string; trackingStatus: "FAILED" };
 
 function asPositiveNumber(value: unknown): number | null {
@@ -121,6 +120,8 @@ export async function addToCard(item: SavedCardItem): Promise<AddToCardResult> {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          season:            item.season,
+          week:              item.week,
           eventId:           item.eventId,
           id:                item.id,
           market:            item.market,
@@ -166,17 +167,7 @@ export async function addToCard(item: SavedCardItem): Promise<AddToCardResult> {
       }
     );
 
-    if (snap.trackingStatus === "PARTIAL" && snap.snapshotRecorded) {
-      return {
-        success: true,
-        alreadyExists,
-        snapshotId: snap.snapshotId,
-        trackingStatus: "PARTIAL",
-        warning: snap.warning || PARTIAL_TRACKING_WARNING,
-      };
-    }
-
-    if (!snap.success || snap.trackingStatus === "FAILED") {
+    if (!snap.success || snap.trackingStatus !== "COMPLETE") {
       return {
         success: false,
         trackingStatus: "FAILED",
