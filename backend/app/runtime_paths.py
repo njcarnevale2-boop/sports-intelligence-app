@@ -63,9 +63,35 @@ class RuntimePaths:
             return Path(raw).expanduser().resolve()
         return DEFAULT_NFL_ANALYTICS_OS_ROOT.expanduser().resolve()
 
+    def _resolve_power_engine_root(self) -> Path:
+        configured = str(os.getenv("POWER_ENGINE_ROOT", "") or "").strip()
+        if configured:
+            return Path(configured).expanduser().resolve()
+
+        if str(os.getenv("RENDER", "") or "").strip().lower() == "true":
+            return Path("/data/sia/power_engine").resolve()
+
+        return (self._resolve_root() / "power_engine").resolve()
+
     @property
     def root(self) -> RuntimePathRef:
         return RuntimePathRef(self._resolve_root)
+
+    @property
+    def power_engine_root(self) -> RuntimePathRef:
+        return RuntimePathRef(self._resolve_power_engine_root)
+
+    @property
+    def power_engine_snapshots_dir(self) -> RuntimePathRef:
+        return RuntimePathRef(lambda: self._resolve_power_engine_root() / "snapshots")
+
+    @property
+    def power_engine_ledger_dir(self) -> RuntimePathRef:
+        return RuntimePathRef(lambda: self._resolve_power_engine_root() / "ledger")
+
+    @property
+    def power_engine_meta_dir(self) -> RuntimePathRef:
+        return RuntimePathRef(lambda: self._resolve_power_engine_root() / "meta")
 
     @property
     def database_dir(self) -> RuntimePathRef:
