@@ -73,6 +73,16 @@ class RuntimePaths:
 
         return (self._resolve_root() / "power_engine").resolve()
 
+    def _resolve_result_engine_root(self) -> Path:
+        configured = str(os.getenv("RESULT_ENGINE_ROOT", "") or "").strip()
+        if configured:
+            return Path(configured).expanduser().resolve()
+
+        if str(os.getenv("RENDER", "") or "").strip().lower() == "true":
+            return Path("/data/sia/result_engine").resolve()
+
+        return (self._resolve_root() / "result_engine").resolve()
+
     @property
     def root(self) -> RuntimePathRef:
         return RuntimePathRef(self._resolve_root)
@@ -80,6 +90,10 @@ class RuntimePaths:
     @property
     def power_engine_root(self) -> RuntimePathRef:
         return RuntimePathRef(self._resolve_power_engine_root)
+
+    @property
+    def result_engine_root(self) -> RuntimePathRef:
+        return RuntimePathRef(self._resolve_result_engine_root)
 
     @property
     def power_engine_snapshots_dir(self) -> RuntimePathRef:
