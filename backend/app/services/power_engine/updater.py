@@ -108,39 +108,38 @@ def apply_week_results(
         raise ValueError("Result week must be greater than snapshot through_week")
 
     seen_game_ids: set[str] = set()
-    seen_teams: set[str] = set()
     for result in ordered:
         if result.game_id in seen_game_ids:
             raise ValueError(f"Duplicate game_id in results: {result.game_id}")
         seen_game_ids.add(result.game_id)
 
-        if result.home_team in seen_teams or result.away_team in seen_teams:
-            raise ValueError(
-                f"Duplicate team appearance in week results: {result.home_team} vs {result.away_team}"
-            )
-        seen_teams.add(result.home_team)
-        seen_teams.add(result.away_team)
-
-    powers = {team.team_id: float(team.power) for team in snapshot.teams}
+    frozen_preweek = {team.team_id: float(team.power) for team in snapshot.teams}
+    aggregate_adjustments = {team_id: 0.0 for team_id in frozen_preweek}
     updates: list[PowerUpdateResult] = []
     mh = methodology_hash(methodology, updater_version)
 
     for result in ordered:
-        if result.home_team not in powers or result.away_team not in powers:
+        if result.home_team not in frozen_preweek or result.away_team not in frozen_preweek:
             raise ValueError(f"Result contains unknown team not in snapshot: {result.game_id}")
 
         update = apply_single_game_update(
-            home_power_before=powers[result.home_team],
-            away_power_before=powers[result.away_team],
+            home_power_before=frozen_preweek[result.home_team],
+            away_power_before=frozen_preweek[result.away_team],
             result=result,
             methodology=methodology,
             updater_version=updater_version,
             methodology_hash_value=mh,
         )
 
-        powers[result.home_team] = update.home_power_after
-        powers[result.away_team] = update.away_power_after
+        aggregate_adjustments[result.home_team] += float(update.home_adjustment)
+        aggregate_adjustments[result.away_team] += float(update.away_adjustment)
         updates.append(update)
+
+    weekly_shrink = float(methodology.game_shrink)
+    powers = {
+        team_id: (frozen_preweek[team_id] + aggregate_adjustments[team_id]) * weekly_shrink
+        for team_id in frozen_preweek
+    }
 
     ordered_teams = tuple(
         PowerTeamRating(team_id=team_id, power=powers[team_id])

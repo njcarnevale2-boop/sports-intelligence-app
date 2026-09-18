@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import csv
+import json
 import math
+import os
+from pathlib import Path
 
 import pytest
 
@@ -19,6 +23,33 @@ from app.services.power_engine import (
     snapshot_hash,
     validate_snapshot,
 )
+from app.services.power_engine.projection import model_margin_home
+from app.services.result_engine.teams import normalize_team_id
+
+
+_PHASE2E8_ENABLE_ENV = "SIA_RUN_PHASE2E8_PARITY"
+_PHASE2E8_BASELINE_ENV = "SIA_PHASE2E8_BASELINE_CSV"
+_PHASE2E8_RESULTS_ENV = "SIA_PHASE2E8_RESULTS_PARQUET"
+_PHASE2E8_TARGET_ENV = "SIA_PHASE2E8_TARGET_SNAPSHOT"
+
+_PHASE2E8_WEEK2_MARGIN_REFERENCE = {
+    "DET@BUF": 6.334767,
+    "CAR@ATL": 4.975323,
+    "CIN@HOU": 1.855269,
+    "CLE@TB": 4.313074,
+    "GB@NYJ": -6.461671,
+    "MIN@CHI": -1.071322,
+    "NO@BAL": 0.814307,
+    "PHI@TEN": -5.147469,
+    "PIT@NE": 6.787993,
+    "JAX@DEN": -4.768764,
+    "LV@LAC": 3.242472,
+    "MIA@SF": 4.579205,
+    "SEA@ARI": -7.157223,
+    "WAS@DAL": 0.712522,
+    "IND@KC": 3.819167,
+    "NYG@LAR": 0.885611,
+}
 
 
 def _teams() -> tuple[PowerTeamRating, ...]:
@@ -74,6 +105,127 @@ def _result(
         away_score=away_score,
         source_result_version="scores-v1",
     )
+
+
+def _phase2e8_enabled() -> bool:
+    return str(os.getenv(_PHASE2E8_ENABLE_ENV, "")).strip() == "1"
+
+
+def _phase2e8_skip() -> None:
+    pytest.skip(
+        "Historical Phase 2E.8 parity replay is opt-in; set "
+        f"{_PHASE2E8_ENABLE_ENV}=1 with durable input paths in the environment"
+    )
+
+
+def _phase2e8_env_path(name: str) -> Path:
+    raw = str(os.getenv(name, "")).strip()
+    if not raw:
+        pytest.fail(f"Missing required environment variable for historical replay: {name}")
+    path = Path(raw)
+    if not path.exists():
+        pytest.fail(f"Historical replay input does not exist: env={name} path={path}")
+    return path
+
+
+def _phase2e8_preweek_snapshot_from_csv(path: Path) -> PowerSnapshot:
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        teams = tuple(
+            PowerTeamRating(
+                team_id=normalize_team_id(row["team"]),
+                power=float(row["power_points"]),
+            )
+            for row in reader
+        )
+
+    snapshot = PowerSnapshot(
+        snapshot_id="power-2026-preweek-044ddd78ebb0",
+        snapshot_hash="",
+        season=2026,
+        through_week=0,
+        updater_version="sia_power_engine_2e4a_v1",
+        methodology_hash=methodology_hash(
+            __import__("app.services.power_engine.methodology", fromlist=["FROZEN_METHODOLOGY"]).FROZEN_METHODOLOGY,
+            "sia_power_engine_2e4a_v1",
+        ),
+        source_snapshot_id=None,
+        generated_at="2026-09-17T21:53:35Z",
+        teams=teams,
+    )
+    return PowerSnapshot(
+        snapshot_id=snapshot.snapshot_id,
+        snapshot_hash=snapshot_hash(snapshot),
+        season=snapshot.season,
+        through_week=snapshot.through_week,
+        updater_version=snapshot.updater_version,
+        methodology_hash=snapshot.methodology_hash,
+        source_snapshot_id=snapshot.source_snapshot_id,
+        generated_at=snapshot.generated_at,
+        teams=snapshot.teams,
+    )
+
+
+def _phase2e8_results_from_parquet(path: Path) -> tuple[FinalGameResult, ...]:
+    import pandas as pd
+
+    df = pd.read_parquet(path)
+    week1 = df[(df["season"] == 2026) & (df["week"] == 1)].copy()
+    week1 = week1.sort_values(["gameday", "gametime", "game_id"]).reset_index(drop=True)
+
+    return tuple(
+        FinalGameResult(
+            season=2026,
+            week=1,
+            game_id=str(row.game_id),
+            kickoff_utc=f"{row.gameday}T{row.gametime}:00+00:00",
+            home_team=normalize_team_id(row.home_team),
+            away_team=normalize_team_id(row.away_team),
+            home_score=int(row.home_score),
+            away_score=int(row.away_score),
+            source_result_version="derived:nflverse_schedules_games.parquet:16d596881aaf28f4f69ab1834ebd11a6f34534c4bbed7462d8a5a7fda2be4340",
+        )
+        for row in week1.itertuples(index=False)
+    )
+
+
+def _phase2e8_independent_reference(snapshot: PowerSnapshot, results: tuple[FinalGameResult, ...]) -> dict[str, float]:
+    powers = {team.team_id: float(team.power) for team in snapshot.teams}
+    deltas = {team_id: 0.0 for team_id in powers}
+
+    for result in results:
+        expected_home_margin = powers[result.home_team] - powers[result.away_team] + HFA
+        actual_home_margin = float(result.home_score - result.away_score)
+        residual = actual_home_margin - expected_home_margin
+        clipped_residual = max(-ERROR_CAP, min(ERROR_CAP, residual))
+        home_delta = K * clipped_residual
+        away_delta = -home_delta
+        deltas[result.home_team] += home_delta
+        deltas[result.away_team] += away_delta
+
+    return {
+        team_id: (powers[team_id] + deltas[team_id]) * GAME_SHRINK
+        for team_id in powers
+    }
+
+
+def _phase2e8_week2_margins(postweek_lookup: dict[str, float], results_path: Path) -> dict[str, float]:
+    import pandas as pd
+
+    df = pd.read_parquet(results_path)
+    week2 = df[(df["season"] == 2026) & (df["week"] == 2)].copy()
+    week2 = week2.sort_values(["gameday", "gametime", "game_id"]).reset_index(drop=True)
+
+    out: dict[str, float] = {}
+    for row in week2.itertuples(index=False):
+        away_team = normalize_team_id(row.away_team)
+        home_team = normalize_team_id(row.home_team)
+        out[f"{away_team}@{home_team}"] = model_margin_home(
+            home_power=postweek_lookup[home_team],
+            away_power=postweek_lookup[away_team],
+            hfa=HFA,
+        )
+    return out
 
 
 def test_canonical_team_set_has_exactly_32_teams():
@@ -200,12 +352,51 @@ def test_duplicate_game_id_rejected():
         apply_week_results(snapshot=snap, results=(r1, r2), generated_at="2026-09-16T00:00:00+00:00")
 
 
-def test_duplicate_team_appearance_rejected():
+def test_repeated_team_supported_and_order_invariant():
     snap = _snapshot()
-    r1 = _result(game_id="g1", home_team="ATL", away_team="ARI")
-    r2 = _result(game_id="g2", home_team="BUF", away_team="ATL")
-    with pytest.raises(ValueError):
-        apply_week_results(snapshot=snap, results=(r1, r2), generated_at="2026-09-16T00:00:00+00:00")
+    r1 = _result(
+        game_id="g1",
+        kickoff="2026-09-10T20:20:00+00:00",
+        home_team="ATL",
+        away_team="ARI",
+        home_score=24,
+        away_score=17,
+    )
+    r2 = _result(
+        game_id="g2",
+        kickoff="2026-09-11T20:20:00+00:00",
+        home_team="BUF",
+        away_team="ATL",
+        home_score=14,
+        away_score=28,
+    )
+
+    out_a = apply_week_results(snapshot=snap, results=(r1, r2), generated_at="2026-09-16T00:00:00+00:00")
+
+    # Swap kickoff ordering to force the opposite processing order.
+    r1_swapped = _result(
+        game_id="g1",
+        kickoff="2026-09-12T20:20:00+00:00",
+        home_team="ATL",
+        away_team="ARI",
+        home_score=24,
+        away_score=17,
+    )
+    r2_swapped = _result(
+        game_id="g2",
+        kickoff="2026-09-09T20:20:00+00:00",
+        home_team="BUF",
+        away_team="ATL",
+        home_score=14,
+        away_score=28,
+    )
+    out_b = apply_week_results(snapshot=snap, results=(r1_swapped, r2_swapped), generated_at="2026-09-16T00:00:00+00:00")
+
+    powers_a = {team.team_id: team.power for team in out_a.snapshot_after.teams}
+    powers_b = {team.team_id: team.power for team in out_b.snapshot_after.teams}
+    assert set(powers_a.keys()) == set(powers_b.keys())
+    for team_id in powers_a:
+        assert powers_a[team_id] == pytest.approx(powers_b[team_id], abs=1e-12)
 
 
 def test_non_string_game_id_fails_before_sort():
@@ -397,7 +588,7 @@ def test_same_home_away_team_rejected_intentionally():
         apply_week_results(snapshot=snap, results=(bad,), generated_at="2026-09-16T00:00:00+00:00")
 
 
-def test_non_participating_team_unchanged_and_shrink_only_for_participants():
+def test_non_participating_team_receives_weekly_shrink_once():
     snap = _snapshot()
     before = {t.team_id: t.power for t in snap.teams}
     r = _result(game_id="g1", home_team="ATL", away_team="ARI", home_score=24, away_score=17)
@@ -405,9 +596,82 @@ def test_non_participating_team_unchanged_and_shrink_only_for_participants():
     out = apply_week_results(snapshot=snap, results=(r,), generated_at="2026-09-16T00:00:00+00:00")
     after = {t.team_id: t.power for t in out.snapshot_after.teams}
 
-    assert after["BUF"] == pytest.approx(before["BUF"])
+    assert after["BUF"] == pytest.approx(before["BUF"] * GAME_SHRINK)
     assert after["ARI"] != pytest.approx(before["ARI"])
     assert after["ATL"] != pytest.approx(before["ATL"])
+
+
+def test_repeated_team_adjustments_aggregate_before_single_shrink():
+    snap = _snapshot()
+    before = {t.team_id: t.power for t in snap.teams}
+    r1 = _result(
+        game_id="g1",
+        kickoff="2026-09-10T20:20:00+00:00",
+        home_team="ATL",
+        away_team="ARI",
+        home_score=24,
+        away_score=17,
+    )
+    r2 = _result(
+        game_id="g2",
+        kickoff="2026-09-11T20:20:00+00:00",
+        home_team="BUF",
+        away_team="ATL",
+        home_score=14,
+        away_score=28,
+    )
+
+    out = apply_week_results(snapshot=snap, results=(r1, r2), generated_at="2026-09-16T00:00:00+00:00")
+    after = {t.team_id: t.power for t in out.snapshot_after.teams}
+
+    atl_total_adjustment = sum(
+        update.home_adjustment
+        for update in out.updates
+        if update.home_team == "ATL"
+    ) + sum(
+        update.away_adjustment
+        for update in out.updates
+        if update.away_team == "ATL"
+    )
+    expected_atl = (before["ATL"] + atl_total_adjustment) * GAME_SHRINK
+    assert after["ATL"] == pytest.approx(expected_atl, abs=1e-12)
+
+
+def test_phase2e8_week1_shadow_parity_if_artifacts_available():
+    if not _phase2e8_enabled():
+        _phase2e8_skip()
+
+    baseline_path = _phase2e8_env_path(_PHASE2E8_BASELINE_ENV)
+    results_path = _phase2e8_env_path(_PHASE2E8_RESULTS_ENV)
+    target_path = _phase2e8_env_path(_PHASE2E8_TARGET_ENV)
+
+    preweek_snapshot = _phase2e8_preweek_snapshot_from_csv(baseline_path)
+    results = _phase2e8_results_from_parquet(results_path)
+    target_payload = json.loads(target_path.read_text(encoding="utf-8"))
+
+    out = apply_week_results(
+        snapshot=preweek_snapshot,
+        results=results,
+        generated_at=str(target_payload["generated_at"]),
+        updater_version=str(target_payload["updater_version"]),
+    )
+
+    independent_reference = _phase2e8_independent_reference(preweek_snapshot, results)
+    actual = {team.team_id: float(team.power) for team in out.snapshot_after.teams}
+    expected_shadow = {team["team_id"]: float(team["power"]) for team in target_payload["teams"]}
+
+    assert set(independent_reference.keys()) == set(actual.keys()) == set(expected_shadow.keys())
+
+    max_abs_diff = max(abs(actual[team_id] - independent_reference[team_id]) for team_id in actual)
+    assert max_abs_diff <= 1e-12
+
+    max_shadow_diff = max(abs(actual[team_id] - expected_shadow[team_id]) for team_id in actual)
+    assert max_shadow_diff <= 1e-12
+
+    week2_margins = _phase2e8_week2_margins(actual, results_path)
+    assert set(week2_margins.keys()) == set(_PHASE2E8_WEEK2_MARGIN_REFERENCE.keys())
+    for matchup, reference_margin in _PHASE2E8_WEEK2_MARGIN_REFERENCE.items():
+        assert week2_margins[matchup] == pytest.approx(reference_margin, abs=1e-6)
 
 
 def test_repeated_identical_run_produces_identical_output():
