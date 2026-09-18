@@ -216,6 +216,54 @@ def _insert_usage_row(
         con.close()
 
 
+def _insert_usage_row_at(
+    runtime_root,
+    *,
+    fetched_at: datetime,
+    requests_last: int | None,
+    requests_used: int,
+    requests_remaining: int,
+    request_shape_id: str | None = None,
+    request_shape_signature: str | None = None,
+    request_provenance: str | None = None,
+):
+    db_path = runtime_root / "database" / "nfl_model.duckdb"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    con = duckdb.connect(str(db_path))
+    try:
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS odds_api_usage (
+                fetched_at TIMESTAMP,
+                endpoint VARCHAR,
+                requests_remaining INTEGER,
+                requests_used INTEGER,
+                requests_last INTEGER,
+                request_shape_id VARCHAR,
+                request_shape_signature VARCHAR,
+                request_provenance VARCHAR
+            )
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO odds_api_usage VALUES (?, '/sports/{sport}/odds', ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                fetched_at.replace(tzinfo=None),
+                requests_remaining,
+                requests_used,
+                requests_last,
+                request_shape_id,
+                request_shape_signature,
+                request_provenance,
+            ],
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
 def test_get_odds_status_exposes_latest_core_request_cost_and_cumulative_usage(monkeypatch, tmp_path):
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
@@ -236,8 +284,9 @@ def test_get_odds_status_exposes_latest_core_request_cost_and_cumulative_usage(m
     assert out["coreOddsRequestsRemaining"] == 19604
     assert out["coreOddsLastRequestAt"] is not None
     assert out["coreOddsRequestShapeId"] == core_request_shape_id()
-    assert out["coreOddsVerifiedRequestCost"] is None
-    assert out["coreOddsCostVerificationStatus"] == "UNKNOWN"
+    assert out["coreOddsVerifiedRequestCost"] == 3.0
+    assert out["coreOddsCostVerificationStatus"] == "VERIFIED"
+    assert out["coreOddsCostVerificationSource"] == "STATIC_CANONICAL_CORE_COST"
 
 
 def _setup_snapshot_rows(runtime_root, count: int) -> None:
@@ -439,7 +488,72 @@ def test_exact_verified_shape_permits_request_when_quota_healthy(monkeypatch, tm
 
     assert verification["coreOddsVerifiedRequestCost"] == 3.0
     assert verification["coreOddsCostVerificationStatus"] == "VERIFIED"
+    assert verification["coreOddsCostVerificationSource"] == "BOOTSTRAP_VERIFIED_USAGE"
     assert guard["allowed"] is True
+
+
+def test_static_canonical_core_cost_verification_matches_expected_shape_and_cost(monkeypatch, tmp_path):
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+
+    verification = odds_status.get_core_request_cost_verification()
+
+    assert verification["coreOddsRequestShapeId"] == "f2098e2eeb6c0a248309740986ed4cfdfdef18ea51469a395ae536089ff5a86b"
+    assert verification["coreOddsCostVerificationStatus"] == "VERIFIED"
+    assert verification["coreOddsVerifiedRequestCost"] == 3.0
+    assert verification["coreOddsCostVerificationSource"] == "STATIC_CANONICAL_CORE_COST"
+
+
+def test_markets_order_normalization_retains_static_canonical_verification(monkeypatch, tmp_path):
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+    monkeypatch.setenv("ODDS_MARKETS", "totals,h2h,spreads,h2h")
+
+    verification = odds_status.get_core_request_cost_verification()
+
+    assert verification["coreOddsRequestShape"]["markets"] == ["h2h", "spreads", "totals"]
+    assert verification["coreOddsRequestShapeId"] == "f2098e2eeb6c0a248309740986ed4cfdfdef18ea51469a395ae536089ff5a86b"
+    assert verification["coreOddsCostVerificationStatus"] == "VERIFIED"
+    assert verification["coreOddsVerifiedRequestCost"] == 3.0
+    assert verification["coreOddsCostVerificationSource"] == "STATIC_CANONICAL_CORE_COST"
+
+
+def test_single_field_signature_mutations_fail_closed(monkeypatch, tmp_path):
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+
+    base_signature = build_core_request_signature()
+    mutation_cases = [
+        ("markets", ["spreads"]),
+        ("regions", ["eu"]),
+        ("sport", "americanfootball_ncaaf"),
+        ("bookmakers", ["draftkings"]),
+        ("oddsFormat", "decimal"),
+        ("dateFormat", "unix"),
+    ]
+
+    for idx, (field, value) in enumerate(mutation_cases, start=1):
+        mutated_signature = dict(base_signature)
+        mutated_signature[field] = value
+        mutated_shape_id = f"mutated-shape-{idx}"
+        with (
+            patch("app.services.odds_status.build_core_request_signature", return_value=mutated_signature),
+            patch("app.services.odds_status.core_request_shape_id", return_value=mutated_shape_id),
+        ):
+            verification = odds_status.get_core_request_cost_verification()
+            guard = odds_status.evaluate_optional_provider_request(
+                estimated_credits=verification.get("coreOddsVerifiedRequestCost"),
+                allow_unknown_credit_cost=False,
+                allow_unknown_weekly_usage=True,
+                override_quota_guards=False,
+            )
+
+        assert verification["coreOddsRequestShapeId"] == mutated_shape_id
+        assert verification["coreOddsVerifiedRequestCost"] is None
+        assert verification["coreOddsCostVerificationStatus"] in {"UNKNOWN", "SHAPE_CHANGED"}
+        assert verification["coreOddsCostVerificationSource"] is None
+        assert guard["allowed"] is False
+        assert guard["reason"] == "UNKNOWN_PROVIDER_CREDIT_COST"
 
 
 def test_markets_changed_results_in_shape_changed_and_blocked(monkeypatch, tmp_path):
@@ -505,24 +619,31 @@ def test_missing_requests_last_keeps_cost_unknown_and_blocks(monkeypatch, tmp_pa
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
     signature = build_core_request_signature()
+    signature["sport"] = "americanfootball_ncaaf"
+    mutated_shape_id = "missing-requests-last-shape"
     _setup_usage_db(
         runtime_root,
         requests_last=None,
-        request_shape_id=core_request_shape_id(),
+        request_shape_id=mutated_shape_id,
         request_shape_signature=odds_status.json.dumps(signature, sort_keys=True, separators=(",", ":")),
         request_provenance="BOOTSTRAP_CORE_COST",
     )
 
-    verification = odds_status.get_core_request_cost_verification()
-    guard = odds_status.evaluate_optional_provider_request(
-        estimated_credits=verification.get("coreOddsVerifiedRequestCost"),
-        allow_unknown_credit_cost=False,
-        allow_unknown_weekly_usage=False,
-        override_quota_guards=False,
-    )
+    with (
+        patch("app.services.odds_status.build_core_request_signature", return_value=signature),
+        patch("app.services.odds_status.core_request_shape_id", return_value=mutated_shape_id),
+    ):
+        verification = odds_status.get_core_request_cost_verification()
+        guard = odds_status.evaluate_optional_provider_request(
+            estimated_credits=verification.get("coreOddsVerifiedRequestCost"),
+            allow_unknown_credit_cost=False,
+            allow_unknown_weekly_usage=False,
+            override_quota_guards=False,
+        )
 
     assert verification["coreOddsCostVerificationStatus"] == "UNKNOWN"
     assert verification["coreOddsVerifiedRequestCost"] is None
+    assert verification["coreOddsCostVerificationSource"] is None
     assert guard["allowed"] is False
     assert guard["reason"] == "UNKNOWN_PROVIDER_CREDIT_COST"
 
@@ -539,9 +660,17 @@ def test_legacy_three_credit_row_without_shape_provenance_remains_unknown(monkey
         request_shape_signature=None,
     )
 
-    verification = odds_status.get_core_request_cost_verification()
+    mutated_signature = build_core_request_signature()
+    mutated_signature["sport"] = "americanfootball_ncaaf"
+    with (
+        patch("app.services.odds_status.build_core_request_signature", return_value=mutated_signature),
+        patch("app.services.odds_status.core_request_shape_id", return_value="legacy-shape-without-provenance"),
+    ):
+        verification = odds_status.get_core_request_cost_verification()
+
     assert verification["coreOddsVerifiedRequestCost"] is None
     assert verification["coreOddsCostVerificationStatus"] == "UNKNOWN"
+    assert verification["coreOddsCostVerificationSource"] is None
 
 
 def test_in_progress_matching_bootstrap_telemetry_recovers_to_completed_verified(monkeypatch, tmp_path):
@@ -1239,3 +1368,199 @@ def test_quota_safety_weekly_usage_unknown_is_exposed_without_fake_number(monkey
     out = odds_status.get_quota_safety_state()
     assert out["weeklyUsageCredits"] is None
     assert out["weeklyUsageStatus"] == "UNKNOWN"
+
+
+def test_quota_safety_empty_window_is_known_zero(monkeypatch, tmp_path):
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+    fixed_now = datetime(2026, 9, 18, 3, 0, 0, tzinfo=timezone.utc)
+    _insert_usage_row_at(
+        runtime_root,
+        fetched_at=fixed_now - timedelta(days=8),
+        requests_last=3,
+        requests_used=100,
+        requests_remaining=19900,
+    )
+
+    with patch("app.services.odds_status.datetime") as mocked_datetime:
+        mocked_datetime.now.return_value = fixed_now
+        mocked_datetime.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+        out = odds_status.get_quota_safety_state()
+
+    assert out["weeklyUsageCredits"] == 0.0
+    assert out["weeklyUsageStatus"] == "KNOWN"
+
+
+def test_quota_safety_historical_rows_outside_window_is_known_zero(monkeypatch, tmp_path):
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+
+    fixed_now = datetime(2026, 9, 18, 3, 0, 0, tzinfo=timezone.utc)
+    _insert_usage_row_at(
+        runtime_root,
+        fetched_at=fixed_now - timedelta(days=8),
+        requests_last=3,
+        requests_used=100,
+        requests_remaining=19900,
+    )
+
+    with patch("app.services.odds_status.datetime") as mocked_datetime:
+        mocked_datetime.now.return_value = fixed_now
+        mocked_datetime.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+        out = odds_status.get_quota_safety_state()
+
+    assert out["weeklyUsageCredits"] == 0.0
+    assert out["weeklyUsageStatus"] == "KNOWN"
+
+
+def test_quota_safety_single_valid_row_is_known(monkeypatch, tmp_path):
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+
+    fixed_now = datetime(2026, 9, 18, 3, 0, 0, tzinfo=timezone.utc)
+    _insert_usage_row_at(
+        runtime_root,
+        fetched_at=fixed_now - timedelta(days=1),
+        requests_last=3,
+        requests_used=200,
+        requests_remaining=19800,
+    )
+
+    with patch("app.services.odds_status.datetime") as mocked_datetime:
+        mocked_datetime.now.return_value = fixed_now
+        mocked_datetime.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+        out = odds_status.get_quota_safety_state()
+
+    assert out["weeklyUsageCredits"] == 3.0
+    assert out["weeklyUsageStatus"] == "KNOWN"
+
+
+def test_quota_safety_multiple_valid_rows_are_summed(monkeypatch, tmp_path):
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+
+    fixed_now = datetime(2026, 9, 18, 3, 0, 0, tzinfo=timezone.utc)
+    for days_ago in (1, 2, 3):
+        _insert_usage_row_at(
+            runtime_root,
+            fetched_at=fixed_now - timedelta(days=days_ago),
+            requests_last=3,
+            requests_used=300 + days_ago,
+            requests_remaining=19700 - days_ago,
+        )
+
+    with patch("app.services.odds_status.datetime") as mocked_datetime:
+        mocked_datetime.now.return_value = fixed_now
+        mocked_datetime.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+        out = odds_status.get_quota_safety_state()
+
+    assert out["weeklyUsageCredits"] == 9.0
+    assert out["weeklyUsageStatus"] == "KNOWN"
+
+
+def test_quota_safety_mixed_valid_and_null_rows_is_unknown(monkeypatch, tmp_path):
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+
+    fixed_now = datetime(2026, 9, 18, 3, 0, 0, tzinfo=timezone.utc)
+    _insert_usage_row_at(
+        runtime_root,
+        fetched_at=fixed_now - timedelta(days=1),
+        requests_last=3,
+        requests_used=401,
+        requests_remaining=19599,
+    )
+    _insert_usage_row_at(
+        runtime_root,
+        fetched_at=fixed_now - timedelta(hours=12),
+        requests_last=None,
+        requests_used=404,
+        requests_remaining=19596,
+    )
+
+    with patch("app.services.odds_status.datetime") as mocked_datetime:
+        mocked_datetime.now.return_value = fixed_now
+        mocked_datetime.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+        out = odds_status.get_quota_safety_state()
+
+    assert out["weeklyUsageCredits"] is None
+    assert out["weeklyUsageStatus"] == "UNKNOWN"
+
+
+def test_quota_safety_missing_usage_table_is_unknown(monkeypatch, tmp_path):
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+    db_path = runtime_root / "database" / "nfl_model.duckdb"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    con = duckdb.connect(str(db_path))
+    try:
+        con.execute("CREATE TABLE IF NOT EXISTS placeholder_table (id INTEGER)")
+        con.commit()
+    finally:
+        con.close()
+
+    out = odds_status.get_quota_safety_state()
+    assert out["weeklyUsageCredits"] is None
+    assert out["weeklyUsageStatus"] == "UNKNOWN"
+
+
+def test_quota_safety_duckdb_unavailable_is_unknown(monkeypatch, tmp_path):
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+
+    out = odds_status.get_quota_safety_state()
+    assert out["weeklyUsageCredits"] is None
+    assert out["weeklyUsageStatus"] == "UNKNOWN"
+
+
+def test_quota_safety_boundary_inclusion_and_exclusion(monkeypatch, tmp_path):
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+
+    fixed_now = datetime(2026, 9, 18, 3, 0, 0, tzinfo=timezone.utc)
+    week_start = fixed_now - timedelta(days=7)
+
+    _insert_usage_row_at(
+        runtime_root,
+        fetched_at=week_start + timedelta(seconds=1),
+        requests_last=3,
+        requests_used=500,
+        requests_remaining=19500,
+    )
+    _insert_usage_row_at(
+        runtime_root,
+        fetched_at=week_start - timedelta(seconds=1),
+        requests_last=3,
+        requests_used=497,
+        requests_remaining=19503,
+    )
+
+    with patch("app.services.odds_status.datetime") as mocked_datetime:
+        mocked_datetime.now.return_value = fixed_now
+        mocked_datetime.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+        out = odds_status.get_quota_safety_state()
+
+    assert out["weeklyUsageCredits"] == 3.0
+    assert out["weeklyUsageStatus"] == "KNOWN"
+
+
+def test_quota_safety_future_timestamp_row_preserves_current_semantics(monkeypatch, tmp_path):
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NFL_ANALYTICS_OS_ROOT", str(runtime_root))
+
+    fixed_now = datetime(2026, 9, 18, 3, 0, 0, tzinfo=timezone.utc)
+    _insert_usage_row_at(
+        runtime_root,
+        fetched_at=fixed_now + timedelta(hours=1),
+        requests_last=3,
+        requests_used=600,
+        requests_remaining=19400,
+    )
+
+    with patch("app.services.odds_status.datetime") as mocked_datetime:
+        mocked_datetime.now.return_value = fixed_now
+        mocked_datetime.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+        out = odds_status.get_quota_safety_state()
+
+    assert out["weeklyUsageCredits"] == 3.0
+    assert out["weeklyUsageStatus"] == "KNOWN"

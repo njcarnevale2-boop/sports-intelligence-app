@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import math
 import threading
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -16,6 +17,30 @@ _STALE_HOURS = 24  # flag data as STALE if no refresh within this window
 _CORE_BOOTSTRAP_LOCK = threading.Lock()
 _CORE_BOOTSTRAP_PROVENANCE = "BOOTSTRAP_CORE_COST"
 _CORE_BOOTSTRAP_STALE_MINUTES = 10
+_STATIC_CANONICAL_CORE_COST_SOURCE = "STATIC_CANONICAL_CORE_COST"
+_BOOTSTRAP_CORE_COST_SOURCE = "BOOTSTRAP_VERIFIED_USAGE"
+_STATIC_CANONICAL_CORE_REQUEST_SHAPE: dict[str, Any] = {
+    "endpointType": "SPORT_ODDS",
+    "endpoint": "/sports/{sport}/odds",
+    "sport": "americanfootball_nfl",
+    "regions": ["us"],
+    "markets": ["h2h", "spreads", "totals"],
+    "bookmakers": [],
+    "oddsFormat": "american",
+    "dateFormat": "iso",
+}
+_STATIC_CANONICAL_CORE_REQUEST_SHAPE_ID = "f2098e2eeb6c0a248309740986ed4cfdfdef18ea51469a395ae536089ff5a86b"
+_STATIC_CANONICAL_CORE_REQUEST_COST = 3.0
+
+
+def _canonical_json(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def _matches_static_canonical_core_shape(signature: dict[str, Any], shape_id: str) -> bool:
+    if _canonical_json(signature) != _canonical_json(_STATIC_CANONICAL_CORE_REQUEST_SHAPE):
+        return False
+    return str(shape_id or "").strip() == _STATIC_CANONICAL_CORE_REQUEST_SHAPE_ID
 
 
 def _env_float(name: str, default: float) -> float:
@@ -259,10 +284,15 @@ def get_core_request_cost_verification() -> Dict[str, Any]:
         "coreOddsRequestShape": signature,
         "coreOddsVerifiedRequestCost": None,
         "coreOddsCostVerificationStatus": "UNKNOWN",
+        "coreOddsCostVerificationSource": None,
     }
 
     con = _try_duckdb()
     if con is None:
+        if _matches_static_canonical_core_shape(signature, shape_id):
+            out["coreOddsVerifiedRequestCost"] = _STATIC_CANONICAL_CORE_REQUEST_COST
+            out["coreOddsCostVerificationStatus"] = "VERIFIED"
+            out["coreOddsCostVerificationSource"] = _STATIC_CANONICAL_CORE_COST_SOURCE
         return out
 
     try:
@@ -285,6 +315,7 @@ def get_core_request_cost_verification() -> Dict[str, Any]:
                 if parsed == signature and status == "COMPLETED" and row[5] is not None:
                     out["coreOddsVerifiedRequestCost"] = float(row[5])
                     out["coreOddsCostVerificationStatus"] = "VERIFIED"
+                    out["coreOddsCostVerificationSource"] = _BOOTSTRAP_CORE_COST_SOURCE
                     return out
                 if parsed == signature and status in {"FAILED", "REVIEW_REQUIRED", "IN_PROGRESS"}:
                     out["coreOddsCostVerificationStatus"] = "UNKNOWN"
@@ -302,6 +333,12 @@ def get_core_request_cost_verification() -> Dict[str, Any]:
             if other_completed and str(other_completed[0] or "") != shape_id:
                 out["coreOddsCostVerificationStatus"] = "SHAPE_CHANGED"
                 return out
+
+        if _matches_static_canonical_core_shape(signature, shape_id):
+            out["coreOddsVerifiedRequestCost"] = _STATIC_CANONICAL_CORE_REQUEST_COST
+            out["coreOddsCostVerificationStatus"] = "VERIFIED"
+            out["coreOddsCostVerificationSource"] = _STATIC_CANONICAL_CORE_COST_SOURCE
+            return out
 
         if not has_usage:
             return out
@@ -360,6 +397,7 @@ def get_quota_safety_state() -> Dict[str, Any]:
         "coreOddsRequestShapeId": core_cost.get("coreOddsRequestShapeId"),
         "coreOddsVerifiedRequestCost": core_cost.get("coreOddsVerifiedRequestCost"),
         "coreOddsCostVerificationStatus": core_cost.get("coreOddsCostVerificationStatus"),
+        "coreOddsCostVerificationSource": core_cost.get("coreOddsCostVerificationSource"),
         "coreOddsCostBootstrapStatus": bootstrap.get("coreOddsCostBootstrapStatus"),
         "coreOddsCostBootstrapAt": bootstrap.get("coreOddsCostBootstrapAt"),
         "coreOddsCostBootstrapShapeId": bootstrap.get("coreOddsCostBootstrapShapeId"),
@@ -408,11 +446,29 @@ def get_quota_safety_state() -> Dict[str, Any]:
             [week_start],
         ).fetchall()
 
-        known_values = [float(row[0]) for row in weekly_rows if row[0] is not None]
-        if known_values:
-            weekly_usage = round(float(sum(known_values)), 4)
-            out["weeklyUsageCredits"] = weekly_usage
+        # Empty rolling window means zero observed local provider calls for the window.
+        if not weekly_rows:
+            out["weeklyUsageCredits"] = 0.0
             out["weeklyUsageStatus"] = "KNOWN"
+        else:
+            parsed_values: list[float] = []
+            weekly_rows_valid = True
+            for row in weekly_rows:
+                raw = row[0]
+                try:
+                    value = float(raw)
+                except (TypeError, ValueError):
+                    weekly_rows_valid = False
+                    break
+                if not math.isfinite(value) or value < 0:
+                    weekly_rows_valid = False
+                    break
+                parsed_values.append(value)
+
+            if weekly_rows_valid:
+                weekly_usage = round(float(sum(parsed_values)), 4)
+                out["weeklyUsageCredits"] = weekly_usage
+                out["weeklyUsageStatus"] = "KNOWN"
 
         remaining = out.get("coreOddsRequestsRemaining")
         weekly_usage = out.get("weeklyUsageCredits")
@@ -533,7 +589,10 @@ def perform_core_cost_bootstrap(*, requested_shape_id: str) -> Dict[str, Any]:
     with _CORE_BOOTSTRAP_LOCK:
         verification = get_core_request_cost_verification()
         bootstrap = get_core_cost_bootstrap_status()
-        if str(verification.get("coreOddsCostVerificationStatus") or "").upper() == "VERIFIED":
+        if (
+            str(verification.get("coreOddsCostVerificationStatus") or "").upper() == "VERIFIED"
+            and str(verification.get("coreOddsCostVerificationSource") or "").upper() != _STATIC_CANONICAL_CORE_COST_SOURCE
+        ):
             return {
                 "triggered": False,
                 "reason": "BOOTSTRAP_NOT_REQUIRED",
@@ -719,6 +778,7 @@ def get_odds_status() -> Dict[str, Any]:
             "coreOddsRequestShapeId": quota.get("coreOddsRequestShapeId"),
             "coreOddsVerifiedRequestCost": quota.get("coreOddsVerifiedRequestCost"),
             "coreOddsCostVerificationStatus": quota.get("coreOddsCostVerificationStatus"),
+            "coreOddsCostVerificationSource": quota.get("coreOddsCostVerificationSource"),
             "coreOddsCostBootstrapStatus": quota.get("coreOddsCostBootstrapStatus"),
             "coreOddsCostBootstrapAt": quota.get("coreOddsCostBootstrapAt"),
             "coreOddsCostBootstrapShapeId": quota.get("coreOddsCostBootstrapShapeId"),
@@ -747,6 +807,7 @@ def get_odds_status() -> Dict[str, Any]:
                 "coreOddsRequestShapeId": quota.get("coreOddsRequestShapeId"),
                 "coreOddsVerifiedRequestCost": quota.get("coreOddsVerifiedRequestCost"),
                 "coreOddsCostVerificationStatus": quota.get("coreOddsCostVerificationStatus"),
+                "coreOddsCostVerificationSource": quota.get("coreOddsCostVerificationSource"),
                 "coreOddsCostBootstrapStatus": quota.get("coreOddsCostBootstrapStatus"),
                 "coreOddsCostBootstrapAt": quota.get("coreOddsCostBootstrapAt"),
                 "coreOddsCostBootstrapShapeId": quota.get("coreOddsCostBootstrapShapeId"),
@@ -866,6 +927,7 @@ def get_odds_status() -> Dict[str, Any]:
             "coreOddsRequestShapeId": quota.get("coreOddsRequestShapeId"),
             "coreOddsVerifiedRequestCost": quota.get("coreOddsVerifiedRequestCost"),
             "coreOddsCostVerificationStatus": quota.get("coreOddsCostVerificationStatus"),
+            "coreOddsCostVerificationSource": quota.get("coreOddsCostVerificationSource"),
             "coreOddsCostBootstrapStatus": quota.get("coreOddsCostBootstrapStatus"),
             "coreOddsCostBootstrapAt": quota.get("coreOddsCostBootstrapAt"),
             "coreOddsCostBootstrapShapeId": quota.get("coreOddsCostBootstrapShapeId"),
@@ -889,6 +951,7 @@ def get_odds_status() -> Dict[str, Any]:
             "coreOddsRequestShapeId": quota.get("coreOddsRequestShapeId"),
             "coreOddsVerifiedRequestCost": quota.get("coreOddsVerifiedRequestCost"),
             "coreOddsCostVerificationStatus": quota.get("coreOddsCostVerificationStatus"),
+            "coreOddsCostVerificationSource": quota.get("coreOddsCostVerificationSource"),
             "coreOddsCostBootstrapStatus": quota.get("coreOddsCostBootstrapStatus"),
             "coreOddsCostBootstrapAt": quota.get("coreOddsCostBootstrapAt"),
             "coreOddsCostBootstrapShapeId": quota.get("coreOddsCostBootstrapShapeId"),
