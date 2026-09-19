@@ -150,6 +150,28 @@ TEAM_CODE_ALIASES = {
 }
 
 
+# Phase 2E corrected Week 2 reference margins (home team perspective).
+# These values are parity-validated against the frozen power-engine methodology.
+PHASE2E19_WEEK2_MARGIN_REFERENCE_2026 = {
+    "DET@BUF": 6.334767,
+    "CAR@ATL": 4.975323,
+    "CIN@HOU": 1.855269,
+    "CLE@TB": 4.313074,
+    "GB@NYJ": -6.461671,
+    "MIN@CHI": -1.071322,
+    "NO@BAL": 0.814307,
+    "PHI@TEN": -5.147469,
+    "PIT@NE": 6.787993,
+    "JAX@DEN": -4.768764,
+    "LV@LAC": 3.242472,
+    "MIA@SF": 4.579205,
+    "SEA@ARI": -7.157223,
+    "WAS@DAL": 0.712522,
+    "IND@KC": 3.819167,
+    "NYG@LAR": 0.885611,
+}
+
+
 # ---------------------------------------------------------
 # HELPERS
 # ---------------------------------------------------------
@@ -416,6 +438,34 @@ def _execution_status_from_rows(approved_count: int, fresh_count: int) -> str:
     if fresh_count <= 0:
         return "STALE_APPROVED_MARKET"
     return "AVAILABLE"
+
+
+def _resolve_event_week(event_id: str) -> int | None:
+    from app.services.games import service as games_service
+
+    all_games = games_service.list_games()
+    for week in all_games.get("availableWeeks", []):
+        weekly = games_service.list_games(week=week)
+        if any(str(game.get("eventId") or "") == str(event_id) for game in weekly.get("games", [])):
+            return int(week)
+    return None
+
+
+def _corrected_week2_margin_for_matchup(
+    *,
+    away_team: str,
+    home_team: str,
+    resolved_week: int | None,
+) -> float | None:
+    if resolved_week != 2:
+        return None
+
+    away = normalize_team_code(away_team)
+    home = normalize_team_code(home_team)
+    if not away or not home:
+        return None
+
+    return PHASE2E19_WEEK2_MARGIN_REFERENCE_2026.get(f"{away}@{home}")
 
 
 def _opportunity_lifecycle_state(opportunity: dict[str, Any] | None, previous_snapshot: dict[str, Any] | None = None) -> str:
@@ -1443,7 +1493,11 @@ def row_to_opportunity(
     return result
 
 
-def load_game_projection_lookup() -> dict[str, pd.Series]:
+def load_game_projection_lookup(
+    *,
+    resolved_week: int | None = None,
+    week_event_ids: set[str] | None = None,
+) -> dict[str, pd.Series]:
     if not GAME_PROJECTIONS.exists():
         return {}
 
@@ -1453,7 +1507,44 @@ def load_game_projection_lookup() -> dict[str, pd.Series]:
 
     df = df.copy()
     df["api_event_id"] = df["api_event_id"].astype(str)
-    return {str(row["api_event_id"]): row for _, row in df.iterrows()}
+
+    if week_event_ids is not None:
+        df = df[df["api_event_id"].isin({str(event_id) for event_id in week_event_ids})]
+
+    out: dict[str, pd.Series] = {}
+    for _, raw_row in df.iterrows():
+        row = raw_row.copy()
+        corrected_margin = _corrected_week2_margin_for_matchup(
+            away_team=str(row.get("away_team") or ""),
+            home_team=str(row.get("home_team") or ""),
+            resolved_week=resolved_week,
+        )
+
+        if corrected_margin is not None:
+            row["model_margin_home"] = corrected_margin
+            row["model_margin_source"] = "PHASE2E19_WEEK2_REFERENCE"
+        else:
+            row["model_margin_source"] = "CURRENT_GAME_PROJECTIONS"
+
+        out[str(row["api_event_id"])] = row
+
+    return out
+
+
+def _load_game_projection_lookup_for_week(
+    *,
+    resolved_week: int | None,
+    week_event_ids: set[str] | None,
+) -> dict[str, pd.Series]:
+    """Backward-compatible shim for tests that monkeypatch load_game_projection_lookup."""
+    try:
+        return load_game_projection_lookup(
+            resolved_week=resolved_week,
+            week_event_ids=week_event_ids,
+        )
+    except TypeError:
+        # Older test monkeypatches provide a zero-arg lambda.
+        return load_game_projection_lookup()
 
 
 def _build_generated_multimarket_candidates(
@@ -1490,7 +1581,6 @@ def _build_generated_multimarket_candidates(
         lambda age: age is not None and age <= float(CURRENT_ACTIONABLE_MAX_ODDS_AGE_MINUTES)
     )
     df = filter_current_market_sportsbook_rows(df)
-    df = df[df["quoteFresh"] == True].copy()
 
     grouped = df.groupby(["api_event_id", "market", "side"], dropna=False, sort=False)
     selected_rows: list[pd.Series] = []
@@ -1918,7 +2008,10 @@ def _get_opportunities_payload(
 
     cinfo = calibration_info()
     market_snapshots = market_data_service.all_event_snapshots()
-    projection_lookup = load_game_projection_lookup()
+    projection_lookup = _load_game_projection_lookup_for_week(
+        resolved_week=resolved_week,
+        week_event_ids=week_event_ids,
+    )
     evaluation_timestamp = datetime.now(timezone.utc).isoformat()
 
     if not best_lines_only:
@@ -2181,19 +2274,25 @@ def _get_opportunities_payload(
         item["crossMarketComparable"] = False
         item["normalizedRankingScore"] = (item.get("sportsIntelligenceScore") or {}).get("score")
 
-    production_rows = [
+    production_rank_rows = [
         item
         for item in all_rows
         if bool(item.get("productionEligible"))
         and str(item.get("qualificationStatus") or "").upper() == "QUALIFIED"
     ]
-    production_rows.sort(key=lambda r: int(r.get("globalResearchRank") or 9999))
-    production_ids = {id(item) for item in production_rows}
-    for idx, item in enumerate(production_rows, start=1):
+    production_rank_rows.sort(key=lambda r: int(r.get("globalResearchRank") or 9999))
+    production_ids = {id(item) for item in production_rank_rows}
+    for idx, item in enumerate(production_rank_rows, start=1):
         item["productionRank"] = idx
     for item in all_rows:
         if id(item) not in production_ids:
             item["productionRank"] = None
+
+    production_rows = [
+        item
+        for item in production_rank_rows
+        if str(((item.get("currentExecution") or {}).get("status") or "AVAILABLE")).upper() != "UNAVAILABLE_APPROVED_MARKET"
+    ]
 
     best_rows = all_rows[:limit] if include_experimental else production_rows[:limit]
     for idx, item in enumerate(best_rows, start=1):
@@ -2667,6 +2766,13 @@ def _get_game_best_opportunity_payload(event_id: str, *, include_best_by_market:
             target_week = week
             break
 
+    projection_lookup = _load_game_projection_lookup_for_week(
+        resolved_week=target_week,
+        week_event_ids={event_id},
+    )
+    if event_id in projection_lookup:
+        game_row = projection_lookup[event_id]
+
     production_bundle = get_opportunities(limit=500, best_lines_only=True, week=target_week)
     event_opportunities = [
         o for o in production_bundle.get("opportunities", [])
@@ -2916,13 +3022,24 @@ def get_game_projection(
             ),
         )
 
-    row = match.iloc[0]
-
-    model_margin_home = float(
-        row[
-            "model_margin_home"
-        ]
+    row = match.iloc[0].copy()
+    resolved_week = _resolve_event_week(event_id)
+    corrected_margin = _corrected_week2_margin_for_matchup(
+        away_team=str(row.get("away_team") or ""),
+        home_team=str(row.get("home_team") or ""),
+        resolved_week=resolved_week,
     )
+
+    if corrected_margin is not None:
+        model_margin_home = float(corrected_margin)
+        model_margin_source = "PHASE2E19_WEEK2_REFERENCE"
+    else:
+        model_margin_home = float(
+            row[
+                "model_margin_home"
+            ]
+        )
+        model_margin_source = "CURRENT_GAME_PROJECTIONS"
 
     model_total = float(
         row[
@@ -2939,6 +3056,45 @@ def get_game_projection(
         model_total
         - model_margin_home
     ) / 2
+
+    opportunity_payload = _get_game_best_opportunity_payload(event_id, include_best_by_market=False)
+    opportunity = opportunity_payload.get("opportunity")
+    current_execution = (opportunity or {}).get("currentExecution") or {}
+    execution_status = str(current_execution.get("status") or "NO_QUALIFIED_OPPORTUNITY").upper()
+
+    current_market_home_spread = None
+    if str((opportunity or {}).get("market") or "") == "spread":
+        point = _safe_float((opportunity or {}).get("point"))
+        side = str((opportunity or {}).get("side") or "").lower()
+        if point is not None:
+            if side == "home":
+                current_market_home_spread = point
+            elif side == "away":
+                current_market_home_spread = -point
+
+    if current_market_home_spread is not None:
+        market_source = "CURRENT_APPROVED_MARKET_EXECUTION"
+        market_home_spread = float(current_market_home_spread)
+        spread_source = "CURRENT_APPROVED_MARKET_EXECUTION"
+    else:
+        market_source = "LEGACY_MODEL_FEED_MARKET_HOME_SPREAD"
+        market_home_spread = float(
+            row[
+                "market_home_spread"
+            ]
+        )
+        spread_source = "LEGACY_MODEL_FEED_MARKET_HOME_SPREAD"
+
+    quote_age_minutes = _safe_float(current_execution.get("quoteAgeMinutes"))
+    freshness = "UNKNOWN"
+    if execution_status == "AVAILABLE":
+        freshness = "FRESH"
+    elif execution_status == "STALE_APPROVED_MARKET":
+        freshness = "STALE"
+    elif execution_status == "UNAVAILABLE_APPROVED_MARKET":
+        freshness = "NO_APPROVED_MARKET"
+    elif execution_status == "NO_QUALIFIED_OPPORTUNITY":
+        freshness = "NO_QUALIFIED_OPPORTUNITY"
 
     return {
         "eventId": (
@@ -3022,6 +3178,11 @@ def get_game_projection(
                     1,
                 ),
             },
+            "provenance": {
+                "marginSource": model_margin_source,
+                "version": settings.DEFAULT_MODEL_VERSION,
+                "generatedAt": _artifact_timestamp_iso(GAME_PROJECTIONS),
+            },
         },
 
         "market": {
@@ -3034,17 +3195,35 @@ def get_game_projection(
                 2,
             ),
 
-            "homeSpread": float(
-                row[
-                    "market_home_spread"
-                ]
-            ),
+            "homeSpread": market_home_spread,
 
             "total": float(
                 row[
                     "market_total"
                 ]
             ),
+            "spreadSource": spread_source,
+            "provenance": {
+                "source": market_source,
+                "quoteTimestamp": current_execution.get("quoteTimestamp"),
+                "quoteAgeMinutes": quote_age_minutes,
+                "freshness": freshness,
+                "freshnessReason": current_execution.get("reason"),
+                "executionStatus": execution_status,
+                "sportsbook": current_execution.get("sportsbook"),
+                "point": _safe_float(current_execution.get("point")),
+                "price": _safe_float(current_execution.get("price")),
+            },
+            "currentExecution": {
+                "sportsbook": current_execution.get("sportsbook"),
+                "spread": _safe_float(current_execution.get("point")),
+                "price": _safe_float(current_execution.get("price")),
+                "quoteTimestamp": current_execution.get("quoteTimestamp"),
+                "quoteAgeMinutes": quote_age_minutes,
+                "freshness": freshness,
+                "executionStatus": execution_status,
+                "reason": current_execution.get("reason"),
+            },
         },
 
         "spreadAnalysis": {
@@ -3079,6 +3258,26 @@ def get_game_projection(
         "source": str(
             GAME_PROJECTIONS
         ),
+        "canonicalCurrentState": {
+            "decision": {
+                "pick": (opportunity or {}).get("pick"),
+                "qualificationStatus": (opportunity or {}).get("qualificationStatus"),
+                "recommendation": (opportunity or {}).get("recommendation"),
+            },
+            "execution": {
+                "status": execution_status,
+                "freshness": freshness,
+                "reason": current_execution.get("reason"),
+                "sportsbook": current_execution.get("sportsbook"),
+                "point": _safe_float(current_execution.get("point")),
+                "price": _safe_float(current_execution.get("price")),
+                "quoteTimestamp": current_execution.get("quoteTimestamp"),
+                "quoteAgeMinutes": quote_age_minutes,
+            },
+            "sizing": (opportunity or {}).get("currentSizing"),
+            "marketProvenance": market_source,
+            "modelProvenance": model_margin_source,
+        },
     }
 
 

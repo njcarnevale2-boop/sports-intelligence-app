@@ -33,8 +33,40 @@ type GameProjection = {
   commenceTime: string;
   awayTeam: string;
   homeTeam: string;
-  model: { projectedScore: { away: number; home: number } };
-  market: { homeSpread: number; total: number };
+  model: {
+    projectedScore: { away: number; home: number };
+    provenance?: {
+      marginSource?: string;
+      version?: string;
+      generatedAt?: string | null;
+    };
+  };
+  market: {
+    homeSpread: number;
+    total: number;
+    spreadSource?: string;
+    provenance?: {
+      source?: string;
+      quoteTimestamp?: string | null;
+      quoteAgeMinutes?: number | null;
+      freshness?: string;
+      freshnessReason?: string | null;
+      executionStatus?: string;
+      sportsbook?: string | null;
+      point?: number | null;
+      price?: number | null;
+    };
+    currentExecution?: {
+      sportsbook?: string | null;
+      spread?: number | null;
+      price?: number | null;
+      quoteTimestamp?: string | null;
+      quoteAgeMinutes?: number | null;
+      freshness?: string;
+      executionStatus?: string;
+      reason?: string | null;
+    };
+  };
   spreadAnalysis: { edgePoints: number };
 };
 
@@ -292,6 +324,34 @@ function signed(value: number) {
   return value > 0 ? `+${value}` : `${value}`;
 }
 
+function formatMarketExecutionLabel(projection: GameProjection) {
+  const exec = projection.market.currentExecution;
+  if (!exec) {
+    return `${projection.homeTeam} ${signed(projection.market.homeSpread)} · O/U ${projection.market.total.toFixed(1)}`;
+  }
+
+  if (exec.spread == null || exec.price == null) {
+    return `${projection.homeTeam} ${signed(projection.market.homeSpread)} · O/U ${projection.market.total.toFixed(1)}`;
+  }
+
+  const spreadText = exec.spread > 0 ? `+${exec.spread}` : `${exec.spread}`;
+  const priceText = exec.price > 0 ? `+${exec.price}` : `${exec.price}`;
+  return `${projection.awayTeam} ${spreadText} (${priceText}) · ${exec.sportsbook || "Approved market"}`;
+}
+
+function formatMarketFreshnessDetail(projection: GameProjection) {
+  const exec = projection.market.currentExecution;
+  if (!exec) return "Current market source unavailable.";
+
+  const freshness = String(exec.freshness || "UNKNOWN").toUpperCase();
+  const status = String(exec.executionStatus || "UNKNOWN").toUpperCase();
+  const age = exec.quoteAgeMinutes;
+  const ageLabel = typeof age === "number" ? `${age.toFixed(1)}m` : "n/a";
+  const timestampLabel = exec.quoteTimestamp ? formatHistoryTimestamp(exec.quoteTimestamp) : "Unknown";
+  const reason = exec.reason || "No additional reason available.";
+  return `${freshness} · ${status} · age ${ageLabel} · quote ${timestampLabel}. ${reason}`;
+}
+
 function normalizeSpread(value: number) {
   return Math.abs(value) < 0.0001 ? 0 : value;
 }
@@ -520,12 +580,6 @@ export default function GameIntelligencePage() {
     }
 
     setAdded(true);
-
-    if (result.trackingStatus === "PARTIAL") {
-      setAddToCardNotice(result.warning || "Added to My Card. Performance tracking could not be fully started.");
-      return;
-    }
-
     setAddToCardNotice("Added to My Card — tracking active.");
   }
 
@@ -732,8 +786,13 @@ export default function GameIntelligencePage() {
                 </div>
                 <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
                   <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-600">Market</p>
-                  <p className="mt-2 text-lg font-semibold">{projection.homeTeam} {signed(projection.market.homeSpread)} · O/U {projection.market.total.toFixed(1)}</p>
-                  <p className="mt-1 text-xs text-zinc-500">Spread source: model feed market_home_spread for this game endpoint.</p>
+                  <p className="mt-2 text-lg font-semibold">{formatMarketExecutionLabel(projection)}</p>
+                  <p className="mt-1 text-xs text-zinc-500">{formatMarketFreshnessDetail(projection)}</p>
+                  {projection.market.provenance?.source === "LEGACY_MODEL_FEED_MARKET_HOME_SPREAD" ? (
+                    <p className="mt-1 text-xs text-zinc-600">
+                      Historical line: {projection.homeTeam} {signed(projection.market.homeSpread)} · O/U {projection.market.total.toFixed(1)}
+                    </p>
+                  ) : null}
                 </div>
               </div>
             </div>

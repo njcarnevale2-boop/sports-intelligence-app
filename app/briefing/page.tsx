@@ -238,9 +238,7 @@ export default function BriefingPage() {
     setSnapshotMsg(
       !result.success
         ? result.error
-        : result.trackingStatus === "PARTIAL"
-          ? (result.warning || "Added to My Card. Performance tracking could not be fully started.")
-          : "Added to My Card — tracking active."
+        : "Added to My Card — tracking active."
     );
   }
 

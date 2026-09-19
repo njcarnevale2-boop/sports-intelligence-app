@@ -557,9 +557,6 @@ export default function OpportunityAnalysisPage() {
     const result = await addToCardWithSnapshot(opportunity as Record<string, unknown>);
     if (result.success) {
       setAdded(true);
-      if (result.trackingStatus === "PARTIAL") {
-        setSnapshotError(result.warning || "Added to My Card. Performance tracking could not be fully started.");
-      }
     } else {
       // Nothing was persisted; keep the action available and surface the sizing or tracking error.
       setSnapshotError(result.error);

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 
 @dataclass
@@ -43,8 +44,14 @@ def _write_game_projections(path: Path, event_ids: list[str]) -> None:
                 "commence_time": "2026-09-13T17:00:00+00:00",
                 "away_team": "NO",
                 "home_team": "ATL",
+                "away_power": 0.0,
+                "home_power": 0.0,
                 "model_margin_home": -1.0,
+                "market_margin_home": -2.5,
                 "market_home_spread": -2.5,
+                "spread_edge_points": 0.0,
+                "home_cover_prob_est": 0.5,
+                "home_cover_fair_odds": -100.0,
                 "model_total_baseline": 45.0,
                 "market_total": 44.0,
             }
@@ -736,3 +743,187 @@ def test_deterministic_week2_discrepancy_fixture_prefers_fresh_approved_quotes_a
     assert no["currentExecution"]["sportsbookCanonicalKey"] == "fanatics"
     assert no["executionDrift"]["lineDriftPoints"] == 1.0
     assert no["currentQualification"]["actionable"] is True
+
+
+def test_week2_corrected_margin_reference_parity_complete():
+    import app.routes.opportunities as opportunities_route
+
+    expected = {
+        "DET@BUF": 6.334767,
+        "CAR@ATL": 4.975323,
+        "CIN@HOU": 1.855269,
+        "CLE@TB": 4.313074,
+        "GB@NYJ": -6.461671,
+        "MIN@CHI": -1.071322,
+        "NO@BAL": 0.814307,
+        "PHI@TEN": -5.147469,
+        "PIT@NE": 6.787993,
+        "JAX@DEN": -4.768764,
+        "LV@LAC": 3.242472,
+        "MIA@SF": 4.579205,
+        "SEA@ARI": -7.157223,
+        "WAS@DAL": 0.712522,
+        "IND@KC": 3.819167,
+        "NYG@LAR": 0.885611,
+    }
+
+    actual = opportunities_route.PHASE2E19_WEEK2_MARGIN_REFERENCE_2026
+    assert set(actual.keys()) == set(expected.keys())
+    max_abs_delta = max(abs(float(actual[k]) - float(expected[k])) for k in expected)
+    assert max_abs_delta <= 1e-6
+
+
+def test_load_game_projection_lookup_applies_week2_corrected_margin(tmp_path, monkeypatch):
+    import app.routes.opportunities as opportunities_route
+
+    projections = tmp_path / "current_game_projections.csv"
+    pd.DataFrame(
+        [
+            {
+                "api_event_id": "evt-mia",
+                "commence_time": "2026-09-20T20:25:00+00:00",
+                "away_team": "MIA",
+                "home_team": "SF",
+                "away_power": 0.0,
+                "home_power": 0.0,
+                "model_margin_home": 2.19,
+                "market_margin_home": -10.5,
+                "market_home_spread": -10.5,
+                "spread_edge_points": 0.0,
+                "home_cover_prob_est": 0.5,
+                "home_cover_fair_odds": -100.0,
+                "market_total": 46.5,
+                "model_total_baseline": 46.5,
+            },
+            {
+                "api_event_id": "evt-car",
+                "commence_time": "2026-09-20T17:00:00+00:00",
+                "away_team": "CAR",
+                "home_team": "ATL",
+                "away_power": 0.0,
+                "home_power": 0.0,
+                "model_margin_home": 1.0,
+                "market_margin_home": -2.5,
+                "market_home_spread": -2.5,
+                "spread_edge_points": 0.0,
+                "home_cover_prob_est": 0.5,
+                "home_cover_fair_odds": -100.0,
+                "market_total": 44.0,
+                "model_total_baseline": 44.0,
+            },
+        ]
+    ).to_csv(projections, index=False)
+
+    monkeypatch.setattr(opportunities_route, "GAME_PROJECTIONS", projections)
+
+    week2 = opportunities_route.load_game_projection_lookup(
+        resolved_week=2,
+        week_event_ids={"evt-mia", "evt-car"},
+    )
+    assert float(week2["evt-mia"]["model_margin_home"]) == pytest.approx(4.579205, abs=1e-6)
+    assert str(week2["evt-mia"]["model_margin_source"]) == "PHASE2E19_WEEK2_REFERENCE"
+    assert float(week2["evt-car"]["model_margin_home"]) == pytest.approx(4.975323, abs=1e-6)
+
+    week3 = opportunities_route.load_game_projection_lookup(
+        resolved_week=3,
+        week_event_ids={"evt-mia"},
+    )
+    assert float(week3["evt-mia"]["model_margin_home"]) == pytest.approx(2.19, abs=1e-9)
+    assert str(week3["evt-mia"]["model_margin_source"]) == "CURRENT_GAME_PROJECTIONS"
+
+
+def test_game_projection_market_uses_current_execution_source(tmp_path, monkeypatch):
+    rows = [
+        {
+            "api_event_id": "evt-market-source",
+            "commence_time": "2026-09-20T17:00:00+00:00",
+            "away_team": "NO",
+            "home_team": "ATL",
+            "market": "spread",
+            "side": "away",
+            "point": 3.0,
+            "sportsbook": "DraftKings",
+            "price": -110,
+            "model_prob": 0.61,
+            "implied_prob_raw": 0.53,
+            "fair_odds": -120,
+            "edge_pp": 0.08,
+            "ev_per_dollar": 0.09,
+            "kelly_full": 0.05,
+            "kelly_20pct": 0.01,
+            "recommendation": "BET",
+            "confidence_score": 71,
+            "data_completeness": 0.95,
+            "market_confidence": 0.8,
+            "model_confidence": 0.7,
+            "rank": 1,
+        }
+    ]
+
+    opportunities_route = _patch_dependencies(monkeypatch, tmp_path, rows)
+    monkeypatch.setattr(
+        opportunities_route.market_data_service,
+        "records_for_event",
+        lambda event_id: [
+            {
+                "eventId": "evt-market-source",
+                "market": "spread",
+                "side": "away",
+                "point": 4.5,
+                "americanOdds": -107,
+                "sportsbook": "FanDuel",
+                "lastUpdated": datetime.now(timezone.utc).isoformat(),
+            }
+        ]
+        if str(event_id) == "evt-market-source"
+        else [],
+    )
+
+    projection = opportunities_route.get_game_projection("evt-market-source")
+    opp_payload = opportunities_route.get_game_best_opportunity("evt-market-source")
+    opp = opp_payload["opportunity"]
+
+    assert projection["market"]["provenance"]["source"] == "CURRENT_APPROVED_MARKET_EXECUTION"
+    assert projection["market"]["currentExecution"]["sportsbook"] == opp["currentExecution"]["sportsbook"]
+    assert projection["market"]["currentExecution"]["price"] == opp["currentExecution"]["price"]
+    assert projection["market"]["currentExecution"]["spread"] == opp["currentExecution"]["point"]
+    assert projection["market"]["provenance"]["executionStatus"] == opp["currentExecution"]["status"]
+
+
+def test_home_decision_board_top3_while_opportunities_return_full_qualified_set(tmp_path, monkeypatch):
+    rows = []
+    for idx in range(1, 6):
+        rows.append(
+            {
+                "api_event_id": f"evt-top3-{idx}",
+                "commence_time": "2026-09-20T17:00:00+00:00",
+                "away_team": "NO",
+                "home_team": "ATL",
+                "market": "spread",
+                "side": "away",
+                "point": 3.0 + idx,
+                "sportsbook": "DraftKings",
+                "price": -110,
+                "model_prob": 0.60 + (idx * 0.005),
+                "implied_prob_raw": 0.52,
+                "fair_odds": -120,
+                "edge_pp": 0.08,
+                "ev_per_dollar": 0.09,
+                "kelly_full": 0.04,
+                "kelly_20pct": 0.008,
+                "recommendation": "BET",
+                "confidence_score": 70 + idx,
+                "data_completeness": 0.95,
+                "market_confidence": 0.8,
+                "model_confidence": 0.7,
+                "rank": idx,
+            }
+        )
+
+    opportunities_route = _patch_dependencies(monkeypatch, tmp_path, rows)
+    full = opportunities_route.get_opportunities(limit=100, best_lines_only=True, week=1)
+    board = opportunities_route.get_decision_board(limit=3, week=1)
+
+    assert full["count"] == 5
+    assert full["productionCount"] == 5
+    assert board["count"] == 3

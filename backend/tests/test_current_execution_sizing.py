@@ -112,7 +112,11 @@ def _patch_current_execution_fixture(
     monkeypatch.setattr(games_module, "RANKED_BET_BOARD", ranked_board)
     monkeypatch.setattr(games_module, "GAME_PROJECTIONS", projections)
     monkeypatch.setattr(opportunities_route, "_build_generated_multimarket_candidates", lambda **kwargs: [])
-    monkeypatch.setattr(opportunities_route, "load_game_projection_lookup", lambda: {event_id: {"model_margin_home": -1.0, "model_total_baseline": 45.0}})
+    monkeypatch.setattr(
+        opportunities_route,
+        "load_game_projection_lookup",
+        lambda **kwargs: {event_id: {"model_margin_home": -1.0, "model_total_baseline": 45.0}},
+    )
     monkeypatch.setattr(opportunities_route, "get_market_intelligence", lambda **kwargs: {
         "score": 7.0,
         "grade": "A",

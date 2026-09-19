@@ -125,7 +125,8 @@ def build_fair_price_result(
 ) -> FairPriceResult:
     market = str(row.get("market", "")).strip().lower()
     side = str(row.get("side", "")).strip().lower()
-    current_book_allowed = is_current_market_sportsbook_allowed(row.get("sportsbook"))
+    sportsbook = str(row.get("sportsbook") or "").strip()
+    current_book_allowed = not sportsbook or is_current_market_sportsbook_allowed(sportsbook)
 
     model_probability = safe_float(row.get("model_prob"))
     row_price = safe_float(row.get("price")) if current_book_allowed else None
@@ -142,7 +143,7 @@ def build_fair_price_result(
     if game_projection_row is not None:
         model_margin_home = safe_float(game_projection_row.get("model_margin_home"))
 
-    if market in {"moneyline", "h2h"} and current_book_allowed:
+    if market in {"moneyline", "h2h"}:
         probs = moneyline_outcome_probabilities(model_margin_home=model_margin_home, side=side)
         if probs.status == "AVAILABLE":
             current_win_probability = probs.win
@@ -166,7 +167,7 @@ def build_fair_price_result(
                 american_odds=row_price,
             )
 
-    if market == "spread" and game_projection_row is not None and current_book_allowed:
+    if market == "spread" and game_projection_row is not None:
         if model_margin_home is not None:
             fair_line = -model_margin_home if side == "home" else model_margin_home
 
@@ -190,7 +191,7 @@ def build_fair_price_result(
             )
 
     model_total: Optional[float] = None
-    if market == "total" and game_projection_row is not None and current_book_allowed:
+    if market == "total" and game_projection_row is not None:
         model_total = safe_float(game_projection_row.get("model_total_baseline"))
         if model_total is not None:
             fair_line = model_total
