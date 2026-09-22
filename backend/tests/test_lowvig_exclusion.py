@@ -255,7 +255,10 @@ def test_current_opportunities_skip_lowvig_and_recompute_from_remaining_quotes(t
             return {"summary": f"{away_team} vs {home_team} injury context"}
 
     monkeypatch.setattr(opportunities, "InjuryMatchupContext", _FakeInjuryContext)
-    monkeypatch.setattr("app.services.games.service.list_games", lambda week=None, game_date=None: {"availableWeeks": [1], "games": [{"eventId": "evt-lowvig", "season": 2026, "week": 1}]})
+    monkeypatch.setattr(
+        "app.services.games.service.list_games",
+        lambda week=None, game_date=None, include_enrichment=True: {"availableWeeks": [1], "games": [{"eventId": "evt-lowvig", "season": 2026, "week": 1}]},
+    )
     monkeypatch.setattr("app.services.probability_engine.load_historical_residuals", _mock_residuals)
 
     payload = opportunities.get_opportunities(limit=10, best_lines_only=True, include_experimental=True, week=1)
@@ -329,7 +332,10 @@ def test_lowvig_only_current_opportunity_cannot_remain_actionable(tmp_path: Path
     monkeypatch.setattr(opportunities, "_build_generated_multimarket_candidates", lambda **kwargs: [])
     monkeypatch.setattr(opportunities, "get_market_intelligence", lambda **kwargs: {"booksTracked": 0, "booksMoving": 0, "signal": "UNSET"})
     monkeypatch.setattr(opportunities, "InjuryMatchupContext", lambda: type("_FakeInjuryContext", (), {"build_context": lambda self, away_team, home_team: {"summary": "none"}})())
-    monkeypatch.setattr("app.services.games.service.list_games", lambda week=None, game_date=None: {"availableWeeks": [1], "games": [{"eventId": "evt-lowvig-only", "season": 2026, "week": 1}]})
+    monkeypatch.setattr(
+        "app.services.games.service.list_games",
+        lambda week=None, game_date=None, include_enrichment=True: {"availableWeeks": [1], "games": [{"eventId": "evt-lowvig-only", "season": 2026, "week": 1}]},
+    )
 
     payload = opportunities.get_opportunities(limit=10, best_lines_only=True, week=1)
 

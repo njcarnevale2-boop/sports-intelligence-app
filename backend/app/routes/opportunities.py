@@ -1974,7 +1974,7 @@ def _get_opportunities_payload(
     ):
         from app.services.games import service as games_service
 
-        all_games_payload = games_service.list_games()
+        all_games_payload = games_service.list_games(include_enrichment=False)
         available_weeks: list[int] = all_games_payload.get("availableWeeks", [])
         canonical_week = resolve_canonical_week_metadata()
         week_readiness = build_week_readiness(canonical=canonical_week)
@@ -1983,8 +1983,23 @@ def _get_opportunities_payload(
             canonical_default_week if canonical_default_week is not None else (available_weeks[0] if available_weeks else 1)
         )
 
-        week_games_payload = games_service.list_games(week=resolved_week)
-        week_event_ids: set[str] = {g["eventId"] for g in week_games_payload.get("games", [])}
+        schedule_games = list(all_games_payload.get("games", []) or [])
+        has_week_metadata = any(safe_int(game.get("week")) is not None for game in schedule_games)
+        week_games = [
+            game
+            for game in schedule_games
+            if safe_int(game.get("week")) == resolved_week
+        ]
+        if has_week_metadata:
+            selected_week_games = week_games
+        else:
+            selected_week_games = schedule_games
+
+        week_event_ids: set[str] = {
+            str(game.get("eventId") or "")
+            for game in selected_week_games
+            if str(game.get("eventId") or "")
+        }
         week_scheduled_games: int = len(week_event_ids)
     else:
         available_weeks = list(available_weeks_override)

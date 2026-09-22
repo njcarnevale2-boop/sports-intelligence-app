@@ -151,7 +151,7 @@ def _patch_dependencies(monkeypatch, tmp_path: Path, rows: list[dict]):
     monkeypatch.setattr(
         games_service,
         "list_games",
-        lambda week=None: {
+        lambda week=None, include_enrichment=True: {
             "availableWeeks": [1],
             "games": [
                 {"eventId": str(r["api_event_id"]), "season": 2026}
@@ -927,3 +927,233 @@ def test_home_decision_board_top3_while_opportunities_return_full_qualified_set(
     assert full["count"] == 5
     assert full["productionCount"] == 5
     assert board["count"] == 3
+
+
+def test_games_list_games_schedule_only_skips_opportunity_enrichment(tmp_path, monkeypatch):
+    import app.services.games as games_module
+    from app.services.games import service as games_service
+
+    projections = tmp_path / "current_game_projections.csv"
+    pd.DataFrame(
+        [
+            {
+                "api_event_id": "evt-no-recursion",
+                "commence_time": "2026-09-13T17:00:00+00:00",
+                "away_team": "NO",
+                "home_team": "ATL",
+                "market_home_spread": -2.5,
+                "market_total": 44.5,
+                "model_margin_home": -1.0,
+                "model_total_baseline": 45.0,
+            }
+        ]
+    ).to_csv(projections, index=False)
+
+    monkeypatch.setattr(games_module, "GAME_PROJECTIONS", projections)
+    monkeypatch.setattr(games_module, "RANKED_BET_BOARD", projections)
+    monkeypatch.setattr(games_module, "resolve_canonical_week_metadata", lambda: {"week": 1})
+    monkeypatch.setattr(games_module, "build_week_readiness", lambda canonical=None: {"status": "READY"})
+    monkeypatch.setattr(games_service, "_load_schedule_context_lookup", lambda: {})
+    monkeypatch.setattr(games_service, "_season_and_week_for_game", lambda **kwargs: (2026, 1))
+    monkeypatch.setattr(
+        games_module.market_data_service,
+        "metadata",
+        lambda: {"provider": "line_movement_board", "lastUpdated": "2026-09-13T15:00:00+00:00", "dataStatus": "FILE"},
+    )
+    monkeypatch.setattr(
+        games_service,
+        "_load_best_opportunities_lookup",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("opportunity enrichment should be skipped")),
+    )
+
+    payload = games_service.list_games(week=1, include_enrichment=False)
+
+    assert payload["count"] == 1
+    assert payload["games"][0]["eventId"] == "evt-no-recursion"
+
+
+def test_opportunities_week_discovery_requests_schedule_only_games(tmp_path, monkeypatch):
+    rows = [
+        {
+            "api_event_id": "evt-schedule-only",
+            "commence_time": "2026-09-13T17:00:00+00:00",
+            "away_team": "NO",
+            "home_team": "ATL",
+            "market": "spread",
+            "side": "away",
+            "point": 3.0,
+            "sportsbook": "DraftKings",
+            "price": -110,
+            "model_prob": 0.58,
+            "implied_prob_raw": 0.55,
+            "fair_odds": -120,
+            "edge_pp": 0.03,
+            "ev_per_dollar": 0.04,
+            "kelly_full": 0.03,
+            "kelly_20pct": 0.006,
+            "recommendation": "BET",
+            "confidence_score": 68,
+            "data_completeness": 0.95,
+            "market_confidence": 0.8,
+            "model_confidence": 0.7,
+            "rank": 1,
+        },
+        {
+            "api_event_id": "evt-other-week",
+            "commence_time": "2026-09-20T17:00:00+00:00",
+            "away_team": "CAR",
+            "home_team": "TB",
+            "market": "spread",
+            "side": "away",
+            "point": 2.5,
+            "sportsbook": "DraftKings",
+            "price": -110,
+            "model_prob": 0.57,
+            "implied_prob_raw": 0.54,
+            "fair_odds": -119,
+            "edge_pp": 0.03,
+            "ev_per_dollar": 0.03,
+            "kelly_full": 0.02,
+            "kelly_20pct": 0.004,
+            "recommendation": "BET",
+            "confidence_score": 66,
+            "data_completeness": 0.95,
+            "market_confidence": 0.8,
+            "model_confidence": 0.7,
+            "rank": 2,
+        },
+    ]
+
+    opportunities_route = _patch_dependencies(monkeypatch, tmp_path, rows)
+
+    calls: list[dict[str, object]] = []
+
+    def _list_games_spy(week=None, include_enrichment=True):
+        calls.append({"week": week, "include_enrichment": include_enrichment})
+        return {
+            "availableWeeks": [1, 2],
+            "defaultWeek": 1,
+            "canonicalWeek": {"week": 1},
+            "weekReadiness": {"status": "READY"},
+            "games": [
+                {"eventId": "evt-schedule-only", "season": 2026, "week": 1},
+                {"eventId": "evt-other-week", "season": 2026, "week": 2},
+            ],
+        }
+
+    monkeypatch.setattr(opportunities_route, "build_week_readiness", lambda canonical=None: {"status": "READY"})
+    monkeypatch.setattr(opportunities_route, "resolve_canonical_week_metadata", lambda: {"week": 1})
+
+    from app.services.games import service as games_service
+
+    monkeypatch.setattr(games_service, "list_games", _list_games_spy)
+
+    payload = opportunities_route.get_opportunities(limit=10, best_lines_only=True, week=1)
+
+    assert payload["count"] >= 0
+    assert calls == [{"week": None, "include_enrichment": False}]
+    assert payload["availableWeeks"] == [1, 2]
+    assert payload["week"] == 1
+    assert payload["weekScheduledGames"] == 1
+    assert {item["eventId"] for item in payload["opportunities"]} == {"evt-schedule-only"}
+
+
+def test_opportunities_unknown_week_returns_empty_slice_and_preserves_available_weeks(tmp_path, monkeypatch):
+    rows = [
+        {
+            "api_event_id": "evt-week-1",
+            "commence_time": "2026-09-13T17:00:00+00:00",
+            "away_team": "NO",
+            "home_team": "ATL",
+            "market": "spread",
+            "side": "away",
+            "point": 3.0,
+            "sportsbook": "DraftKings",
+            "price": -110,
+            "model_prob": 0.58,
+            "implied_prob_raw": 0.55,
+            "fair_odds": -120,
+            "edge_pp": 0.03,
+            "ev_per_dollar": 0.04,
+            "kelly_full": 0.03,
+            "kelly_20pct": 0.006,
+            "recommendation": "BET",
+            "confidence_score": 68,
+            "data_completeness": 0.95,
+            "market_confidence": 0.8,
+            "model_confidence": 0.7,
+            "rank": 1,
+        }
+    ]
+
+    opportunities_route = _patch_dependencies(monkeypatch, tmp_path, rows)
+
+    def _list_games_spy(week=None, include_enrichment=True):
+        return {
+            "availableWeeks": [1],
+            "defaultWeek": 1,
+            "canonicalWeek": {"week": 1},
+            "weekReadiness": {"status": "READY"},
+            "games": [{"eventId": "evt-week-1", "season": 2026, "week": 1}],
+        }
+
+    monkeypatch.setattr(opportunities_route, "build_week_readiness", lambda canonical=None: {"status": "READY"})
+    monkeypatch.setattr(opportunities_route, "resolve_canonical_week_metadata", lambda: {"week": 1})
+
+    from app.services.games import service as games_service
+
+    monkeypatch.setattr(games_service, "list_games", _list_games_spy)
+
+    payload = opportunities_route.get_opportunities(limit=10, best_lines_only=True, include_experimental=True, week=99)
+
+    assert payload["week"] == 99
+    assert payload["availableWeeks"] == [1]
+    assert payload["weekScheduledGames"] == 0
+    assert payload["count"] == 0
+    assert payload["opportunities"] == []
+
+
+def test_opportunities_propagates_internal_typeerror_without_retrying_default_enrichment(tmp_path, monkeypatch):
+    rows = [{
+        "api_event_id": "evt-typeerror",
+        "commence_time": "2026-09-13T17:00:00+00:00",
+        "away_team": "NO",
+        "home_team": "ATL",
+        "market": "spread",
+        "side": "away",
+        "point": 3.0,
+        "sportsbook": "DraftKings",
+        "price": -110,
+        "model_prob": 0.58,
+        "implied_prob_raw": 0.55,
+        "fair_odds": -120,
+        "edge_pp": 0.03,
+        "ev_per_dollar": 0.04,
+        "kelly_full": 0.03,
+        "kelly_20pct": 0.006,
+        "recommendation": "BET",
+        "confidence_score": 68,
+        "data_completeness": 0.95,
+        "market_confidence": 0.8,
+        "model_confidence": 0.7,
+        "rank": 1,
+    }]
+
+    opportunities_route = _patch_dependencies(monkeypatch, tmp_path, rows)
+
+    calls: list[bool] = []
+
+    def _list_games_spy(*, week=None, include_enrichment=True, **kwargs):
+        calls.append(bool(include_enrichment))
+        if include_enrichment is False:
+            raise TypeError("internal list_games failure")
+        raise AssertionError("fallback to enriched list_games should not occur")
+
+    from app.services.games import service as games_service
+
+    monkeypatch.setattr(games_service, "list_games", _list_games_spy)
+
+    with pytest.raises(TypeError, match="internal list_games failure"):
+        opportunities_route.get_opportunities(limit=10, best_lines_only=True, week=1)
+
+    assert calls == [False]

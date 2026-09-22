@@ -205,7 +205,7 @@ def test_cross_market_comparable_stays_false(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
         games_service,
         "list_games",
-        lambda week=None: {
+        lambda week=None, game_date=None, include_enrichment=True: {
             "availableWeeks": [1],
             "games": [{"eventId": "evt-1", "season": 2026}],
         },

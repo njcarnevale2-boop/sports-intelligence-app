@@ -159,7 +159,13 @@ class GamesService:
         self._schedule_context_mtime: Optional[float] = None
         self._schedule_context_path: Optional[str] = None
 
-    def list_games(self, week: Optional[int] = None, game_date: Optional[str] = None) -> Dict[str, Any]:
+    def list_games(
+        self,
+        week: Optional[int] = None,
+        game_date: Optional[str] = None,
+        *,
+        include_enrichment: bool = True,
+    ) -> Dict[str, Any]:
         market_meta = market_data_service.metadata()
         canonical_week = resolve_canonical_week_metadata()
         week_readiness = build_week_readiness(canonical=canonical_week)
@@ -256,6 +262,34 @@ class GamesService:
             return {
                 "count": 0,
                 "games": [],
+                "availableWeeks": available_weeks,
+                "availableDates": available_dates,
+                "defaultWeek": default_week,
+                "canonicalWeek": canonical_week,
+                "weekReadiness": week_readiness,
+                "source": str(GAME_PROJECTIONS),
+                "dataStatus": self._data_status(schedule_available=True, opportunities_available=RANKED_BET_BOARD.exists()),
+                "provider": market_meta["provider"],
+                "lastUpdated": market_meta["lastUpdated"],
+            }
+
+        if not include_enrichment:
+            rows = [
+                {
+                    "eventId": item["eventId"],
+                    "season": item["season"],
+                    "week": item["week"],
+                    "gameDate": item["gameDate"],
+                    "commenceTime": item["commenceTime"].isoformat(),
+                    "awayAbbreviation": item["awayCode"],
+                    "homeAbbreviation": item["homeCode"],
+                }
+                for item in candidate_rows
+            ]
+            rows.sort(key=lambda row: row["commenceTime"])
+            return {
+                "count": len(rows),
+                "games": rows,
                 "availableWeeks": available_weeks,
                 "availableDates": available_dates,
                 "defaultWeek": default_week,

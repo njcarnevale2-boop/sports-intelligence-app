@@ -566,7 +566,11 @@ def test_opportunity_history_route_records_generated_snapshot_history(tmp_path, 
 
     from app.services.games import service as games_service
 
-    monkeypatch.setattr(games_service, "list_games", lambda week=None, game_date=None: {"games": [{"eventId": "evt-500"}], "availableWeeks": [1]})
+    monkeypatch.setattr(
+        games_service,
+        "list_games",
+        lambda week=None, game_date=None, include_enrichment=True: {"games": [{"eventId": "evt-500"}], "availableWeeks": [1]},
+    )
 
     result = route.get_opportunities(limit=10, best_lines_only=True, week=1)
     assert result["snapshotId"]
