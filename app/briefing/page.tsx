@@ -7,6 +7,10 @@ import TeamLogo from "@/components/team-logo";
 import Tooltip from "@/components/ui/tooltip";
 import { fetchJson } from "../lib/api";
 import { addToCard as addToCardHelper } from "@/lib/add-to-card";
+import {
+  buildBriefingWeekScopedRequestPaths,
+  resolveCanonicalWeekFromDecisionBoard,
+} from "@/app/lib/week-resolution";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -95,6 +99,10 @@ type GamesResponse = {
   canonicalWeek?: { week?: number | null };
 };
 
+type DecisionBoardWeekResponse = {
+  week?: number | null;
+};
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -138,13 +146,16 @@ export default function BriefingPage() {
   useEffect(() => {
     async function load() {
       try {
-        const seed = await fetchJson<GamesResponse>("/api/games");
-        const resolvedWeek =
-          seed.defaultWeek ?? seed.canonicalWeek?.week ?? seed.availableWeeks?.[0] ?? 1;
+        const source = await fetchJson<DecisionBoardWeekResponse>("/api/decision-board?limit=1");
+        const resolvedWeek = resolveCanonicalWeekFromDecisionBoard(source);
+        if (resolvedWeek == null) {
+          throw new Error("Canonical week unavailable");
+        }
+        const [gamesPath, opportunitiesPath] = buildBriefingWeekScopedRequestPaths(resolvedWeek);
 
         const [gamesResult, oppsResult] = await Promise.allSettled([
-          fetchJson<GamesResponse>(`/api/games?week=${resolvedWeek}`),
-          fetchJson<OppsResponse>(`/api/opportunities?limit=100&week=${resolvedWeek}`),
+          fetchJson<GamesResponse>(gamesPath),
+          fetchJson<OppsResponse>(opportunitiesPath),
         ]);
 
         if (gamesResult.status === "fulfilled") {

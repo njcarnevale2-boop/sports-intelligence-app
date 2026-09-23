@@ -12,6 +12,12 @@ import { trackAnalyticsEvent } from "../lib/analytics";
 import { addToCard as addToCardWithSnapshot } from "@/lib/add-to-card";
 import FreshnessBadge from "@/components/ui/freshness-badge";
 import Tooltip from "@/components/ui/tooltip";
+import {
+  buildOpportunitiesRequestPath,
+  normalizeAvailableWeeks,
+  resolveCanonicalWeekFromDecisionBoard,
+  resolveWeekFromOpportunitiesEnvelope,
+} from "@/app/lib/week-resolution";
 
 type AlternateBook = {
   book: string;
@@ -134,6 +140,10 @@ type OpportunitiesResponse = {
   opportunities: Opportunity[];
 };
 
+type DecisionBoardWeekResponse = {
+  week?: number | null;
+};
+
 type SortOption =
   | "rank"
   | "sportsScore"
@@ -215,19 +225,16 @@ export default function OpportunitiesPage() {
     setWeek(w);
   }
 
-  // Initialize: use fast /api/games endpoint to get available weeks, then set initial week
+  // Initialize week from decision board to avoid loading full schedule.
   useEffect(() => {
     async function initializeWeek() {
       try {
-        const data = await fetchJson<{ availableWeeks?: number[]; defaultWeek?: number | null; canonicalWeek?: { week?: number | null } }>("/api/games");
-        const weeks = data.availableWeeks ?? [];
-        if (weeks.length) {
-          setAvailableWeeks(weeks);
+        const source = await fetchJson<DecisionBoardWeekResponse>("/api/decision-board?limit=1");
+        const resolvedWeek = resolveCanonicalWeekFromDecisionBoard(source);
+        if (resolvedWeek == null) {
+          throw new Error("Canonical week unavailable");
         }
-        const resolvedDefaultWeek = data.defaultWeek ?? data.canonicalWeek?.week ?? weeks[0] ?? null;
-        if (resolvedDefaultWeek != null) {
-          setWeek(Number(resolvedDefaultWeek));
-        }
+        setWeek(resolvedWeek);
       } catch {
         // init failure will show after main effect also fails
         setLoading(false);
@@ -240,6 +247,7 @@ export default function OpportunitiesPage() {
   // Fetch opportunities when week changes
   useEffect(() => {
     if (week === null) return;
+    const selectedWeek: number = week;
 
     async function loadOpportunities() {
       try {
@@ -248,11 +256,26 @@ export default function OpportunitiesPage() {
 
         void trackAnalyticsEvent("OpportunitiesViewed", { page: "opportunities" });
 
-        const query = new URLSearchParams({ limit: "100", week: String(week) });
-
         const data = await fetchJson<OpportunitiesResponse>(
-          `/api/opportunities?${query.toString()}`
+          buildOpportunitiesRequestPath(selectedWeek)
         );
+
+        const resolvedWeek = resolveWeekFromOpportunitiesEnvelope(data, selectedWeek);
+        if (resolvedWeek !== selectedWeek) {
+          setWeek(resolvedWeek);
+          return;
+        }
+
+        setAvailableWeeks((current) => {
+          const normalized = normalizeAvailableWeeks(data.availableWeeks, resolvedWeek);
+          if (
+            current.length === normalized.length &&
+            current.every((value, index) => value === normalized[index])
+          ) {
+            return current;
+          }
+          return normalized;
+        });
 
         setOpportunities(data.opportunities);
         setFreshness({ dataStatus: data.dataStatus, lastUpdated: data.lastUpdated });
