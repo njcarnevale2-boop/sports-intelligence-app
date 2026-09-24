@@ -14,6 +14,7 @@ from app.services.injury_history import get_injury_summary
 from app.services.odds_status import get_odds_status
 from app.services.recommendation_snapshot import get_clv_summary
 from app.services.refresh_orchestrator import get_refresh_status
+from app.services.result_engine import default_result_engine_store, load_frozen_week_result_set
 from app.services.social_history import get_query_usage_summary
 from app.services.social_intelligence import social_intelligence_service
 from app.services.social_sources import get_social_source_coverage_report
@@ -197,6 +198,86 @@ class AdminStatusService:
             "footballLineage": football_lineage,
         }
 
+    def _previous_week_frozen_snapshot(self, *, canonical_week: Dict[str, Any]) -> Dict[str, Any]:
+        season = canonical_week.get("season")
+        week = canonical_week.get("week")
+        if season is None or week is None:
+            return {
+                "season": None,
+                "week": None,
+                "expectedGames": None,
+                "acceptedFinals": None,
+                "complete": False,
+                "frozen": False,
+                "resultSetVersion": None,
+                "resultSetHash": None,
+                "frozenAt": None,
+            }
+
+        try:
+            resolved_season = int(season)
+            resolved_week = int(week)
+        except (TypeError, ValueError):
+            return {
+                "season": None,
+                "week": None,
+                "expectedGames": None,
+                "acceptedFinals": None,
+                "complete": False,
+                "frozen": False,
+                "resultSetVersion": None,
+                "resultSetHash": None,
+                "frozenAt": None,
+            }
+
+        if resolved_week <= 1:
+            return {
+                "season": None,
+                "week": None,
+                "expectedGames": None,
+                "acceptedFinals": None,
+                "complete": False,
+                "frozen": False,
+                "resultSetVersion": None,
+                "resultSetHash": None,
+                "frozenAt": None,
+            }
+
+        previous_week = resolved_week - 1
+        try:
+            frozen = load_frozen_week_result_set(
+                store=default_result_engine_store(),
+                season=resolved_season,
+                week=previous_week,
+            )
+        except Exception:
+            frozen = None
+
+        if frozen is None:
+            return {
+                "season": resolved_season,
+                "week": previous_week,
+                "expectedGames": None,
+                "acceptedFinals": None,
+                "complete": False,
+                "frozen": False,
+                "resultSetVersion": None,
+                "resultSetHash": None,
+                "frozenAt": None,
+            }
+
+        return {
+            "season": frozen.season,
+            "week": frozen.week,
+            "expectedGames": frozen.expected_game_count,
+            "acceptedFinals": frozen.accepted_final_count,
+            "complete": True,
+            "frozen": True,
+            "resultSetVersion": frozen.result_set_version,
+            "resultSetHash": frozen.result_set_hash,
+            "frozenAt": frozen.frozen_at_utc,
+        }
+
     def _football_lineage_diagnostics(self, *, canonical_week: Dict[str, Any], week_readiness: Dict[str, Any]) -> Dict[str, Any]:
         schedule_rows = _load_schedule_rows()
         projection_rows = _load_projection_rows()
@@ -211,6 +292,7 @@ class AdminStatusService:
         power_root = runtime_paths.power_engine_root
         return {
             "canonicalWeek": canonical_week,
+            "previousWeek": self._previous_week_frozen_snapshot(canonical_week=canonical_week),
             "weekReadiness": week_readiness,
             "presence": {
                 "scheduleRows": len(schedule_rows),

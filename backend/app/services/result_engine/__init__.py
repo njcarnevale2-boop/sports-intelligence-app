@@ -6,6 +6,7 @@ from .contracts import (
     SourceEventBridgeRecord,
 )
 from .engine import ResultAcceptanceEngine, build_raw_observation
+from .freeze import FrozenWeeklyResultSet, freeze_week_result_set, load_frozen_week_result_set
 from .identity import (
     CANONICAL_EVENT_KEY_POLICY_VERSION,
     KICKOFF_NORMALIZATION_POLICY_VERSION,
@@ -48,6 +49,7 @@ __all__ = [
     "DEFAULT_ACCEPTANCE_POLICY_VERSION",
     "DEFAULT_MIN_CONFIRMATION_INTERVAL_SECONDS",
     "DEFAULT_RESULT_ACCEPTANCE_POLICY",
+    "FrozenWeeklyResultSet",
     "KICKOFF_NORMALIZATION_POLICY_VERSION",
     "NormalizedResultStatus",
     "RawResultObservation",
@@ -66,6 +68,8 @@ __all__ = [
     "default_result_engine_store",
     "deterministic_observation_id",
     "deterministic_result_id",
+    "freeze_week_result_set",
+    "load_frozen_week_result_set",
     "normalize_kickoff_utc",
     "normalize_result_status",
     "normalize_team_id",
