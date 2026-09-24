@@ -1957,6 +1957,7 @@ def _get_opportunities_payload(
     week_readiness_override: dict[str, Any] | None = None,
     week_event_ids_override: set[str] | None = None,
     week_scheduled_games_override: int | None = None,
+    persist_history: bool = True,
 ):
     market_meta = market_data_service.metadata()
     if RANKED_BET_BOARD.exists():
@@ -2347,11 +2348,12 @@ def _get_opportunities_payload(
         item["snapshotId"] = snapshot_id
         item["snapshotTimestamp"] = market_meta.get("lastUpdated")
 
-    _record_history_for_snapshot(
-        snapshot_id,
-        best_rows,
-        observed_at_utc=str(market_meta.get("lastUpdated") or ""),
-    )
+    if persist_history:
+        _record_history_for_snapshot(
+            snapshot_id,
+            best_rows,
+            observed_at_utc=str(market_meta.get("lastUpdated") or ""),
+        )
 
     return {
         "count": len(best_rows),
@@ -2400,6 +2402,7 @@ def get_opportunities(
         best_lines_only=best_lines_only,
         include_experimental=include_experimental,
         week=week,
+        persist_history=True,
     )
 
 
@@ -2408,7 +2411,13 @@ def get_decision_board(
     limit: int = Query(default=3, ge=1, le=3),
     week: int | None = Query(default=None),
 ):
-    payload = get_opportunities(limit=500, best_lines_only=True, week=week)
+    payload = _get_opportunities_payload(
+        limit=500,
+        best_lines_only=True,
+        include_experimental=False,
+        week=week,
+        persist_history=False,
+    )
     opportunities = list(payload.get("opportunities") or [])
     board = build_decision_board_payload(
         opportunities,

@@ -9,6 +9,7 @@ from app.services.odds_status import (
 )
 from app.services.refresh_orchestrator import trigger_now, get_refresh_status
 from app.services.social_sources import get_social_source_coverage_report
+from app.services.week_resolution import build_week_readiness, resolve_canonical_week_metadata
 
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -28,8 +29,8 @@ def get_odds_refresh_status():
 @router.get("/football-lineage")
 def get_football_lineage():
     service = get_admin_status_service()
-    canonical_week = service.get_status().get("canonicalWeek", {})
-    week_readiness = service.get_status().get("weekReadiness", {})
+    canonical_week = resolve_canonical_week_metadata()
+    week_readiness = build_week_readiness(canonical=canonical_week)
     return service._football_lineage_diagnostics(canonical_week=canonical_week, week_readiness=week_readiness)
 
 

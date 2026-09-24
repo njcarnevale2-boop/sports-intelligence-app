@@ -18,6 +18,8 @@ import {
   modelCushionSubtext,
 } from "./lib/home-decision-clarity";
 
+const HOME_DECISION_BOARD_TIMEOUT_MS = 30000;
+
 type QuoteWarnings = {
   isStale?: boolean;
   limitedDepth?: boolean;
@@ -216,7 +218,11 @@ export default function Home() {
         setLoading(true);
         setError("");
         void trackAnalyticsEvent("DecisionBoardViewed", { page: "home" });
-        const payload = await fetchJson<DecisionBoardResponse>("/api/decision-board?limit=3");
+        const payload = await fetchJson<DecisionBoardResponse>(
+          "/api/decision-board?limit=3",
+          undefined,
+          HOME_DECISION_BOARD_TIMEOUT_MS
+        );
         if (cancelled) return;
         setBoard(payload);
         setGamesLoading(true);

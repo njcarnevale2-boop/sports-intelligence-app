@@ -929,6 +929,120 @@ def test_home_decision_board_top3_while_opportunities_return_full_qualified_set(
     assert board["count"] == 3
 
 
+def test_decision_board_semantics_match_broad_opportunities_contract(tmp_path, monkeypatch):
+    rows = []
+    for idx in range(1, 7):
+        rows.append(
+            {
+                "api_event_id": f"evt-semantic-{idx}",
+                "commence_time": "2026-09-20T17:00:00+00:00",
+                "away_team": "NO",
+                "home_team": "ATL",
+                "market": "spread",
+                "side": "away",
+                "point": 2.5 + idx,
+                "sportsbook": "DraftKings",
+                "price": -110,
+                "model_prob": 0.60 + (idx * 0.004),
+                "implied_prob_raw": 0.52,
+                "fair_odds": -120,
+                "edge_pp": 0.07,
+                "ev_per_dollar": 0.08,
+                "kelly_full": 0.04,
+                "kelly_20pct": 0.008,
+                "recommendation": "BET",
+                "confidence_score": 70 + idx,
+                "data_completeness": 0.95,
+                "market_confidence": 0.8,
+                "model_confidence": 0.7,
+                "rank": idx,
+            }
+        )
+
+    opportunities_route = _patch_dependencies(monkeypatch, tmp_path, rows)
+
+    broad_payload = opportunities_route._get_opportunities_payload(
+        limit=500,
+        best_lines_only=True,
+        include_experimental=False,
+        week=1,
+        persist_history=True,
+    )
+    expected_board = opportunities_route.build_decision_board_payload(
+        list(broad_payload.get("opportunities") or []),
+        limit=3,
+        line_shopping_fn=opportunities_route._decision_board_line_shopping,
+    )
+
+    optimized_board = opportunities_route.get_decision_board(limit=3, week=1)
+
+    assert optimized_board["canonicalWeek"] == broad_payload["canonicalWeek"]
+    assert optimized_board["week"] == broad_payload["week"]
+    assert optimized_board["count"] == expected_board["count"]
+    assert optimized_board["noBetState"] == expected_board["noBetState"]
+    assert optimized_board["officialMarketsDisplayed"] == expected_board["officialMarketsDisplayed"]
+
+    expected_items = expected_board["decisionBoard"]
+    actual_items = optimized_board["decisionBoard"]
+    assert [item.get("eventId") for item in actual_items] == [item.get("eventId") for item in expected_items]
+    assert [item.get("selection") for item in actual_items] == [item.get("selection") for item in expected_items]
+    assert [item.get("book") for item in actual_items] == [item.get("book") for item in expected_items]
+    assert [item.get("line") for item in actual_items] == [item.get("line") for item in expected_items]
+    assert [item.get("price") for item in actual_items] == [item.get("price") for item in expected_items]
+    assert [item.get("qualificationStatus") for item in actual_items] == [item.get("qualificationStatus") for item in expected_items]
+    assert [item.get("marketValidationStatus") for item in actual_items] == [item.get("marketValidationStatus") for item in expected_items]
+    assert [item.get("modelProbability") for item in actual_items] == [item.get("modelProbability") for item in expected_items]
+    assert [item.get("edge") for item in actual_items] == [item.get("edge") for item in expected_items]
+    assert [item.get("expectedValue") for item in actual_items] == [item.get("expectedValue") for item in expected_items]
+    assert [item.get("recommendedUnits") for item in actual_items] == [item.get("recommendedUnits") for item in expected_items]
+    assert [item.get("currentSizing") for item in actual_items] == [item.get("currentSizing") for item in expected_items]
+
+
+def test_decision_board_skips_history_persistence_on_read_path(tmp_path, monkeypatch):
+    rows = [
+        {
+            "api_event_id": "evt-no-history",
+            "commence_time": "2026-09-20T17:00:00+00:00",
+            "away_team": "NO",
+            "home_team": "ATL",
+            "market": "spread",
+            "side": "away",
+            "point": 3.5,
+            "sportsbook": "DraftKings",
+            "price": -110,
+            "model_prob": 0.63,
+            "implied_prob_raw": 0.52,
+            "fair_odds": -120,
+            "edge_pp": 0.08,
+            "ev_per_dollar": 0.09,
+            "kelly_full": 0.04,
+            "kelly_20pct": 0.008,
+            "recommendation": "BET",
+            "confidence_score": 79,
+            "data_completeness": 0.95,
+            "market_confidence": 0.8,
+            "model_confidence": 0.7,
+            "rank": 1,
+        }
+    ]
+
+    opportunities_route = _patch_dependencies(monkeypatch, tmp_path, rows)
+    history_calls: list[str | None] = []
+
+    def _count_history(snapshot_id, opportunities, observed_at_utc=None):
+        history_calls.append(snapshot_id)
+        return []
+
+    monkeypatch.setattr(opportunities_route, "_record_history_for_snapshot", _count_history)
+
+    opportunities_route.get_decision_board(limit=3, week=1)
+    assert history_calls == []
+
+    opportunities_route.get_opportunities(limit=3, best_lines_only=True, week=1)
+    assert len(history_calls) == 1
+    assert bool(history_calls[0])
+
+
 def test_games_list_games_schedule_only_skips_opportunity_enrichment(tmp_path, monkeypatch):
     import app.services.games as games_module
     from app.services.games import service as games_service
