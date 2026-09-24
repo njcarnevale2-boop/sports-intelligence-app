@@ -218,6 +218,45 @@ def test_readiness_ranked_only_prior_week_is_false(monkeypatch, tmp_path):
     assert readiness["rankingsReady"] is False
 
 
+def test_missing_matchups_report_la_lar_alias_and_unknown_metadata(monkeypatch, tmp_path):
+    paths = _configure_artifact_paths(monkeypatch, tmp_path)
+    schedule = [
+        {"season": 2026, "week": 3, "gameday": "2026-09-24", "away_team": "ATL", "home_team": "GB"},
+        {"season": 2026, "week": 3, "gameday": "2026-09-27", "away_team": "LA", "home_team": "DEN"},
+        {"season": 2026, "week": 3, "gameday": "2026-09-28", "away_team": "PHI", "home_team": "CHI"},
+    ]
+    projections = [
+        {"api_event_id": "2026_3_ATL_GB", "commence_time": "2026-09-25T00:15:00+00:00", "away_team": "ATL", "home_team": "GB"},
+        {"api_event_id": "2026_3_LAR_DEN", "commence_time": "2026-09-29T00:20:00+00:00", "away_team": "LAR", "home_team": "DEN"},
+    ]
+    _write_csv(paths["schedule"], schedule)
+    _write_csv(paths["projections"], projections)
+    _write_csv(paths["line"], projections)
+    _write_csv(paths["ranked"], projections)
+
+    readiness = wk.build_week_readiness(canonical={"season": 2026, "week": 3})
+
+    assert wk._normalize_team_code("LA") == "LAR"
+    assert readiness["details"]["missingMatchups"]
+    assert any(item["reason"] == "TEAM_ALIAS_NORMALIZATION_REQUIRED" for item in readiness["details"]["missingMatchups"])
+
+
+def test_coverage_diagnostics_return_unknown_reason_when_projection_rows_are_missing(monkeypatch, tmp_path):
+    paths = _configure_artifact_paths(monkeypatch, tmp_path)
+    schedule = [
+        {"season": 2026, "week": 4, "gameday": "2026-10-01", "away_team": "CIN", "home_team": "PIT"},
+    ]
+    _write_csv(paths["schedule"], schedule)
+    _write_csv(paths["projections"], [])
+    _write_csv(paths["line"], [])
+    _write_csv(paths["ranked"], [])
+
+    readiness = wk.build_week_readiness(canonical={"season": 2026, "week": 4})
+
+    assert readiness["status"] == "NOT_READY"
+    assert readiness["details"]["missingMatchups"][0]["reason"] == "NO_PROJECTION_FOR_MATCHUP"
+
+
 def test_readiness_markets_true_rankings_false(monkeypatch, tmp_path):
     paths = _configure_artifact_paths(monkeypatch, tmp_path)
     _write_csv(paths["schedule"], [row for row in _base_schedule_rows() if row["week"] == 2])

@@ -20,7 +20,13 @@ from app.services.social_sources import get_social_source_coverage_report
 from app.services.weather_history import get_weather_summary
 from app.services.decision_ledger import get_admin_ledger_summary, get_official_publication_for_week
 from app.services.games import service as games_service
-from app.services.week_resolution import build_week_readiness, resolve_canonical_week_metadata
+from app.services.week_resolution import (
+    _find_missing_matchups,
+    _load_projection_rows,
+    _load_schedule_rows,
+    build_week_readiness,
+    resolve_canonical_week_metadata,
+)
 from app.runtime_paths import runtime_paths, runtime_readiness
 from database.models import PerformanceRecord
 from database.session import SessionLocal
@@ -57,6 +63,7 @@ class AdminStatusService:
         runtime_status = runtime_readiness()
         canonical_week = resolve_canonical_week_metadata()
         week_readiness = build_week_readiness(canonical=canonical_week)
+        football_lineage = self._football_lineage_diagnostics(canonical_week=canonical_week, week_readiness=week_readiness)
         api_health = self._api_health(
             database_status=database_status,
             runtime_status=runtime_status,
@@ -187,6 +194,56 @@ class AdminStatusService:
             "backendInstanceId": runtime_status.get("backendInstanceId"),
             "canonicalWeek": canonical_week,
             "weekReadiness": week_readiness,
+            "footballLineage": football_lineage,
+        }
+
+    def _football_lineage_diagnostics(self, *, canonical_week: Dict[str, Any], week_readiness: Dict[str, Any]) -> Dict[str, Any]:
+        schedule_rows = _load_schedule_rows()
+        projection_rows = _load_projection_rows()
+        canonical_schedule_rows = [
+            row for row in schedule_rows
+            if int(row.get("season") or -1) == int(canonical_week.get("season") or -1)
+            and int(row.get("week") or -1) == int(canonical_week.get("week") or -1)
+        ]
+        missing_matchups = _find_missing_matchups(canonical_schedule_rows, projection_rows)
+
+        result_root = runtime_paths.result_engine_root
+        power_root = runtime_paths.power_engine_root
+        return {
+            "canonicalWeek": canonical_week,
+            "weekReadiness": week_readiness,
+            "presence": {
+                "scheduleRows": len(schedule_rows),
+                "canonicalWeekScheduleRows": len(canonical_schedule_rows),
+                "projectionRows": len(projection_rows),
+                "resultEngineRootExists": result_root.exists(),
+                "powerEngineRootExists": power_root.exists(),
+            },
+            "resultEngine": {
+                "root": str(result_root),
+                "available": result_root.exists(),
+                "reason": "RESULT_ENGINE_ROOT_MISSING" if not result_root.exists() else "RESULT_ENGINE_ROOT_VISIBLE",
+            },
+            "powerEngine": {
+                "root": str(power_root),
+                "available": power_root.exists(),
+                "reason": "POWER_ENGINE_ROOT_MISSING" if not power_root.exists() else "POWER_ENGINE_ROOT_VISIBLE",
+            },
+            "missingMatchups": missing_matchups,
+            "missingReasonCounts": {
+                reason: sum(1 for item in missing_matchups if item.get("reason") == reason)
+                for reason in sorted({item.get("reason") for item in missing_matchups})
+            },
+            "projectionArtifact": {
+                "path": str(GAME_PROJECTIONS),
+                "exists": GAME_PROJECTIONS.exists(),
+                "rows": len(projection_rows),
+            },
+            "scheduleArtifact": {
+                "path": str(runtime_paths.schedule_context_latest_csv),
+                "exists": runtime_paths.schedule_context_latest_csv.exists(),
+                "rows": len(schedule_rows),
+            },
         }
 
     def _read_last_refresh(self) -> str:

@@ -540,6 +540,64 @@ def _canonical_schedule_keys(canonical: dict[str, Any], schedule_rows: list[dict
     return {key for key in out if key[0] and key[1] and key[2]}
 
 
+def _find_missing_matchups(
+    schedule_rows: list[dict[str, Any]],
+    projection_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    matched: set[tuple[str, str, str]] = set()
+    for schedule_row in schedule_rows:
+        gameday = str(schedule_row.get("gameday") or "")
+        away = _normalize_team_code(schedule_row.get("away_team"))
+        home = _normalize_team_code(schedule_row.get("home_team"))
+        if not gameday or not away or not home:
+            continue
+        for projection_row in projection_rows:
+            proj_away = _normalize_team_code(projection_row.get("away_team"))
+            proj_home = _normalize_team_code(projection_row.get("home_team"))
+            if proj_away != away or proj_home != home:
+                continue
+            kickoff = projection_row.get("kickoff")
+            if kickoff is None or not isinstance(kickoff, datetime):
+                continue
+            if _matches_schedule_gameday(gameday, kickoff):
+                matched.add((gameday, away, home))
+
+    missing: list[dict[str, Any]] = []
+    for schedule_row in schedule_rows:
+        gameday = str(schedule_row.get("gameday") or "")
+        away = _normalize_team_code(schedule_row.get("away_team"))
+        home = _normalize_team_code(schedule_row.get("home_team"))
+        if not gameday or not away or not home:
+            continue
+        if (gameday, away, home) in matched:
+            continue
+
+        raw_away = str(schedule_row.get("away_team") or "").strip()
+        raw_home = str(schedule_row.get("home_team") or "").strip()
+        if raw_away.upper() in {"LA", "LAR"} or raw_home.upper() in {"LA", "LAR"}:
+            reason = "TEAM_ALIAS_NORMALIZATION_REQUIRED"
+        elif not away or not home:
+            reason = "UNKNOWN_TEAM_CODE"
+        elif not any(
+            _normalize_team_code(row.get("away_team")) == away and _normalize_team_code(row.get("home_team")) == home
+            for row in projection_rows
+        ):
+            reason = "NO_PROJECTION_FOR_MATCHUP"
+        else:
+            reason = "NO_COVERING_KICKOFF_MATCH"
+
+        missing.append(
+            {
+                "gameday": gameday,
+                "away_team": away,
+                "home_team": home,
+                "reason": reason,
+            }
+        )
+
+    return missing
+
+
 def _coverage_from_rows(
     *,
     path_ref: Any,
@@ -629,6 +687,11 @@ def build_week_readiness(*, canonical: Optional[dict[str, Any]] = None, now_utc:
         kickoff_col="commence_time",
     )
 
+    missing_matchups = _find_missing_matchups(schedule_rows, _load_projection_rows())
+    missing_reason_counts: dict[str, int] = {}
+    for item in missing_matchups:
+        missing_reason_counts[item["reason"]] = missing_reason_counts.get(item["reason"], 0) + 1
+
     projections_ready = schedule_ready and projection_cov.get("matched", 0) == projection_cov.get("expected", 0) and projection_cov.get("expected", 0) > 0
     markets_ready = schedule_ready and market_cov.get("matched", 0) == market_cov.get("expected", 0) and market_cov.get("expected", 0) > 0
     rankings_ready = schedule_ready and ranking_cov.get("matched", 0) > 0
@@ -664,6 +727,8 @@ def build_week_readiness(*, canonical: Optional[dict[str, Any]] = None, now_utc:
             "projectionCoverage": projection_cov,
             "marketCoverage": market_cov,
             "rankingCoverage": ranking_cov,
+            "missingMatchups": missing_matchups,
+            "missingReasonCounts": missing_reason_counts,
             "canonicalWeek": canonical_meta,
         },
     ).to_dict()

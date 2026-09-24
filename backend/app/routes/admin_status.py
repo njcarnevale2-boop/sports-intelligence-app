@@ -25,6 +25,14 @@ def get_odds_refresh_status():
     return get_refresh_status()
 
 
+@router.get("/football-lineage")
+def get_football_lineage():
+    service = get_admin_status_service()
+    canonical_week = service.get_status().get("canonicalWeek", {})
+    week_readiness = service.get_status().get("weekReadiness", {})
+    return service._football_lineage_diagnostics(canonical_week=canonical_week, week_readiness=week_readiness)
+
+
 @router.get("/social-sources/coverage")
 def get_social_sources_coverage():
     return get_social_source_coverage_report()
