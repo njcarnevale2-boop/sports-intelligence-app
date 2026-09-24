@@ -33,6 +33,13 @@ from .persistence import (
 )
 from .updater import apply_week_results, apply_single_game_update
 from .validation import CANONICAL_NFL_TEAMS, validate_snapshot
+from .weekly_transition import (
+    PowerWeeklyTransitionError,
+    PowerWeeklyTransitionRecord,
+    active_power_transition_observability,
+    apply_frozen_weekly_power_transition,
+    list_power_weekly_transitions,
+)
 
 
 __all__ = [
@@ -65,4 +72,9 @@ __all__ = [
     "snapshot_hash",
     "update_payload_hash",
     "validate_snapshot",
+    "PowerWeeklyTransitionError",
+    "PowerWeeklyTransitionRecord",
+    "active_power_transition_observability",
+    "apply_frozen_weekly_power_transition",
+    "list_power_weekly_transitions",
 ]

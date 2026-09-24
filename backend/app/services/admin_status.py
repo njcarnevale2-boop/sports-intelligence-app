@@ -21,6 +21,7 @@ from app.services.social_sources import get_social_source_coverage_report
 from app.services.weather_history import get_weather_summary
 from app.services.decision_ledger import get_admin_ledger_summary, get_official_publication_for_week
 from app.services.games import service as games_service
+from app.services.power_engine import active_power_transition_observability, default_power_engine_store
 from app.services.week_resolution import (
     _find_missing_matchups,
     _load_projection_rows,
@@ -290,6 +291,34 @@ class AdminStatusService:
 
         result_root = runtime_paths.result_engine_root
         power_root = runtime_paths.power_engine_root
+        power_transition: dict[str, Any] = {
+            "season": None,
+            "throughWeek": None,
+            "activeSnapshotId": None,
+            "activeSnapshotHash": None,
+            "priorSnapshotId": None,
+            "sourceResultSetVersion": None,
+            "sourceResultSetHash": None,
+            "methodologyHash": None,
+            "updaterVersion": None,
+            "transitionId": None,
+            "transitionStatus": None,
+            "lineageId": None,
+            "reason": "POWER_TRANSITION_UNAVAILABLE",
+        }
+
+        try:
+            season = int(canonical_week.get("season"))
+            power_transition = {
+                **active_power_transition_observability(
+                    power_store=default_power_engine_store(),
+                    season=season,
+                ),
+                "reason": "POWER_TRANSITION_VISIBLE",
+            }
+        except Exception:
+            pass
+
         return {
             "canonicalWeek": canonical_week,
             "previousWeek": self._previous_week_frozen_snapshot(canonical_week=canonical_week),
@@ -310,6 +339,7 @@ class AdminStatusService:
                 "root": str(power_root),
                 "available": power_root.exists(),
                 "reason": "POWER_ENGINE_ROOT_MISSING" if not power_root.exists() else "POWER_ENGINE_ROOT_VISIBLE",
+                "activeTransition": power_transition,
             },
             "missingMatchups": missing_matchups,
             "missingReasonCounts": {
