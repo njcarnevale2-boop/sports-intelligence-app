@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -109,6 +110,70 @@ def _patch_current_execution_fixture(
 
     monkeypatch.setattr(opportunities_route, "RANKED_BET_BOARD", ranked_board)
     monkeypatch.setattr(opportunities_route, "GAME_PROJECTIONS", projections)
+    monkeypatch.setattr(
+        opportunities_route,
+        "resolve_projection_readiness",
+        lambda season, week: {
+            "projectionReadiness": "CURRENT",
+            "projectionReadinessReason": "TEST_DEFAULT_CURRENT",
+            "projectionSeason": season,
+            "projectionWeek": week,
+            "projectionPowerThroughWeek": None if week is None else int(week) - 1,
+            "projectionArtifactId": "proj-test-current",
+            "projectionArtifactHash": "artifact-hash-test-current",
+            "projectionScheduleVersion": "schedule-v1:test",
+            "projectionScheduleHash": "schedule-hash-test",
+            "projectionValidationStatus": "VALID",
+            "projectionPowerSnapshotId": "snap-test-current",
+            "projectionPowerSnapshotHash": "snap-hash-test-current",
+            "projectionActivatedAt": "2026-09-13T15:00:00Z",
+            "expectedPowerThroughWeek": None if week is None else int(week) - 1,
+        },
+    )
+    monkeypatch.setattr(
+        opportunities_route,
+        "load_active_projection_artifact_by_identity",
+        lambda season, week, artifact_id, artifact_hash: {
+            "projection_rows": [
+                {
+                    "event_id": event_id,
+                    "season": 2026,
+                    "week": 1,
+                    "kickoff_utc": "2026-09-20T17:00:00Z",
+                    "away_team": "NO",
+                    "home_team": "ATL",
+                    "away_power": 0.0,
+                    "home_power": 0.0,
+                    "model_margin_home": -1.0,
+                    "model_total_baseline": 45.0,
+                    "canonical_event_key": "cev-test-sizing",
+                    "model_version": "model-v1",
+                    "probability_version": "prob-v1",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        opportunities_route,
+        "load_canonical_weekly_schedule",
+        lambda season, week, store=None: SimpleNamespace(
+            schedule_version="schedule-v1:test",
+            schedule_hash="schedule-hash-test",
+            season=season,
+            week=week,
+            events=[
+                SimpleNamespace(
+                    source_event_id=event_id,
+                    canonical_event_key="cev-test-sizing",
+                    season=season,
+                    week=week,
+                    kickoff_utc="2026-09-20T17:00:00Z",
+                    away_team="NO",
+                    home_team="ATL",
+                )
+            ],
+        ),
+    )
     monkeypatch.setattr(games_module, "RANKED_BET_BOARD", ranked_board)
     monkeypatch.setattr(games_module, "GAME_PROJECTIONS", projections)
     monkeypatch.setattr(opportunities_route, "_build_generated_multimarket_candidates", lambda **kwargs: [])

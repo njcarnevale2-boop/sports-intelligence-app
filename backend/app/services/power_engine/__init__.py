@@ -36,8 +36,10 @@ from .validation import CANONICAL_NFL_TEAMS, validate_snapshot
 from .projection_publication import (
     ProjectionPublicationError,
     active_projection_observability,
+    load_active_projection_artifact_by_identity,
     list_projection_artifacts,
     publish_weekly_projections,
+    resolve_projection_readiness,
 )
 from .weekly_transition import (
     PowerWeeklyTransitionError,
@@ -80,7 +82,9 @@ __all__ = [
     "validate_snapshot",
     "ProjectionPublicationError",
     "publish_weekly_projections",
+    "resolve_projection_readiness",
     "active_projection_observability",
+    "load_active_projection_artifact_by_identity",
     "list_projection_artifacts",
     "PowerWeeklyTransitionError",
     "PowerWeeklyTransitionRecord",

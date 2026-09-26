@@ -868,6 +868,282 @@ def active_projection_observability(
     }
 
 
+def resolve_projection_readiness(
+    *,
+    season: int | None,
+    week: int | None,
+    power_store: PowerEngineStore | None = None,
+) -> dict[str, Any]:
+    store = power_store or default_power_engine_store()
+
+    base = {
+        "projectionReadiness": "INVALID",
+        "projectionReadinessReason": "CANONICAL_WEEK_INVALID",
+        "projectionSeason": season,
+        "projectionWeek": week,
+        "projectionPowerThroughWeek": None,
+        "projectionArtifactId": None,
+        "projectionArtifactHash": None,
+        "projectionScheduleVersion": None,
+        "projectionScheduleHash": None,
+        "projectionValidationStatus": None,
+        "projectionPowerSnapshotId": None,
+        "projectionPowerSnapshotHash": None,
+        "projectionActivatedAt": None,
+        "expectedPowerThroughWeek": None if week is None else (int(week) - 1),
+        "projectionExpectedGameCount": None,
+        "projectionProjectedGameCount": None,
+        "projectionRowCount": None,
+    }
+
+    if season is None or week is None:
+        return base
+
+    try:
+        expected_season = int(season)
+        expected_week = int(week)
+    except (TypeError, ValueError):
+        return base
+
+    if expected_season <= 0 or expected_week <= 0:
+        return base
+
+    expected_power_through_week = expected_week - 1
+    base["expectedPowerThroughWeek"] = expected_power_through_week
+
+    try:
+        pointer = _read_active_projection_pointer(store, expected_season, expected_week)
+    except Exception:
+        return {
+            **base,
+            "projectionReadiness": "INVALID",
+            "projectionReadinessReason": "ACTIVE_POINTER_UNREADABLE",
+        }
+
+    if pointer is None:
+        return {
+            **base,
+            "projectionReadiness": "MISSING",
+            "projectionReadinessReason": "ACTIVE_POINTER_MISSING",
+        }
+
+    base.update(
+        {
+            "projectionSeason": int(pointer.season),
+            "projectionWeek": int(pointer.week),
+            "projectionArtifactId": str(pointer.artifact_id),
+            "projectionArtifactHash": str(pointer.artifact_hash),
+            "projectionPowerSnapshotId": str(pointer.power_snapshot_id),
+            "projectionPowerSnapshotHash": str(pointer.power_snapshot_hash),
+            "projectionScheduleHash": str(pointer.schedule_hash),
+            "projectionActivatedAt": str(pointer.activated_at),
+        }
+    )
+
+    try:
+        artifact = _load_projection_artifact(store, pointer.artifact_id)
+    except Exception:
+        return {
+            **base,
+            "projectionReadiness": "INVALID",
+            "projectionReadinessReason": "ACTIVE_ARTIFACT_UNREADABLE",
+        }
+
+    if str(artifact.get("artifact_id") or "") != str(pointer.artifact_id):
+        return {
+            **base,
+            "projectionReadiness": "INVALID",
+            "projectionReadinessReason": "POINTER_ARTIFACT_ID_MISMATCH",
+        }
+
+    if str(artifact.get("artifact_hash") or "") != str(pointer.artifact_hash):
+        return {
+            **base,
+            "projectionReadiness": "INVALID",
+            "projectionReadinessReason": "POINTER_ARTIFACT_HASH_MISMATCH",
+        }
+
+    validation_id = str(artifact.get("validation_report_id") or "").strip()
+    if not validation_id:
+        return {
+            **base,
+            "projectionReadiness": "INVALID",
+            "projectionReadinessReason": "VALIDATION_POINTER_MISSING",
+        }
+
+    try:
+        validation = _load_projection_validation(store, validation_id)
+    except Exception:
+        return {
+            **base,
+            "projectionReadiness": "INVALID",
+            "projectionReadinessReason": "VALIDATION_UNREADABLE",
+        }
+
+    validation_status = str(validation.get("status") or "").upper()
+    if validation_status != "VALID":
+        return {
+            **base,
+            "projectionReadiness": "INVALID",
+            "projectionReadinessReason": "VALIDATION_NOT_VALID",
+            "projectionValidationStatus": validation_status or None,
+        }
+
+    if str(validation.get("artifact_id") or "") != str(pointer.artifact_id):
+        return {
+            **base,
+            "projectionReadiness": "INVALID",
+            "projectionReadinessReason": "VALIDATION_ARTIFACT_MISMATCH",
+            "projectionValidationStatus": validation_status,
+        }
+
+    try:
+        artifact_season = int(artifact.get("season"))
+        artifact_week = int(artifact.get("week"))
+        power_through_week = int(artifact.get("power_through_week"))
+        expected_game_count = int(artifact.get("expected_game_count"))
+        projected_game_count = int(artifact.get("projected_game_count"))
+    except (TypeError, ValueError):
+        return {
+            **base,
+            "projectionReadiness": "INVALID",
+            "projectionReadinessReason": "ARTIFACT_LINEAGE_SCHEMA_INVALID",
+            "projectionValidationStatus": validation_status,
+        }
+
+    projection_rows = artifact.get("projection_rows")
+    if not isinstance(projection_rows, list):
+        return {
+            **base,
+            "projectionReadiness": "INVALID",
+            "projectionReadinessReason": "PROJECTION_ROWS_INVALID",
+            "projectionValidationStatus": validation_status,
+        }
+
+    if not projection_rows:
+        return {
+            **base,
+            "projectionReadiness": "INVALID",
+            "projectionReadinessReason": "PROJECTION_ROWS_EMPTY",
+            "projectionValidationStatus": validation_status,
+        }
+
+    row_count = len(projection_rows)
+    if projected_game_count != row_count:
+        return {
+            **base,
+            "projectionReadiness": "INVALID",
+            "projectionReadinessReason": "PROJECTED_GAME_COUNT_MISMATCH",
+            "projectionValidationStatus": validation_status,
+            "projectionProjectedGameCount": projected_game_count,
+            "projectionRowCount": row_count,
+        }
+
+    if expected_game_count != row_count:
+        return {
+            **base,
+            "projectionReadiness": "INVALID",
+            "projectionReadinessReason": "EXPECTED_GAME_COUNT_MISMATCH",
+            "projectionValidationStatus": validation_status,
+            "projectionExpectedGameCount": expected_game_count,
+            "projectionRowCount": row_count,
+        }
+
+    schedule_version = str(artifact.get("schedule_version") or "").strip()
+    schedule_hash = str(artifact.get("schedule_hash") or "").strip()
+    if not schedule_version:
+        return {
+            **base,
+            "projectionReadiness": "INVALID",
+            "projectionReadinessReason": "SCHEDULE_VERSION_MISSING",
+            "projectionValidationStatus": validation_status,
+        }
+    if not schedule_hash:
+        return {
+            **base,
+            "projectionReadiness": "INVALID",
+            "projectionReadinessReason": "SCHEDULE_HASH_MISSING",
+            "projectionValidationStatus": validation_status,
+        }
+
+    base.update(
+        {
+            "projectionSeason": artifact_season,
+            "projectionWeek": artifact_week,
+            "projectionPowerThroughWeek": power_through_week,
+            "projectionArtifactId": str(artifact.get("artifact_id") or pointer.artifact_id),
+            "projectionArtifactHash": str(artifact.get("artifact_hash") or pointer.artifact_hash),
+            "projectionScheduleVersion": str(artifact.get("schedule_version") or "") or None,
+            "projectionScheduleHash": str(artifact.get("schedule_hash") or "") or None,
+            "projectionValidationStatus": validation_status,
+            "projectionPowerSnapshotId": str(artifact.get("power_snapshot_id") or pointer.power_snapshot_id),
+            "projectionPowerSnapshotHash": str(artifact.get("power_snapshot_hash") or pointer.power_snapshot_hash),
+            "projectionExpectedGameCount": expected_game_count,
+            "projectionProjectedGameCount": projected_game_count,
+            "projectionRowCount": row_count,
+        }
+    )
+
+    stale_reasons: list[str] = []
+    if artifact_season != expected_season:
+        stale_reasons.append("SEASON_MISMATCH")
+    if artifact_week != expected_week:
+        stale_reasons.append("WEEK_MISMATCH")
+    if power_through_week != expected_power_through_week:
+        stale_reasons.append("POWER_THROUGH_WEEK_MISMATCH")
+
+    if stale_reasons:
+        return {
+            **base,
+            "projectionReadiness": "STALE",
+            "projectionReadinessReason": "|".join(stale_reasons),
+        }
+
+    return {
+        **base,
+        "projectionReadiness": "CURRENT",
+        "projectionReadinessReason": "LINEAGE_CURRENT",
+    }
+
+
+def load_active_projection_artifact_by_identity(
+    *,
+    season: int,
+    week: int,
+    artifact_id: str,
+    artifact_hash: str,
+    power_store: PowerEngineStore | None = None,
+) -> dict[str, Any]:
+    store = power_store or default_power_engine_store()
+
+    pointer = _read_active_projection_pointer(store, season, week)
+    if pointer is None:
+        raise ProjectionPublicationError("ACTIVE_POINTER_MISSING")
+
+    if str(pointer.artifact_id) != str(artifact_id):
+        raise ProjectionPublicationError("ACTIVE_POINTER_ARTIFACT_ID_MISMATCH")
+    if str(pointer.artifact_hash) != str(artifact_hash):
+        raise ProjectionPublicationError("ACTIVE_POINTER_ARTIFACT_HASH_MISMATCH")
+
+    artifact = _load_projection_artifact(store, str(artifact_id))
+    if str(artifact.get("artifact_id") or "") != str(artifact_id):
+        raise ProjectionPublicationError("ARTIFACT_ID_MISMATCH")
+    if str(artifact.get("artifact_hash") or "") != str(artifact_hash):
+        raise ProjectionPublicationError("ARTIFACT_HASH_MISMATCH")
+
+    validation_id = str(artifact.get("validation_report_id") or "").strip()
+    if not validation_id:
+        raise ProjectionPublicationError("VALIDATION_POINTER_MISSING")
+
+    validation = _load_projection_validation(store, validation_id)
+    if str(validation.get("artifact_id") or "") != str(artifact_id):
+        raise ProjectionPublicationError("VALIDATION_ARTIFACT_MISMATCH")
+    if str(validation.get("status") or "").upper() != "VALID":
+        raise ProjectionPublicationError("VALIDATION_NOT_VALID")
+
+    return artifact
+
+
 def list_projection_artifacts(
     *,
     season: int,

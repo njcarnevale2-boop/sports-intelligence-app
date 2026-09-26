@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -70,6 +71,72 @@ def _patch_dependencies(monkeypatch, tmp_path: Path, rows: list[dict]):
 
     monkeypatch.setattr(opportunities_route, "RANKED_BET_BOARD", ranked_board)
     monkeypatch.setattr(opportunities_route, "GAME_PROJECTIONS", projections)
+    monkeypatch.setattr(
+        opportunities_route,
+        "resolve_projection_readiness",
+        lambda season, week: {
+            "projectionReadiness": "CURRENT",
+            "projectionReadinessReason": "TEST_DEFAULT_CURRENT",
+            "projectionSeason": season,
+            "projectionWeek": week,
+            "projectionPowerThroughWeek": None if week is None else int(week) - 1,
+            "projectionArtifactId": "proj-test-current",
+            "projectionArtifactHash": "artifact-hash-test-current",
+            "projectionScheduleVersion": "schedule-v1:test",
+            "projectionScheduleHash": "schedule-hash-test",
+            "projectionValidationStatus": "VALID",
+            "projectionPowerSnapshotId": "snap-test-current",
+            "projectionPowerSnapshotHash": "snap-hash-test-current",
+            "projectionActivatedAt": "2026-09-13T15:00:00Z",
+            "expectedPowerThroughWeek": None if week is None else int(week) - 1,
+        },
+    )
+    projection_rows = []
+    for idx, r in enumerate(rows, start=1):
+        projection_rows.append(
+            {
+                "event_id": str(r["api_event_id"]),
+                "season": 2026,
+                "week": 1,
+                "kickoff_utc": str(r.get("commence_time") or "2026-09-13T17:00:00Z").replace("+00:00", "Z"),
+                "away_team": str(r.get("away_team") or "NO"),
+                "home_team": str(r.get("home_team") or "ATL"),
+                "away_power": 0.0,
+                "home_power": 0.0,
+                "model_margin_home": -1.0,
+                "model_total_baseline": 45.0,
+                "canonical_event_key": f"cev-test-{idx}",
+                "model_version": "model-v1",
+                "probability_version": "prob-v1",
+            }
+        )
+    monkeypatch.setattr(
+        opportunities_route,
+        "load_active_projection_artifact_by_identity",
+        lambda season, week, artifact_id, artifact_hash: {"projection_rows": projection_rows},
+    )
+    monkeypatch.setattr(
+        opportunities_route,
+        "load_canonical_weekly_schedule",
+        lambda season, week, store=None: SimpleNamespace(
+            schedule_version="schedule-v1:test",
+            schedule_hash="schedule-hash-test",
+            season=season,
+            week=week,
+            events=[
+                SimpleNamespace(
+                    source_event_id=str(r["api_event_id"]),
+                    canonical_event_key=f"cev-test-{idx}",
+                    season=season,
+                    week=week,
+                    kickoff_utc=str(r.get("commence_time") or "2026-09-13T17:00:00+00:00").replace("+00:00", "Z"),
+                    away_team=str(r.get("away_team") or "NO"),
+                    home_team=str(r.get("home_team") or "ATL"),
+                )
+                for idx, r in enumerate(rows, start=1)
+            ],
+        ),
+    )
 
     monkeypatch.setattr(
         opportunities_route,
@@ -888,6 +955,80 @@ def test_game_projection_market_uses_current_execution_source(tmp_path, monkeypa
     assert projection["market"]["currentExecution"]["price"] == opp["currentExecution"]["price"]
     assert projection["market"]["currentExecution"]["spread"] == opp["currentExecution"]["point"]
     assert projection["market"]["provenance"]["executionStatus"] == opp["currentExecution"]["status"]
+
+
+def test_ranked_model_probability_mutation_does_not_change_current_authoritative_order_or_ev(tmp_path, monkeypatch):
+    rows = [
+        {
+            "api_event_id": "evt-authority-a",
+            "commence_time": "2026-09-20T17:00:00+00:00",
+            "away_team": "NO",
+            "home_team": "ATL",
+            "market": "spread",
+            "side": "away",
+            "point": 3.0,
+            "sportsbook": "DraftKings",
+            "price": -110,
+            "model_prob": 0.52,
+            "implied_prob_raw": 0.53,
+            "fair_odds": -120,
+            "edge_pp": 0.08,
+            "ev_per_dollar": 0.09,
+            "kelly_full": 0.05,
+            "kelly_20pct": 0.01,
+            "recommendation": "BET",
+            "confidence_score": 71,
+            "data_completeness": 0.95,
+            "market_confidence": 0.8,
+            "model_confidence": 0.7,
+            "rank": 1,
+        },
+        {
+            "api_event_id": "evt-authority-b",
+            "commence_time": "2026-09-20T20:00:00+00:00",
+            "away_team": "DEN",
+            "home_team": "KC",
+            "market": "spread",
+            "side": "away",
+            "point": 3.0,
+            "sportsbook": "DraftKings",
+            "price": -110,
+            "model_prob": 0.68,
+            "implied_prob_raw": 0.53,
+            "fair_odds": -120,
+            "edge_pp": 0.08,
+            "ev_per_dollar": 0.09,
+            "kelly_full": 0.05,
+            "kelly_20pct": 0.01,
+            "recommendation": "BET",
+            "confidence_score": 71,
+            "data_completeness": 0.95,
+            "market_confidence": 0.8,
+            "model_confidence": 0.7,
+            "rank": 2,
+        },
+    ]
+
+    opportunities_route = _patch_dependencies(monkeypatch, tmp_path, rows)
+
+    first = opportunities_route.get_opportunities(limit=10, best_lines_only=True, week=1)
+    first_order = [o["eventId"] for o in first["opportunities"]]
+    first_ev = {o["eventId"]: o["currentEV"] for o in first["opportunities"]}
+    first_win = {o["eventId"]: o["currentWinProbability"] for o in first["opportunities"]}
+
+    mutated = [dict(rows[0]), dict(rows[1])]
+    mutated[0]["model_prob"] = 0.91
+    mutated[1]["model_prob"] = 0.09
+    _write_ranked_board(opportunities_route.RANKED_BET_BOARD, mutated)
+
+    second = opportunities_route.get_opportunities(limit=10, best_lines_only=True, week=1)
+    second_order = [o["eventId"] for o in second["opportunities"]]
+    second_ev = {o["eventId"]: o["currentEV"] for o in second["opportunities"]}
+    second_win = {o["eventId"]: o["currentWinProbability"] for o in second["opportunities"]}
+
+    assert second_order == first_order
+    assert second_ev == first_ev
+    assert second_win == first_win
 
 
 def test_home_decision_board_top3_while_opportunities_return_full_qualified_set(tmp_path, monkeypatch):

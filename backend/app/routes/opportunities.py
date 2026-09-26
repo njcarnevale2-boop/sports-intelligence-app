@@ -45,6 +45,9 @@ from app.services.probability_engine import (
     total_outcome_probabilities,
 )
 from app.services.week_resolution import build_week_readiness, resolve_canonical_week_metadata
+from app.services.power_engine import load_active_projection_artifact_by_identity, resolve_projection_readiness
+from app.services.result_engine import normalize_kickoff_utc, normalize_team_id
+from app.services.schedule_engine import default_schedule_engine_store, load_canonical_weekly_schedule
 from app.config import settings
 from app.runtime_paths import runtime_paths
 
@@ -438,6 +441,108 @@ def _execution_status_from_rows(approved_count: int, fresh_count: int) -> str:
     if fresh_count <= 0:
         return "STALE_APPROVED_MARKET"
     return "AVAILABLE"
+
+
+def _projection_readiness_fields(readiness: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "projectionReadiness": str(readiness.get("projectionReadiness") or "INVALID"),
+        "projectionReadinessReason": str(readiness.get("projectionReadinessReason") or "UNKNOWN"),
+        "projectionSeason": readiness.get("projectionSeason"),
+        "projectionWeek": readiness.get("projectionWeek"),
+        "projectionPowerThroughWeek": readiness.get("projectionPowerThroughWeek"),
+        "projectionArtifactId": readiness.get("projectionArtifactId"),
+        "projectionArtifactHash": readiness.get("projectionArtifactHash"),
+        "projectionScheduleVersion": readiness.get("projectionScheduleVersion"),
+        "projectionScheduleHash": readiness.get("projectionScheduleHash"),
+        "projectionValidationStatus": readiness.get("projectionValidationStatus"),
+    }
+
+
+def _resolve_projection_readiness_for_request(*, season: int | None, week: int | None) -> dict[str, Any]:
+    try:
+        return resolve_projection_readiness(season=season, week=week)
+    except Exception:
+        return {
+            "projectionReadiness": "INVALID",
+            "projectionReadinessReason": "READINESS_EVALUATION_FAILED",
+            "projectionSeason": season,
+            "projectionWeek": week,
+            "projectionPowerThroughWeek": None,
+            "projectionArtifactId": None,
+            "projectionArtifactHash": None,
+            "projectionScheduleVersion": None,
+            "projectionScheduleHash": None,
+            "projectionValidationStatus": None,
+            "projectionPowerSnapshotId": None,
+            "projectionPowerSnapshotHash": None,
+            "projectionActivatedAt": None,
+            "expectedPowerThroughWeek": None if week is None else int(week) - 1,
+        }
+
+
+def _apply_projection_readiness_guard(opportunity: dict[str, Any], readiness: dict[str, Any]) -> dict[str, Any]:
+    guarded = dict(opportunity)
+    guarded.update(_projection_readiness_fields(readiness))
+
+    if str(readiness.get("projectionReadiness") or "INVALID").upper() == "CURRENT":
+        return guarded
+
+    reason = str(readiness.get("projectionReadinessReason") or "PROJECTION_NOT_CURRENT")
+    execution = guarded.get("currentExecution") if isinstance(guarded.get("currentExecution"), dict) else {}
+
+    guarded["currentWinProbability"] = None
+    guarded["currentPushProbability"] = None
+    guarded["currentLossProbability"] = None
+    guarded["currentEV"] = None
+    guarded["pushAwareEV"] = None
+    guarded["edge"] = None
+    guarded["calibratedEdge"] = None
+    guarded["evPerDollar"] = None
+    guarded["recommendedPlayableTo"] = None
+    guarded["recommendedPlayableToStatus"] = "UNAVAILABLE"
+    guarded["recommendedPlayableToReason"] = f"Projection readiness is {guarded['projectionReadiness']}: {reason}"
+    guarded["truePlayableTo"] = None
+    guarded["truePlayableToStatus"] = "UNAVAILABLE"
+    guarded["truePlayableToReason"] = f"Projection readiness is {guarded['projectionReadiness']}: {reason}"
+    guarded["fairPrice"] = None
+    guarded["fairLine"] = None
+
+    guarded["recommendation"] = "WATCH"
+    guarded["qualificationStatus"] = "NOT_QUALIFIED"
+    guarded["qualificationReasons"] = [
+        f"Projection readiness is {guarded['projectionReadiness']}: {reason}. Current-week projection authority is unavailable.",
+    ]
+    guarded["currentQualification"] = {
+        "status": "NOT_QUALIFIED",
+        "recommendation": "WATCH",
+        "actionable": False,
+        "reason": f"Projection readiness is {guarded['projectionReadiness']}: {reason}",
+    }
+
+    guarded["currentSizing"] = {
+        "status": "UNAVAILABLE",
+        "reason": f"Projection readiness is {guarded['projectionReadiness']}: {reason}",
+        "line": _safe_float(execution.get("point")),
+        "price": _safe_float(execution.get("price")),
+        "sportsbook": execution.get("sportsbook"),
+        "unitSize": float(PERSONAL_LEDGER_DEFAULT_UNIT_SIZE),
+        "bankrollBasis": float(PERSONAL_LEDGER_STARTING_BANKROLL),
+        "fullKellyFraction": None,
+        "fractionalKellyFraction": None,
+        "bankrollPercent": None,
+        "recommendedAmount": None,
+        "recommendedUnits": None,
+    }
+    guarded["sizingStatus"] = "UNAVAILABLE"
+    guarded["sizingReason"] = f"Projection readiness is {guarded['projectionReadiness']}: {reason}"
+    guarded["kellyFull"] = None
+    guarded["kelly20"] = None
+    guarded["bankrollPercent"] = None
+    guarded["recommendedUnits"] = None
+    guarded["recommendedAmount"] = None
+    guarded["productionEligible"] = False
+
+    return guarded
 
 
 def _resolve_event_week(event_id: str) -> int | None:
@@ -1174,6 +1279,7 @@ def row_to_opportunity(
     fair_odds = safe_float(row.get("fair_odds"))
     ev_per_dollar = safe_float(row.get("ev_per_dollar"))
     artifact_sizing = _artifact_sizing_snapshot(row)
+    projection_source = str(game_projection_row.get("projection_source") if game_projection_row is not None else "") or "UNAVAILABLE"
 
     result = {
         "id": build_id(row),
@@ -1250,6 +1356,9 @@ def row_to_opportunity(
             },
         },
         "artifactSizing": artifact_sizing,
+        "projectionNumericsSource": projection_source,
+        "projectionEventId": game_projection_row.get("event_id") if game_projection_row is not None else None,
+        "projectionCanonicalEventKey": game_projection_row.get("canonical_event_key") if game_projection_row is not None else None,
     }
 
     if original_candidate is not None:
@@ -1347,6 +1456,35 @@ def row_to_opportunity(
     result["bestAvailablePrice"] = fair_price_result.best_available_price
     result["bestAvailableLine"] = fair_price_result.best_available_line
     result["pushAwareEV"] = fair_price_result.current_ev
+
+    if market_key == "total" and safe_float(game_projection_row.get("model_total_baseline") if game_projection_row is not None else None) is None:
+        total_reason = "Authoritative total baseline is unavailable in the active projection artifact."
+        result["currentWinProbability"] = None
+        result["currentPushProbability"] = None
+        result["currentLossProbability"] = None
+        result["currentEV"] = None
+        result["pushAwareEV"] = None
+        result["edge"] = None
+        result["calibratedEdge"] = None
+        result["evPerDollar"] = None
+        result["fairPrice"] = None
+        result["fairLine"] = None
+        result["truePlayableTo"] = None
+        result["truePlayableToStatus"] = "UNAVAILABLE"
+        result["truePlayableToReason"] = total_reason
+        result["recommendedPlayableTo"] = None
+        result["recommendedPlayableToStatus"] = "UNAVAILABLE"
+        result["recommendedPlayableToReason"] = total_reason
+        result["recommendation"] = "WATCH"
+        result["qualificationStatus"] = "NOT_QUALIFIED"
+        result["qualificationReasons"] = [total_reason]
+        result["currentQualification"] = {
+            "status": "NOT_QUALIFIED",
+            "recommendation": "WATCH",
+            "actionable": False,
+            "reason": total_reason,
+        }
+        result["productionEligible"] = False
 
     if market_key == "spread":
         spread_profile = build_spread_decision_boundaries(
@@ -1531,12 +1669,161 @@ def load_game_projection_lookup(
     return out
 
 
+def _load_active_projection_lookup_for_week(
+    *,
+    resolved_season: int,
+    resolved_week: int,
+    readiness: dict[str, Any],
+    week_event_ids: set[str],
+) -> dict[str, pd.Series]:
+    artifact_id = str(readiness.get("projectionArtifactId") or "").strip()
+    artifact_hash = str(readiness.get("projectionArtifactHash") or "").strip()
+    if not artifact_id or not artifact_hash:
+        raise ValueError("ACTIVE_PROJECTION_IDENTITY_MISSING")
+
+    artifact = load_active_projection_artifact_by_identity(
+        season=resolved_season,
+        week=resolved_week,
+        artifact_id=artifact_id,
+        artifact_hash=artifact_hash,
+    )
+
+    rows = artifact.get("projection_rows")
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("ACTIVE_PROJECTION_ROWS_MISSING")
+
+    schedule_version = str(readiness.get("projectionScheduleVersion") or "").strip()
+    schedule_hash = str(readiness.get("projectionScheduleHash") or "").strip()
+    if not schedule_version:
+        raise ValueError("ACTIVE_PROJECTION_SCHEDULE_VERSION_MISSING")
+    if not schedule_hash:
+        raise ValueError("ACTIVE_PROJECTION_SCHEDULE_HASH_MISSING")
+
+    canonical_schedule = load_canonical_weekly_schedule(
+        season=resolved_season,
+        week=resolved_week,
+        store=default_schedule_engine_store(),
+    )
+    if canonical_schedule is None:
+        raise ValueError("ACTIVE_PROJECTION_CANONICAL_SCHEDULE_MISSING")
+    if str(canonical_schedule.schedule_version) != schedule_version:
+        raise ValueError("ACTIVE_PROJECTION_SCHEDULE_VERSION_MISMATCH")
+    if str(canonical_schedule.schedule_hash) != schedule_hash:
+        raise ValueError("ACTIVE_PROJECTION_SCHEDULE_HASH_MISMATCH")
+
+    canonical_events = list(canonical_schedule.events)
+    if not canonical_events:
+        raise ValueError("ACTIVE_PROJECTION_CANONICAL_SCHEDULE_EMPTY")
+
+    expected_by_event_id: dict[str, Any] = {}
+    expected_by_canonical_key: dict[str, Any] = {}
+    for event in canonical_events:
+        event_id = str(event.source_event_id)
+        canonical_event_key = str(event.canonical_event_key)
+        if event_id in expected_by_event_id:
+            raise ValueError("ACTIVE_PROJECTION_CANONICAL_DUPLICATE_EVENT_ID")
+        if canonical_event_key in expected_by_canonical_key:
+            raise ValueError("ACTIVE_PROJECTION_CANONICAL_DUPLICATE_CANONICAL_KEY")
+        expected_by_event_id[event_id] = event
+        expected_by_canonical_key[canonical_event_key] = event
+
+    event_ids = {str(event_id) for event_id in week_event_ids}
+    lookup: dict[str, pd.Series] = {}
+    seen_event_ids: set[str] = set()
+    seen_canonical_keys: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("ACTIVE_PROJECTION_ROW_INVALID")
+
+        event_id = str(row.get("event_id") or "").strip()
+        canonical_event_key = str(row.get("canonical_event_key") or "").strip()
+        if not event_id or not canonical_event_key:
+            raise ValueError("ACTIVE_PROJECTION_EVENT_IDENTITY_INVALID")
+
+        if event_id in seen_event_ids:
+            raise ValueError("ACTIVE_PROJECTION_DUPLICATE_EVENT_ID")
+        if canonical_event_key in seen_canonical_keys:
+            raise ValueError("ACTIVE_PROJECTION_DUPLICATE_CANONICAL_EVENT_KEY")
+        seen_event_ids.add(event_id)
+        seen_canonical_keys.add(canonical_event_key)
+
+        try:
+            row_season = int(row.get("season"))
+            row_week = int(row.get("week"))
+        except (TypeError, ValueError):
+            raise ValueError("ACTIVE_PROJECTION_ROW_SEASON_WEEK_INVALID")
+        if row_season != int(resolved_season):
+            raise ValueError("ACTIVE_PROJECTION_ROW_SEASON_MISMATCH")
+        if row_week != int(resolved_week):
+            raise ValueError("ACTIVE_PROJECTION_ROW_WEEK_MISMATCH")
+
+        expected_event = expected_by_event_id.get(event_id)
+        if expected_event is None:
+            raise ValueError("ACTIVE_PROJECTION_EVENT_ID_MISMATCH")
+
+        if str(expected_event.canonical_event_key) != canonical_event_key:
+            raise ValueError("ACTIVE_PROJECTION_CANONICAL_EVENT_KEY_MISMATCH")
+
+        try:
+            row_kickoff = normalize_kickoff_utc(str(row.get("kickoff_utc") or ""))
+        except Exception:
+            raise ValueError("ACTIVE_PROJECTION_ROW_KICKOFF_INVALID")
+        expected_kickoff = normalize_kickoff_utc(str(expected_event.kickoff_utc))
+        if row_kickoff != expected_kickoff:
+            raise ValueError("ACTIVE_PROJECTION_ROW_KICKOFF_MISMATCH")
+
+        row_away = normalize_team_id(row.get("away_team"))
+        row_home = normalize_team_id(row.get("home_team"))
+        if row_away != str(expected_event.away_team):
+            raise ValueError("ACTIVE_PROJECTION_ROW_AWAY_TEAM_MISMATCH")
+        if row_home != str(expected_event.home_team):
+            raise ValueError("ACTIVE_PROJECTION_ROW_HOME_TEAM_MISMATCH")
+
+        normalized = dict(row)
+        normalized["projection_source"] = "ACTIVE_PROJECTION_ARTIFACT"
+        normalized["projection_artifact_id"] = artifact_id
+        normalized["projection_artifact_hash"] = artifact_hash
+        normalized["kickoff_utc"] = row_kickoff
+        normalized["away_team"] = row_away
+        normalized["home_team"] = row_home
+        if not event_ids or event_id in event_ids:
+            lookup[event_id] = pd.Series(normalized)
+
+    expected_event_ids = set(expected_by_event_id.keys())
+    expected_canonical_keys = set(expected_by_canonical_key.keys())
+    if seen_event_ids != expected_event_ids:
+        raise ValueError("ACTIVE_PROJECTION_EVENT_COVERAGE_MISMATCH")
+    if seen_canonical_keys != expected_canonical_keys:
+        raise ValueError("ACTIVE_PROJECTION_CANONICAL_COVERAGE_MISMATCH")
+
+    if event_ids and set(lookup.keys()) != event_ids:
+        raise ValueError("ACTIVE_PROJECTION_EVENT_COVERAGE_MISMATCH")
+
+    return lookup
+
+
 def _load_game_projection_lookup_for_week(
     *,
     resolved_week: int | None,
     week_event_ids: set[str] | None,
+    projection_readiness: dict[str, Any] | None = None,
+    resolved_season: int | None = None,
 ) -> dict[str, pd.Series]:
-    """Backward-compatible shim for tests that monkeypatch load_game_projection_lookup."""
+    """Load projection numerics with active-artifact authority when readiness is CURRENT."""
+    readiness_status = str((projection_readiness or {}).get("projectionReadiness") or "").upper()
+    if (
+        readiness_status == "CURRENT"
+        and resolved_week is not None
+        and resolved_season is not None
+        and week_event_ids is not None
+    ):
+        return _load_active_projection_lookup_for_week(
+            resolved_season=int(resolved_season),
+            resolved_week=int(resolved_week),
+            readiness=projection_readiness or {},
+            week_event_ids={str(event_id) for event_id in week_event_ids},
+        )
+
     try:
         return load_game_projection_lookup(
             resolved_week=resolved_week,
@@ -2002,6 +2289,13 @@ def _get_opportunities_payload(
             if str(game.get("eventId") or "")
         }
         week_scheduled_games: int = len(week_event_ids)
+        resolved_season: int | None = safe_int(canonical_week.get("season"))
+        if resolved_season is None:
+            for game in selected_week_games:
+                game_season = safe_int(game.get("season"))
+                if game_season is not None:
+                    resolved_season = int(game_season)
+                    break
     else:
         available_weeks = list(available_weeks_override)
         canonical_week = dict(canonical_week_override)
@@ -2012,6 +2306,29 @@ def _get_opportunities_payload(
         )
         week_event_ids = {str(event_id) for event_id in week_event_ids_override}
         week_scheduled_games = int(week_scheduled_games_override)
+        resolved_season = safe_int(canonical_week.get("season"))
+
+    projection_readiness = _resolve_projection_readiness_for_request(
+        season=resolved_season,
+        week=resolved_week,
+    )
+
+    try:
+        projection_lookup = _load_game_projection_lookup_for_week(
+            resolved_week=resolved_week,
+            week_event_ids=week_event_ids,
+            projection_readiness=projection_readiness,
+            resolved_season=resolved_season,
+        )
+    except Exception:
+        projection_lookup = {}
+        projection_readiness = {
+            **projection_readiness,
+            "projectionReadiness": "INVALID",
+            "projectionReadinessReason": "ACTIVE_PROJECTION_BINDING_FAILED",
+        }
+
+    projection_readiness_payload = _projection_readiness_fields(projection_readiness)
 
     if not df.empty and "api_event_id" in df.columns:
         df["api_event_id"] = df["api_event_id"].astype(str)
@@ -2024,10 +2341,6 @@ def _get_opportunities_payload(
 
     cinfo = calibration_info()
     market_snapshots = market_data_service.all_event_snapshots()
-    projection_lookup = _load_game_projection_lookup_for_week(
-        resolved_week=resolved_week,
-        week_event_ids=week_event_ids,
-    )
     evaluation_timestamp = datetime.now(timezone.utc).isoformat()
 
     if not best_lines_only:
@@ -2053,6 +2366,7 @@ def _get_opportunities_payload(
                 "probabilityEngineVersion": settings.DEFAULT_PROBABILITY_ENGINE_VERSION,
                 "rankingVersion": settings.DEFAULT_RANKING_VERSION,
                 "qualificationPolicyVersion": settings.DEFAULT_QUALIFICATION_POLICY_VERSION,
+                **projection_readiness_payload,
                 "opportunities": [],
             }
 
@@ -2068,6 +2382,7 @@ def _get_opportunities_payload(
                 game_projection_row=projection_lookup.get(str(row["api_event_id"])),
                 evaluation_timestamp=evaluation_timestamp,
             )
+            opp = _apply_projection_readiness_guard(opp, projection_readiness)
             opp["weekRank"] = week_rank
             opportunities.append(opp)
 
@@ -2092,6 +2407,7 @@ def _get_opportunities_payload(
             "probabilityEngineVersion": settings.DEFAULT_PROBABILITY_ENGINE_VERSION,
             "rankingVersion": settings.DEFAULT_RANKING_VERSION,
             "qualificationPolicyVersion": settings.DEFAULT_QUALIFICATION_POLICY_VERSION,
+            **projection_readiness_payload,
             "opportunities": opportunities,
         }
 
@@ -2147,15 +2463,22 @@ def _get_opportunities_payload(
                 "freshRows": execution_meta["freshRows"],
             }
 
-            group_min_rank = int(group["rank"].min()) if "rank" in group.columns else 9999
-            model_prob = _unit_probability(safe_float(current_selected_row.get("model_prob")))
-            implied_prob = _unit_probability(safe_float(current_selected_row.get("implied_prob_raw")))
-            calibrated_prob = apply_guarded_isotonic(model_prob)
-            calibrated_edge = (calibrated_prob - implied_prob) if calibrated_prob is not None and implied_prob is not None else -999.0
-
             alternates_group = fresh_rows if not fresh_rows.empty else pd.DataFrame()
             all_books = make_all_available_books(alternates_group, selected_execution_row) if selected_execution_row is not None else []
             alternates = make_alternate_books(alternates_group, selected_execution_row) if selected_execution_row is not None else []
+
+            group_min_rank = int(group["rank"].min()) if "rank" in group.columns else 9999
+            projection_row = projection_lookup.get(event_id)
+            fair_price_result = build_fair_price_result(
+                row=current_selected_row,
+                group_rows=alternates_group,
+                game_projection_row=projection_row,
+                minimum_playable_ev=settings.MIN_PLAYABLE_EV,
+            )
+            model_prob = _unit_probability(safe_float(fair_price_result.current_win_probability))
+            implied_prob = _unit_probability(safe_float(current_selected_row.get("implied_prob_raw")))
+            calibrated_prob = apply_guarded_isotonic(model_prob)
+            calibrated_edge = (calibrated_prob - implied_prob) if calibrated_prob is not None and implied_prob is not None else -999.0
 
             candidate_rows.append(
                 {
@@ -2165,7 +2488,7 @@ def _get_opportunities_payload(
                     "allAvailableBooks": all_books,
                     "groupMinRank": group_min_rank,
                     "calibratedEdge": float(calibrated_edge),
-                    "ev": float(safe_float(current_selected_row.get("ev_per_dollar")) or 0.0),
+                    "ev": float(safe_float(fair_price_result.current_ev) or 0.0),
                     "confidence": float(safe_float(current_selected_row.get("confidence_score")) or 0.0),
                     "eventId": str(current_selected_row.get("api_event_id") or ""),
                     "market": _market_key(str(current_selected_row.get("market") or "")),
@@ -2269,6 +2592,7 @@ def _get_opportunities_payload(
             current_execution=candidate.get("currentExecution"),
             evaluation_timestamp=evaluation_timestamp,
         )
+        item = _apply_projection_readiness_guard(item, projection_readiness)
         # globalResearchRank is fallback ordering for research (not validated cross-market quality).
         item["globalResearchRank"] = week_rank
         item["globalResearchRankingMethod"] = "MARKET_PRECEDENCE_FALLBACK"
@@ -2380,6 +2704,7 @@ def _get_opportunities_payload(
         "probabilityEngineVersion": settings.DEFAULT_PROBABILITY_ENGINE_VERSION,
         "rankingVersion": settings.DEFAULT_RANKING_VERSION,
         "qualificationPolicyVersion": settings.DEFAULT_QUALIFICATION_POLICY_VERSION,
+        **projection_readiness_payload,
         "opportunities": best_rows,
     }
 
@@ -2430,6 +2755,15 @@ def get_decision_board(
         "defaultWeek": payload.get("defaultWeek"),
         "canonicalWeek": payload.get("canonicalWeek"),
         "weekReadiness": payload.get("weekReadiness"),
+        "projectionReadiness": payload.get("projectionReadiness"),
+        "projectionReadinessReason": payload.get("projectionReadinessReason"),
+        "projectionSeason": payload.get("projectionSeason"),
+        "projectionWeek": payload.get("projectionWeek"),
+        "projectionPowerThroughWeek": payload.get("projectionPowerThroughWeek"),
+        "projectionArtifactId": payload.get("projectionArtifactId"),
+        "projectionArtifactHash": payload.get("projectionArtifactHash"),
+        "projectionScheduleVersion": payload.get("projectionScheduleVersion"),
+        "projectionScheduleHash": payload.get("projectionScheduleHash"),
         "dataStatus": payload.get("dataStatus"),
         "lastUpdated": payload.get("lastUpdated"),
         "snapshotId": payload.get("snapshotId"),
@@ -2537,6 +2871,21 @@ def get_opportunity_analysis(
     all_available_books = make_all_available_books(fresh_rows, selected_execution_row)
 
     projection_lookup = load_game_projection_lookup()
+    single_event_week = _resolve_event_week(str(selected_with_model_timestamp.get("api_event_id") or ""))
+    if single_event_week is not None:
+        single_event_readiness = _resolve_projection_readiness_for_request(
+            season=safe_int(resolve_canonical_week_metadata().get("season")),
+            week=single_event_week,
+        )
+        try:
+            projection_lookup = _load_game_projection_lookup_for_week(
+                resolved_week=single_event_week,
+                week_event_ids={str(selected_with_model_timestamp.get("api_event_id") or "")},
+                projection_readiness=single_event_readiness,
+                resolved_season=safe_int(resolve_canonical_week_metadata().get("season")),
+            )
+        except Exception:
+            projection_lookup = {}
     selected_with_model_timestamp = _ensure_model_timestamp(selected, _artifact_timestamp_iso(RANKED_BET_BOARD))
 
     opportunity = (
@@ -2748,6 +3097,21 @@ def get_opportunity(
 
     all_available_books = make_all_available_books(match, selected)
     projection_lookup = load_game_projection_lookup()
+    single_event_week = _resolve_event_week(str(selected.get("api_event_id") or ""))
+    if single_event_week is not None:
+        single_event_readiness = _resolve_projection_readiness_for_request(
+            season=safe_int(resolve_canonical_week_metadata().get("season")),
+            week=single_event_week,
+        )
+        try:
+            projection_lookup = _load_game_projection_lookup_for_week(
+                resolved_week=single_event_week,
+                week_event_ids={str(selected.get("api_event_id") or "")},
+                projection_readiness=single_event_readiness,
+                resolved_season=safe_int(resolve_canonical_week_metadata().get("season")),
+            )
+        except Exception:
+            projection_lookup = {}
 
     return (
         row_to_opportunity(

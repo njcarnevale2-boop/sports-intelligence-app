@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -192,6 +193,70 @@ def test_current_opportunities_skip_lowvig_and_recompute_from_remaining_quotes(t
     _current_board_rows().to_csv(board_path, index=False)
 
     monkeypatch.setattr(opportunities, "RANKED_BET_BOARD", board_path)
+    monkeypatch.setattr(
+        opportunities,
+        "resolve_projection_readiness",
+        lambda season, week: {
+            "projectionReadiness": "CURRENT",
+            "projectionReadinessReason": "TEST_DEFAULT_CURRENT",
+            "projectionSeason": season,
+            "projectionWeek": week,
+            "projectionPowerThroughWeek": None if week is None else int(week) - 1,
+            "projectionArtifactId": "proj-test-current",
+            "projectionArtifactHash": "artifact-hash-test-current",
+            "projectionScheduleVersion": "schedule-v1:test",
+            "projectionScheduleHash": "schedule-hash-test",
+            "projectionValidationStatus": "VALID",
+            "projectionPowerSnapshotId": "snap-test-current",
+            "projectionPowerSnapshotHash": "snap-hash-test-current",
+            "projectionActivatedAt": "2026-09-13T15:00:00Z",
+            "expectedPowerThroughWeek": None if week is None else int(week) - 1,
+        },
+    )
+    monkeypatch.setattr(
+        opportunities,
+        "load_active_projection_artifact_by_identity",
+        lambda season, week, artifact_id, artifact_hash: {
+            "projection_rows": [
+                {
+                    "event_id": "evt-lowvig",
+                    "season": 2026,
+                    "week": 1,
+                    "kickoff_utc": "2026-09-20T17:00:00Z",
+                    "away_team": "NO",
+                    "home_team": "ATL",
+                    "away_power": 0.0,
+                    "home_power": 0.0,
+                    "model_margin_home": 2.7,
+                    "model_total_baseline": 47.5,
+                    "canonical_event_key": "cev-lowvig",
+                    "model_version": "model-v1",
+                    "probability_version": "prob-v1",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        opportunities,
+        "load_canonical_weekly_schedule",
+        lambda season, week, store=None: SimpleNamespace(
+            schedule_version="schedule-v1:test",
+            schedule_hash="schedule-hash-test",
+            season=season,
+            week=week,
+            events=[
+                SimpleNamespace(
+                    source_event_id="evt-lowvig",
+                    canonical_event_key="cev-lowvig",
+                    season=season,
+                    week=week,
+                    kickoff_utc="2026-09-20T17:00:00Z",
+                    away_team="NO",
+                    home_team="ATL",
+                )
+            ],
+        ),
+    )
     monkeypatch.setattr(opportunities.market_data_service, "metadata", lambda: {"provider": "line_movement_board", "lastUpdated": "2026-09-07T00:00:00+00:00", "dataStatus": "FILE"})
     monkeypatch.setattr(
         opportunities.market_data_service,

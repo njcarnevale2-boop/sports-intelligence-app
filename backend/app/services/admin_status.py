@@ -25,6 +25,7 @@ from app.services.power_engine import (
     active_power_transition_observability,
     active_projection_observability,
     default_power_engine_store,
+    resolve_projection_readiness,
 )
 from app.services.week_resolution import (
     _find_missing_matchups,
@@ -335,6 +336,18 @@ class AdminStatusService:
             "isCurrentRelativeToPower": False,
             "reason": "PROJECTION_UNAVAILABLE",
         }
+        projection_readiness: dict[str, Any] = {
+            "projectionReadiness": "INVALID",
+            "projectionReadinessReason": "CANONICAL_WEEK_INVALID",
+            "projectionSeason": canonical_week.get("season"),
+            "projectionWeek": canonical_week.get("week"),
+            "projectionPowerThroughWeek": None,
+            "projectionArtifactId": None,
+            "projectionArtifactHash": None,
+            "projectionScheduleVersion": None,
+            "projectionScheduleHash": None,
+            "projectionValidationStatus": None,
+        }
 
         try:
             season = int(canonical_week.get("season"))
@@ -362,6 +375,17 @@ class AdminStatusService:
         except Exception:
             pass
 
+        try:
+            season = int(canonical_week.get("season"))
+            week = int(canonical_week.get("week"))
+            projection_readiness = resolve_projection_readiness(
+                season=season,
+                week=week,
+                power_store=default_power_engine_store(),
+            )
+        except Exception:
+            pass
+
         return {
             "canonicalWeek": canonical_week,
             "previousWeek": self._previous_week_frozen_snapshot(canonical_week=canonical_week),
@@ -384,6 +408,7 @@ class AdminStatusService:
                 "reason": "POWER_ENGINE_ROOT_MISSING" if not power_root.exists() else "POWER_ENGINE_ROOT_VISIBLE",
                 "activeTransition": power_transition,
                 "activeProjection": active_projection,
+                "projectionReadiness": projection_readiness,
             },
             "missingMatchups": missing_matchups,
             "missingReasonCounts": {
