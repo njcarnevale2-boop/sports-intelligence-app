@@ -33,6 +33,12 @@ from .persistence import (
 )
 from .updater import apply_week_results, apply_single_game_update
 from .validation import CANONICAL_NFL_TEAMS, validate_snapshot
+from .projection_publication import (
+    ProjectionPublicationError,
+    active_projection_observability,
+    list_projection_artifacts,
+    publish_weekly_projections,
+)
 from .weekly_transition import (
     PowerWeeklyTransitionError,
     PowerWeeklyTransitionRecord,
@@ -72,6 +78,10 @@ __all__ = [
     "snapshot_hash",
     "update_payload_hash",
     "validate_snapshot",
+    "ProjectionPublicationError",
+    "publish_weekly_projections",
+    "active_projection_observability",
+    "list_projection_artifacts",
     "PowerWeeklyTransitionError",
     "PowerWeeklyTransitionRecord",
     "active_power_transition_observability",

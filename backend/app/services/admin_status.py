@@ -21,7 +21,11 @@ from app.services.social_sources import get_social_source_coverage_report
 from app.services.weather_history import get_weather_summary
 from app.services.decision_ledger import get_admin_ledger_summary, get_official_publication_for_week
 from app.services.games import service as games_service
-from app.services.power_engine import active_power_transition_observability, default_power_engine_store
+from app.services.power_engine import (
+    active_power_transition_observability,
+    active_projection_observability,
+    default_power_engine_store,
+)
 from app.services.week_resolution import (
     _find_missing_matchups,
     _load_projection_rows,
@@ -306,6 +310,31 @@ class AdminStatusService:
             "lineageId": None,
             "reason": "POWER_TRANSITION_UNAVAILABLE",
         }
+        active_projection: dict[str, Any] = {
+            "season": None,
+            "week": None,
+            "artifactId": None,
+            "artifactHash": None,
+            "status": None,
+            "powerSnapshotId": None,
+            "powerSnapshotHash": None,
+            "powerThroughWeek": None,
+            "sourceResultSetVersion": None,
+            "sourceResultSetHash": None,
+            "sourcePowerTransitionId": None,
+            "scheduleVersion": None,
+            "scheduleHash": None,
+            "modelVersion": None,
+            "probabilityVersion": None,
+            "methodologyHash": None,
+            "expectedGameCount": None,
+            "projectedGameCount": None,
+            "coverageHash": None,
+            "validationStatus": None,
+            "activatedAt": None,
+            "isCurrentRelativeToPower": False,
+            "reason": "PROJECTION_UNAVAILABLE",
+        }
 
         try:
             season = int(canonical_week.get("season"))
@@ -315,6 +344,20 @@ class AdminStatusService:
                     season=season,
                 ),
                 "reason": "POWER_TRANSITION_VISIBLE",
+            }
+        except Exception:
+            pass
+
+        try:
+            season = int(canonical_week.get("season"))
+            week = int(canonical_week.get("week"))
+            active_projection = {
+                **active_projection_observability(
+                    power_store=default_power_engine_store(),
+                    season=season,
+                    week=week,
+                ),
+                "reason": "PROJECTION_VISIBLE",
             }
         except Exception:
             pass
@@ -340,6 +383,7 @@ class AdminStatusService:
                 "available": power_root.exists(),
                 "reason": "POWER_ENGINE_ROOT_MISSING" if not power_root.exists() else "POWER_ENGINE_ROOT_VISIBLE",
                 "activeTransition": power_transition,
+                "activeProjection": active_projection,
             },
             "missingMatchups": missing_matchups,
             "missingReasonCounts": {
