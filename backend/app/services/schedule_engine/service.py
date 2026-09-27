@@ -38,6 +38,7 @@ class CanonicalScheduleEvent:
     canonical_event_key: str
     season: int
     week: int
+    game_type: str
     gameday: str
     kickoff_utc: str
     away_team: str
@@ -52,7 +53,10 @@ class CanonicalWeeklySchedule:
     week: int
     event_count: int
     source: str
+    source_version: str | None
     source_dataset_version: str | None
+    source_content_sha256: str | None
+    source_manifest_identity: str | None
     generated_at: str
     payload_hash: str
     events: tuple[CanonicalScheduleEvent, ...]
@@ -172,6 +176,7 @@ def _schedule_identity_payload(events: tuple[CanonicalScheduleEvent, ...], *, se
             {
                 "source_event_id": item.source_event_id,
                 "canonical_event_key": item.canonical_event_key,
+                "game_type": item.game_type,
                 "gameday": item.gameday,
                 "kickoff_utc": item.kickoff_utc,
                 "away_team": item.away_team,
@@ -194,7 +199,10 @@ def _payload_hash(schedule: CanonicalWeeklySchedule) -> str:
         "week": schedule.week,
         "event_count": schedule.event_count,
         "source": schedule.source,
+        "source_version": schedule.source_version,
         "source_dataset_version": schedule.source_dataset_version,
+        "source_content_sha256": schedule.source_content_sha256,
+        "source_manifest_identity": schedule.source_manifest_identity,
         "events": _schedule_identity_payload(schedule.events, season=schedule.season, week=schedule.week)["events"],
     }
     return _sha256_hex(_canonical_json(payload))
@@ -206,6 +214,7 @@ def _event_from_payload(payload: dict[str, Any]) -> CanonicalScheduleEvent:
         canonical_event_key=str(payload["canonical_event_key"]),
         season=int(payload["season"]),
         week=int(payload["week"]),
+        game_type=str(payload.get("game_type") or "REG"),
         gameday=str(payload["gameday"]),
         kickoff_utc=str(payload["kickoff_utc"]),
         away_team=str(payload["away_team"]),
@@ -241,7 +250,10 @@ def _schedule_from_payload(payload: dict[str, Any]) -> CanonicalWeeklySchedule:
         week=int(payload["week"]),
         event_count=int(payload["event_count"]),
         source=str(payload["source"]),
+        source_version=None if payload.get("source_version") in (None, "") else str(payload.get("source_version")),
         source_dataset_version=None if payload.get("source_dataset_version") in (None, "") else str(payload["source_dataset_version"]),
+        source_content_sha256=None if payload.get("source_content_sha256") in (None, "") else str(payload.get("source_content_sha256")),
+        source_manifest_identity=None if payload.get("source_manifest_identity") in (None, "") else str(payload.get("source_manifest_identity")),
         generated_at=str(payload["generated_at"]),
         payload_hash=str(payload["payload_hash"]),
         events=tuple(_event_from_payload(item) for item in events_raw),
@@ -253,6 +265,7 @@ def _schedule_from_payload(payload: dict[str, Any]) -> CanonicalWeeklySchedule:
 def _validate_schedule_event(event: CanonicalScheduleEvent) -> None:
     _validate_identifier(event.source_event_id, "source_event_id")
     _validate_identifier(event.canonical_event_key, "canonical_event_key")
+    _validate_identifier(event.game_type, "game_type")
     _parse_gameday(event.gameday)
     normalize_team_id(event.away_team)
     normalize_team_id(event.home_team)
@@ -349,28 +362,47 @@ def _source_rows_from_duckdb(*, duckdb_path: Path, season: int, week: int) -> li
         tables = {row[0] for row in con.execute("SHOW TABLES").fetchall()}
         if "schedules" not in tables:
             raise ScheduleEngineError("SCHEDULE_SOURCE_TABLE_MISSING")
-        rows = con.execute(
-            """
-            SELECT game_id, season, week, gameday, gametime, away_team, home_team
-            FROM schedules
-            WHERE season = ? AND week = ?
-            ORDER BY gameday, gametime, game_id
-            """,
-            [season, week],
-        ).fetchall()
+        columns = {row[1] for row in con.execute("PRAGMA table_info('schedules')").fetchall()}
+        has_game_type = "game_type" in columns
+        if has_game_type:
+            rows = con.execute(
+                """
+                SELECT game_id, season, week, game_type, gameday, gametime, away_team, home_team
+                FROM schedules
+                WHERE season = ? AND week = ?
+                ORDER BY gameday, gametime, game_id
+                """,
+                [season, week],
+            ).fetchall()
+        else:
+            rows = con.execute(
+                """
+                SELECT game_id, season, week, gameday, gametime, away_team, home_team
+                FROM schedules
+                WHERE season = ? AND week = ?
+                ORDER BY gameday, gametime, game_id
+                """,
+                [season, week],
+            ).fetchall()
     finally:
         con.close()
     out: list[dict[str, Any]] = []
     for row in rows:
+        if len(row) == 8:
+            game_id, row_season, row_week, game_type, gameday, gametime, away_team, home_team = row
+        else:
+            game_id, row_season, row_week, gameday, gametime, away_team, home_team = row
+            game_type = "REG"
         out.append(
             {
-                "game_id": row[0],
-                "season": row[1],
-                "week": row[2],
-                "gameday": row[3],
-                "gametime": row[4],
-                "away_team": row[5],
-                "home_team": row[6],
+                "game_id": game_id,
+                "season": row_season,
+                "week": row_week,
+                "game_type": game_type,
+                "gameday": gameday,
+                "gametime": gametime,
+                "away_team": away_team,
+                "home_team": home_team,
             }
         )
     return out
@@ -382,6 +414,7 @@ def _materialize_events(*, rows: list[dict[str, Any]], season: int, week: int) -
         if int(row.get("season")) != season or int(row.get("week")) != week:
             raise ScheduleEngineError("SCHEDULE_SEASON_WEEK_MISMATCH")
         source_event_id = _validate_identifier(str(row.get("game_id") or "").strip(), "game_id")
+        game_type = _validate_identifier(str(row.get("game_type") or "REG").strip(), "game_type")
         away_team = normalize_team_id(row.get("away_team"))
         home_team = normalize_team_id(row.get("home_team"))
         if away_team == home_team:
@@ -401,6 +434,7 @@ def _materialize_events(*, rows: list[dict[str, Any]], season: int, week: int) -
                 canonical_event_key=identity.canonical_event_key,
                 season=season,
                 week=week,
+                game_type=game_type,
                 gameday=gameday,
                 kickoff_utc=identity.kickoff_utc,
                 away_team=identity.away_team,
@@ -453,7 +487,10 @@ def materialize_canonical_weekly_schedule(
         week=week,
         event_count=len(events),
         source=source,
+        source_version=None,
         source_dataset_version=source_dataset_version,
+        source_content_sha256=None,
+        source_manifest_identity=None,
         generated_at=_utc_now_iso(),
         payload_hash="",
         events=events,
@@ -465,7 +502,10 @@ def materialize_canonical_weekly_schedule(
         week=schedule.week,
         event_count=schedule.event_count,
         source=schedule.source,
+        source_version=schedule.source_version,
         source_dataset_version=schedule.source_dataset_version,
+        source_content_sha256=schedule.source_content_sha256,
+        source_manifest_identity=schedule.source_manifest_identity,
         generated_at=schedule.generated_at,
         payload_hash=_payload_hash(schedule),
         events=schedule.events,
