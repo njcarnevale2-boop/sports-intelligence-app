@@ -160,7 +160,7 @@ def test_valid_completed_result_normalization(tmp_path: Path):
     assert out.status == "ACCEPTED"
     assert out.accepted is not None
     assert out.accepted.acceptance_policy_version == NFLVERSE_VERSIONED_RESULT_POLICY_VERSION
-    assert out.accepted.accepted_status.value == "COMPLETED"
+    assert out.accepted.accepted_status.value == "FINAL"
     assert out.artifact.provider == "nflverse"
     assert out.artifact.source_locator.startswith("https://github.com/nflverse/")
 
