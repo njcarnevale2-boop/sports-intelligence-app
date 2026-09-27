@@ -1,0 +1,28 @@
+{
+  "injuries": [
+    {
+      "team": "WAS",
+      "player_name": "Jayden Daniels",
+      "position": "QB",
+      "injury_description": "Elbow",
+      "practice_status": "DNP",
+      "game_status": "OUT"
+    },
+    {
+      "team": "SEA",
+      "player_name": "DK Metcalf",
+      "position": "WR",
+      "injury_description": "Knee",
+      "practice_status": "Limited",
+      "game_status": "Questionable"
+    },
+    {
+      "team": "DET",
+      "player_name": "Frank Ragnow",
+      "position": "C",
+      "injury_description": "Calf",
+      "practice_status": "Full",
+      "game_status": "Doubtful"
+    }
+  ]
+}

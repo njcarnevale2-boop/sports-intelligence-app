@@ -1,0 +1,24 @@
+{
+  "starter_evidence": [
+    {
+      "team": "WAS",
+      "player": "Marcus Mariota",
+      "role": "STARTING_QB",
+      "effective_game": "2026_03_WAS_SEA",
+      "source": "Official Team Announcement",
+      "source_url": "https://www.commanders.com/news/starting-qb",
+      "published_at": "2026-09-25T20:00:00Z",
+      "retrieved_at": "2026-09-25T20:03:00Z"
+    },
+    {
+      "team": "SEA",
+      "player": "Geno Smith",
+      "role": "STARTING_QB",
+      "effective_game": "2026_03_WAS_SEA",
+      "source": "Official Team Announcement",
+      "source_url": "https://www.seahawks.com/news/starting-qb",
+      "published_at": "2026-09-25T20:00:00Z",
+      "retrieved_at": "2026-09-25T20:03:00Z"
+    }
+  ]
+}
