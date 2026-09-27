@@ -1,15 +1,24 @@
 from __future__ import annotations
 
 import json
+import socket
+import ssl
 from pathlib import Path
 from types import SimpleNamespace
+import urllib.error
 
+import certifi
 import pytest
 
 from app.services.personnel_authority import load_personnel_authority_lookup
 from app.services.personnel_ingestion import (
+    APPROVED_NFL_INJURY_SOURCE_URL,
+    NFLInjuryFetchResult,
     PersonnelIngestionError,
+    PersonnelRetrievalError,
     build_personnel_snapshot,
+    fetch_nfl_injury_source,
+    ingest_nfl_personnel_snapshot,
     load_latest_personnel_snapshot,
     normalize_team_id,
     write_personnel_snapshot,
@@ -21,6 +30,213 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures" / "personnel"
 
 def _fixture_text(name: str) -> str:
     return (FIXTURES / name).read_text(encoding="utf-8")
+
+
+class _FakeHeaders(dict):
+    def get(self, key, default=None):
+        return super().get(key, default)
+
+
+class _FakeResponse:
+    def __init__(self, *, body: bytes, status: int, final_url: str, headers: dict[str, str] | None = None):
+        self._body = body
+        self.status = status
+        self._final_url = final_url
+        self.headers = _FakeHeaders(headers or {})
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self):
+        return self._body
+
+    def geturl(self):
+        return self._final_url
+
+    def getcode(self):
+        return self.status
+
+
+def test_fetch_nfl_injury_source_uses_certifi_and_verified_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    observed: dict[str, object] = {}
+    original_create_default_context = ssl.create_default_context
+
+    def create_default_context_spy(*args, **kwargs):
+        observed["cafile"] = kwargs.get("cafile")
+        context = original_create_default_context(*args, **kwargs)
+        observed["context"] = context
+        return context
+
+    def fake_urlopen(request, *, timeout=None, context=None):
+        observed["request_url"] = request.full_url
+        observed["timeout"] = timeout
+        observed["context_passed"] = context
+        return _FakeResponse(
+            body=b"<html>injuries</html>",
+            status=200,
+            final_url=APPROVED_NFL_INJURY_SOURCE_URL,
+            headers={"Last-Modified": "Wed, 25 Sep 2026 17:05:00 GMT"},
+        )
+
+    monkeypatch.setattr("app.services.personnel_ingestion.ssl.create_default_context", create_default_context_spy)
+    monkeypatch.setattr("app.services.personnel_ingestion.urllib_request.urlopen", fake_urlopen)
+
+    result = fetch_nfl_injury_source()
+
+    assert observed["cafile"] == certifi.where()
+    assert isinstance(observed["context"], ssl.SSLContext)
+    assert observed["context"].verify_mode == ssl.CERT_REQUIRED
+    assert observed["context"].check_hostname is True
+    assert observed["context_passed"] is observed["context"]
+    assert observed["request_url"] == APPROVED_NFL_INJURY_SOURCE_URL
+    assert observed["timeout"] == 30
+    assert result.body == b"<html>injuries</html>"
+    assert result.source_url == APPROVED_NFL_INJURY_SOURCE_URL
+    assert result.final_url == APPROVED_NFL_INJURY_SOURCE_URL
+    assert result.http_status == 200
+    assert result.source_timestamp == "Wed, 25 Sep 2026 17:05:00 GMT"
+    assert result.retrieved_at
+
+
+def test_fetch_nfl_injury_source_rejects_non_https_before_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"count": 0}
+
+    def fake_urlopen(*args, **kwargs):
+        calls["count"] += 1
+        raise AssertionError("urlopen should not be reached for rejected URLs")
+
+    monkeypatch.setattr("app.services.personnel_ingestion.urllib_request.urlopen", fake_urlopen)
+
+    with pytest.raises(PersonnelRetrievalError, match="PERSONNEL_SOURCE_URL_REJECTED"):
+        fetch_nfl_injury_source("http://www.nfl.com/injuries/")
+
+    assert calls["count"] == 0
+
+
+def test_fetch_nfl_injury_source_tls_failure_raises_and_does_not_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"count": 0}
+
+    def fake_urlopen(*args, **kwargs):
+        calls["count"] += 1
+        raise urllib.error.URLError(ssl.SSLError("CERTIFICATE_VERIFY_FAILED"))
+
+    monkeypatch.setattr("app.services.personnel_ingestion.urllib_request.urlopen", fake_urlopen)
+
+    with pytest.raises(PersonnelRetrievalError, match="PERSONNEL_SOURCE_TLS_ERROR"):
+        fetch_nfl_injury_source()
+
+    assert calls["count"] == 1
+
+
+def test_fetch_nfl_injury_source_timeout_raises_and_does_not_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"count": 0}
+
+    def fake_urlopen(*args, **kwargs):
+        calls["count"] += 1
+        raise socket.timeout("timed out")
+
+    monkeypatch.setattr("app.services.personnel_ingestion.urllib_request.urlopen", fake_urlopen)
+
+    with pytest.raises(PersonnelRetrievalError, match="PERSONNEL_SOURCE_TIMEOUT"):
+        fetch_nfl_injury_source()
+
+    assert calls["count"] == 1
+
+
+def test_fetch_nfl_injury_source_non_success_status_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"count": 0}
+
+    def fake_urlopen(*args, **kwargs):
+        calls["count"] += 1
+        return _FakeResponse(
+            body=b"service unavailable",
+            status=503,
+            final_url=APPROVED_NFL_INJURY_SOURCE_URL,
+        )
+
+    monkeypatch.setattr("app.services.personnel_ingestion.urllib_request.urlopen", fake_urlopen)
+
+    with pytest.raises(PersonnelRetrievalError, match="PERSONNEL_SOURCE_HTTP_STATUS_503"):
+        fetch_nfl_injury_source()
+
+    assert calls["count"] == 1
+
+
+def test_fetch_nfl_injury_source_empty_response_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"count": 0}
+
+    def fake_urlopen(*args, **kwargs):
+        calls["count"] += 1
+        return _FakeResponse(
+            body=b"",
+            status=200,
+            final_url=APPROVED_NFL_INJURY_SOURCE_URL,
+        )
+
+    monkeypatch.setattr("app.services.personnel_ingestion.urllib_request.urlopen", fake_urlopen)
+
+    with pytest.raises(PersonnelRetrievalError, match="PERSONNEL_SOURCE_EMPTY_RESPONSE"):
+        fetch_nfl_injury_source()
+
+    assert calls["count"] == 1
+
+
+def test_fetch_nfl_injury_source_success_preserves_provenance_and_single_attempt(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"count": 0}
+
+    def fake_urlopen(*args, **kwargs):
+        calls["count"] += 1
+        return _FakeResponse(
+            body=b"<html>nfl injuries</html>",
+            status=200,
+            final_url=APPROVED_NFL_INJURY_SOURCE_URL,
+            headers={
+                "Last-Modified": "Wed, 25 Sep 2026 17:05:00 GMT",
+                "Date": "Wed, 25 Sep 2026 17:06:00 GMT",
+            },
+        )
+
+    monkeypatch.setattr("app.services.personnel_ingestion.urllib_request.urlopen", fake_urlopen)
+
+    result = fetch_nfl_injury_source()
+
+    assert calls["count"] == 1
+    assert result.body == b"<html>nfl injuries</html>"
+    assert result.source_url == APPROVED_NFL_INJURY_SOURCE_URL
+    assert result.final_url == APPROVED_NFL_INJURY_SOURCE_URL
+    assert result.http_status == 200
+    assert result.source_timestamp == "Wed, 25 Sep 2026 17:05:00 GMT"
+    assert result.retrieved_at
+
+
+def test_ingest_nfl_personnel_snapshot_uses_secure_fetch_helper(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    payload = _fixture_text("nfl_injuries_week3.json")
+    fetch_result = NFLInjuryFetchResult(
+        body=payload.encode("utf-8"),
+        source_url=APPROVED_NFL_INJURY_SOURCE_URL,
+        final_url=APPROVED_NFL_INJURY_SOURCE_URL,
+        http_status=200,
+        source_timestamp="Wed, 25 Sep 2026 17:05:00 GMT",
+        retrieved_at="2026-09-25T17:06:00Z",
+    )
+
+    monkeypatch.setattr("app.services.personnel_ingestion.fetch_nfl_injury_source", lambda **kwargs: fetch_result)
+
+    snapshot, returned_fetch_result, snapshot_path = ingest_nfl_personnel_snapshot(
+        season=2026,
+        week=3,
+        store_root=tmp_path / "personnel",
+    )
+
+    assert returned_fetch_result == fetch_result
+    assert snapshot.source_url == APPROVED_NFL_INJURY_SOURCE_URL
+    assert snapshot.source_timestamp == "Wed, 25 Sep 2026 17:05:00 GMT"
+    assert snapshot_path.exists()
+    assert snapshot.personnel_snapshot_id.startswith("personnel-")
+    assert any(record.team == "WAS" for record in snapshot.records)
 
 
 def test_html_injury_fixture_parses_statuses_and_position_groups() -> None:

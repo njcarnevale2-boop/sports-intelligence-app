@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import json
+import socket
 import re
+import ssl
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from hashlib import sha256
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import urlparse
+import urllib.error as urllib_error
+import urllib.request as urllib_request
+
+import certifi
 
 from app.runtime_paths import runtime_paths
 
@@ -136,10 +143,105 @@ CANONICAL_TEAM_IDS = {
 
 SOURCE_PARSER_VERSION = "personnel_ingestion_v1"
 DEFAULT_PERSONNEL_SNAPSHOT_DIR = runtime_paths.root / "data" / "personnel_snapshots"
+DEFAULT_NFL_INJURY_SOURCE_URL = "https://www.nfl.com/injuries/"
+APPROVED_NFL_INJURY_SOURCE_URL = DEFAULT_NFL_INJURY_SOURCE_URL
+DEFAULT_NFL_INJURY_TIMEOUT_SECONDS = 30
+DEFAULT_NFL_INJURY_USER_AGENT = (
+    "SIA/1.0 (+https://www.nfl.com/injuries; personnel ingestion)"
+)
 
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _is_https_nfl_injury_url(value: str) -> bool:
+    parsed = urlparse(value)
+    if parsed.scheme.lower() != "https":
+        return False
+    hostname = (parsed.hostname or "").lower()
+    if hostname not in {"nfl.com", "www.nfl.com"}:
+        return False
+    path = parsed.path.rstrip("/")
+    return path == "/injuries"
+
+
+def _canonicalize_nfl_injury_url(value: str | None) -> str:
+    candidate = _normalized_text(value) or DEFAULT_NFL_INJURY_SOURCE_URL
+    if not _is_https_nfl_injury_url(candidate):
+        raise PersonnelRetrievalError(f"PERSONNEL_SOURCE_URL_REJECTED: {candidate!r}")
+    return DEFAULT_NFL_INJURY_SOURCE_URL
+
+
+class PersonnelRetrievalError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class NFLInjuryFetchResult:
+    body: bytes
+    source_url: str
+    final_url: str
+    http_status: int
+    source_timestamp: str | None
+    retrieved_at: str
+
+
+def fetch_nfl_injury_source(
+    source_url: str = DEFAULT_NFL_INJURY_SOURCE_URL,
+    *,
+    timeout_seconds: int = DEFAULT_NFL_INJURY_TIMEOUT_SECONDS,
+    user_agent: str = DEFAULT_NFL_INJURY_USER_AGENT,
+) -> NFLInjuryFetchResult:
+    approved_source_url = _canonicalize_nfl_injury_url(source_url)
+    request = urllib_request.Request(
+        approved_source_url,
+        headers={
+            "User-Agent": user_agent,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+    )
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    retrieved_at = _utc_now_iso()
+
+    try:
+        with urllib_request.urlopen(request, timeout=timeout_seconds, context=ssl_context) as response:
+            http_status = int(getattr(response, "status", None) or response.getcode() or 0)
+            body = response.read()
+            final_url = str(response.geturl() or approved_source_url)
+            headers = getattr(response, "headers", None)
+            source_timestamp = None
+            if headers is not None:
+                source_timestamp = headers.get("Last-Modified") or headers.get("Date")
+    except urllib_error.HTTPError as exc:
+        raise PersonnelRetrievalError(f"PERSONNEL_SOURCE_HTTP_ERROR: {exc.code}") from exc
+    except (socket.timeout, TimeoutError) as exc:
+        raise PersonnelRetrievalError("PERSONNEL_SOURCE_TIMEOUT") from exc
+    except urllib_error.URLError as exc:
+        reason = getattr(exc, "reason", None)
+        if isinstance(reason, (socket.timeout, TimeoutError)):
+            raise PersonnelRetrievalError("PERSONNEL_SOURCE_TIMEOUT") from exc
+        if isinstance(reason, ssl.SSLError):
+            raise PersonnelRetrievalError(f"PERSONNEL_SOURCE_TLS_ERROR: {reason}") from exc
+        raise PersonnelRetrievalError(f"PERSONNEL_SOURCE_NETWORK_ERROR: {exc.reason!r}") from exc
+    except ssl.SSLError as exc:
+        raise PersonnelRetrievalError(f"PERSONNEL_SOURCE_TLS_ERROR: {exc}") from exc
+
+    if http_status < 200 or http_status >= 300:
+        raise PersonnelRetrievalError(f"PERSONNEL_SOURCE_HTTP_STATUS_{http_status}")
+    if not body:
+        raise PersonnelRetrievalError("PERSONNEL_SOURCE_EMPTY_RESPONSE")
+    if not _is_https_nfl_injury_url(final_url):
+        raise PersonnelRetrievalError(f"PERSONNEL_SOURCE_FINAL_URL_REJECTED: {final_url!r}")
+
+    return NFLInjuryFetchResult(
+        body=body,
+        source_url=approved_source_url,
+        final_url=final_url,
+        http_status=http_status,
+        source_timestamp=source_timestamp,
+        retrieved_at=retrieved_at,
+    )
 
 
 def _normalized_text(value: Any) -> str:
@@ -578,6 +680,31 @@ def build_personnel_snapshot(
         records=canonical_records,
         starter_evidence=canonical_evidence,
     )
+
+
+def ingest_nfl_personnel_snapshot(
+    *,
+    season: int,
+    week: int,
+    source_url: str = DEFAULT_NFL_INJURY_SOURCE_URL,
+    source_version: str | None = None,
+    starter_evidence: Iterable[dict[str, Any] | PersonnelStarterEvidence] | None = None,
+    store_root: Path | None = None,
+    timeout_seconds: int = DEFAULT_NFL_INJURY_TIMEOUT_SECONDS,
+) -> tuple[PersonnelSnapshot, NFLInjuryFetchResult, Path]:
+    fetch_result = fetch_nfl_injury_source(source_url=source_url, timeout_seconds=timeout_seconds)
+    snapshot = build_personnel_snapshot(
+        season=season,
+        week=week,
+        source_url=fetch_result.source_url,
+        source_payload=fetch_result.body,
+        source_timestamp=fetch_result.source_timestamp,
+        retrieved_at=fetch_result.retrieved_at,
+        source_version=source_version,
+        starter_evidence=starter_evidence,
+    )
+    snapshot_path = write_personnel_snapshot(snapshot, store_root=store_root)
+    return snapshot, fetch_result, snapshot_path
 
 
 def _snapshot_path(snapshot: PersonnelSnapshot, *, store_root: Path | None = None) -> Path:
