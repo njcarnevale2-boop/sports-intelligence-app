@@ -453,3 +453,290 @@ def test_invalid_authority_fails_closed_in_runtime(tmp_path: Path, monkeypatch):
     )
     assert payload["projectionReadiness"] == "INVALID"
     assert payload["projectionReadinessReason"] == "ACTIVE_PROJECTION_BINDING_FAILED"
+
+
+def test_canonical_personnel_authority_propagates_to_opportunities(tmp_path: Path, monkeypatch):
+    import app.routes.opportunities as route
+    from app.services.games import service as games_service
+
+    ranked_board = tmp_path / "ranked_bet_board.csv"
+    pd.DataFrame([], columns=["api_event_id"]).to_csv(ranked_board, index=False)
+    monkeypatch.setattr(route, "RANKED_BET_BOARD", ranked_board)
+
+    schedule_events = [
+        SimpleNamespace(
+            source_event_id="2026_03_SEA_WAS",
+            canonical_event_key="cev-2138b55e2b6bf9272705c6fa",
+            season=2026,
+            week=3,
+            kickoff_utc="2026-09-27T17:00:00Z",
+            away_team="SEA",
+            home_team="WAS",
+        ),
+        SimpleNamespace(
+            source_event_id="2026_03_TEN_NYG",
+            canonical_event_key="cev-655277e9ae5a12dfe3270768",
+            season=2026,
+            week=3,
+            kickoff_utc="2026-09-27T17:00:00Z",
+            away_team="TEN",
+            home_team="NYG",
+        ),
+        SimpleNamespace(
+            source_event_id="2026_03_LAC_BUF",
+            canonical_event_key="cev-3eb6da451e2c4b8f9b5c3f87",
+            season=2026,
+            week=3,
+            kickoff_utc="2026-09-27T17:00:00Z",
+            away_team="LAC",
+            home_team="BUF",
+        ),
+    ]
+    schedule = SimpleNamespace(
+        schedule_version="schedule-v1:2026:3:test",
+        schedule_hash="schedule-hash-test",
+        source_version="source-version-test",
+        season=2026,
+        week=3,
+        events=schedule_events,
+    )
+
+    projection_rows = [
+        {
+            "event_id": "2026_03_SEA_WAS",
+            "canonical_event_key": "cev-2138b55e2b6bf9272705c6fa",
+            "season": 2026,
+            "week": 3,
+            "kickoff_utc": "2026-09-27T17:00:00Z",
+            "away_team": "SEA",
+            "home_team": "WAS",
+            "away_power": 0.0,
+            "home_power": 0.0,
+            "model_margin_home": 1.0,
+            "model_total_baseline": 44.0,
+            "model_version": "model-v1",
+            "probability_version": "prob-v1",
+        },
+        {
+            "event_id": "2026_03_TEN_NYG",
+            "canonical_event_key": "cev-655277e9ae5a12dfe3270768",
+            "season": 2026,
+            "week": 3,
+            "kickoff_utc": "2026-09-27T17:00:00Z",
+            "away_team": "TEN",
+            "home_team": "NYG",
+            "away_power": 0.0,
+            "home_power": 0.0,
+            "model_margin_home": -0.5,
+            "model_total_baseline": 43.0,
+            "model_version": "model-v1",
+            "probability_version": "prob-v1",
+        },
+        {
+            "event_id": "2026_03_LAC_BUF",
+            "canonical_event_key": "cev-3eb6da451e2c4b8f9b5c3f87",
+            "season": 2026,
+            "week": 3,
+            "kickoff_utc": "2026-09-27T17:00:00Z",
+            "away_team": "LAC",
+            "home_team": "BUF",
+            "away_power": 0.0,
+            "home_power": 0.0,
+            "model_margin_home": 2.0,
+            "model_total_baseline": 45.0,
+            "model_version": "model-v1",
+            "probability_version": "prob-v1",
+        },
+    ]
+
+    market_rows = []
+    provider_map = {
+        "2026_03_SEA_WAS": "prov-sea-was",
+        "2026_03_TEN_NYG": "prov-ten-nyg",
+        "2026_03_LAC_BUF": "prov-lac-buf",
+    }
+    for source_event_id, provider_event_id in provider_map.items():
+        away, home = source_event_id.split("_")[-2:]
+        market_rows.extend(
+            [
+                {
+                    "eventId": provider_event_id,
+                    "sportsbook": "DraftKings",
+                    "market": "spread",
+                    "side": "home",
+                    "point": -3.5,
+                    "americanOdds": -110,
+                    "lastUpdated": "2026-09-27T16:22:57.577471+00:00",
+                    "awayTeam": away,
+                    "homeTeam": home,
+                    "commenceTime": "2026-09-27T17:00:00Z",
+                },
+                {
+                    "eventId": provider_event_id,
+                    "sportsbook": "DraftKings",
+                    "market": "spread",
+                    "side": "away",
+                    "point": 3.5,
+                    "americanOdds": -110,
+                    "lastUpdated": "2026-09-27T16:22:57.577471+00:00",
+                    "awayTeam": away,
+                    "homeTeam": home,
+                    "commenceTime": "2026-09-27T17:00:00Z",
+                },
+            ]
+        )
+
+    monkeypatch.setattr(route, "resolve_canonical_week_metadata", lambda: {"season": 2026, "week": 3, "status": "ACTIVE"})
+    monkeypatch.setattr(route, "build_week_readiness", lambda canonical=None: {"status": "READY"})
+    monkeypatch.setattr(route, "resolve_projection_readiness", lambda season, week: _readiness_current())
+    monkeypatch.setattr(route, "load_active_schedule", lambda season, week, store=None: schedule)
+    monkeypatch.setattr(
+        route,
+        "load_active_projection_artifact_by_identity",
+        lambda season, week, artifact_id, artifact_hash: {"projection_rows": [dict(row) for row in projection_rows]},
+    )
+
+    monkeypatch.setattr(route.market_data_service, "load_normalized_market_rows", lambda: [dict(row) for row in market_rows])
+    monkeypatch.setattr(
+        route.market_data_service,
+        "metadata",
+        lambda: {"provider": "line_movement_board", "lastUpdated": "2026-09-27T16:22:57.577471+00:00", "dataStatus": "FILE"},
+    )
+
+    snapshots = {
+        provider_event_id: {
+            "provider": "line_movement_board",
+            "lastUpdated": "2026-09-27T16:22:57.577471+00:00",
+            "dataStatus": "FILE",
+            "booksTracked": 1,
+            "bestAwaySpread": {"sportsbook": "DraftKings", "line": 3.5, "price": -110, "lastUpdated": "2026-09-27T16:22:57.577471+00:00"},
+            "bestHomeSpread": {"sportsbook": "DraftKings", "line": -3.5, "price": -110, "lastUpdated": "2026-09-27T16:22:57.577471+00:00"},
+            "bestAwayMoneyline": None,
+            "bestHomeMoneyline": None,
+            "bestOver": None,
+            "bestUnder": None,
+            "bestPriceAwaySpread": None,
+            "bestPriceHomeSpread": None,
+            "bestPriceAwayMoneyline": None,
+            "bestPriceHomeMoneyline": None,
+            "bestPriceOver": None,
+            "bestPriceUnder": None,
+        }
+        for provider_event_id in provider_map.values()
+    }
+    monkeypatch.setattr(route.market_data_service, "all_event_snapshots", lambda: snapshots)
+
+    monkeypatch.setattr(
+        games_service,
+        "list_games",
+        lambda week=None, include_enrichment=False: {
+            "availableWeeks": [3],
+            "games": [
+                {
+                    "eventId": provider_map[event.source_event_id],
+                    "week": 3,
+                    "season": 2026,
+                    "awayAbbreviation": event.away_team,
+                    "homeAbbreviation": event.home_team,
+                    "commenceTime": "2026-09-27T17:00:00Z",
+                }
+                for event in schedule_events
+            ],
+        },
+    )
+
+    monkeypatch.setattr(route, "get_market_intelligence", lambda *args, **kwargs: {"booksTracked": 1, "signal": "CONFIRMED"})
+
+    class _FakeInjuryContext:
+        def build_context(self, away_team: str, home_team: str) -> dict:
+            return {"summary": "neutral", "severity": "neutral"}
+
+    monkeypatch.setattr(route, "InjuryMatchupContext", _FakeInjuryContext)
+    monkeypatch.setattr(route, "_record_history_for_snapshot", lambda *args, **kwargs: [])
+
+    def _personnel_by_source(**kwargs):
+        return {
+            "2026_03_SEA_WAS": {
+                "personnelReadiness": "CURRENT",
+                "personnelReadinessReason": "QB_STATUS_CURRENT",
+                "personnelSourceVersion": "synthetic-test",
+                "awayExpectedStartingQB": None,
+                "homeExpectedStartingQB": "Marcus Mariota",
+                "awayQBStatus": "VERIFIED",
+                "homeQBStatus": "VERIFIED",
+                "awayQBVerifiedAt": None,
+                "homeQBVerifiedAt": "2026-09-27T14:54:53Z",
+                "awayQBSource": None,
+                "homeQBSource": "external-authoritative-nfl-evidence",
+                "personnelVerifiedAt": "2026-09-27T14:54:53Z",
+                "personnelNumericallyAdjusted": False,
+            },
+            "2026_03_TEN_NYG": {
+                "personnelReadiness": "CURRENT",
+                "personnelReadinessReason": "QB_STATUS_CURRENT",
+                "personnelSourceVersion": "synthetic-test",
+                "awayExpectedStartingQB": None,
+                "homeExpectedStartingQB": "Jameis Winston",
+                "awayQBStatus": "VERIFIED",
+                "homeQBStatus": "VERIFIED",
+                "awayQBVerifiedAt": None,
+                "homeQBVerifiedAt": "2026-09-27T14:54:53Z",
+                "awayQBSource": None,
+                "homeQBSource": "external-authoritative-nfl-evidence",
+                "personnelVerifiedAt": "2026-09-27T14:54:53Z",
+                "personnelNumericallyAdjusted": False,
+            },
+            "2026_03_LAC_BUF": {
+                "personnelReadiness": "UNAVAILABLE",
+                "personnelReadinessReason": "QB_RESOLUTION_UNVERIFIED",
+                "personnelSourceVersion": "synthetic-test",
+                "awayExpectedStartingQB": None,
+                "homeExpectedStartingQB": None,
+                "awayQBStatus": "UNVERIFIED",
+                "homeQBStatus": "VERIFIED",
+                "awayQBVerifiedAt": None,
+                "homeQBVerifiedAt": None,
+                "awayQBSource": None,
+                "homeQBSource": None,
+                "personnelVerifiedAt": "2026-09-27T14:54:53Z",
+                "personnelNumericallyAdjusted": False,
+            },
+        }
+
+    monkeypatch.setattr(route, "load_personnel_authority_lookup", _personnel_by_source)
+
+    payload = route._get_opportunities_payload(
+        limit=500,
+        best_lines_only=True,
+        include_experimental=True,
+        week=3,
+        persist_history=False,
+    )
+
+    spread_rows = [item for item in payload.get("opportunities", []) if str(item.get("market") or "") == "spread"]
+    assert spread_rows
+
+    def _find_row(matchup: str, side: str) -> dict:
+        for row in spread_rows:
+            if str(row.get("matchup") or "") == matchup and str(row.get("side") or "").lower() == side:
+                return row
+        raise AssertionError(f"Missing spread row for {matchup} {side}")
+
+    sea_was = _find_row("SEA @ WAS", "home")
+    ten_nyg = _find_row("TEN @ NYG", "home")
+    lac_buf = _find_row("LAC @ BUF", "away")
+
+    assert sea_was["personnelReadiness"] == "CURRENT"
+    assert sea_was["personnelReadinessReason"] == "QB_STATUS_CURRENT"
+    assert sea_was["homeExpectedStartingQB"] == "Marcus Mariota"
+    assert sea_was["homeQBStatus"] == "VERIFIED"
+
+    assert ten_nyg["personnelReadiness"] == "CURRENT"
+    assert ten_nyg["personnelReadinessReason"] == "QB_STATUS_CURRENT"
+    assert ten_nyg["homeExpectedStartingQB"] == "Jameis Winston"
+    assert ten_nyg["homeQBStatus"] == "VERIFIED"
+
+    assert lac_buf["personnelReadiness"] == "UNAVAILABLE"
+    assert lac_buf["personnelReadinessReason"] == "QB_RESOLUTION_UNVERIFIED"
+    assert lac_buf["awayQBStatus"] == "UNVERIFIED"
+    assert lac_buf["qualificationStatus"] == "NOT_QUALIFIED"

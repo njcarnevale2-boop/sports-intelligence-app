@@ -477,6 +477,39 @@ def _apply_personnel_readiness_guard(opportunity: dict[str, Any], personnel: dic
     return guarded
 
 
+def _resolve_personnel_authority_for_opportunity(
+    *,
+    personnel_lookup: dict[str, dict[str, Any]],
+    api_event_id: Any,
+    game_projection_row: pd.Series | None,
+) -> dict[str, Any] | None:
+    keys: list[str] = []
+
+    if game_projection_row is not None:
+        source_event_id = str(game_projection_row.get("source_event_id") or game_projection_row.get("event_id") or "").strip()
+        if source_event_id:
+            keys.append(source_event_id)
+
+        provider_event_id = str(game_projection_row.get("provider_api_event_id") or game_projection_row.get("api_event_id") or "").strip()
+        if provider_event_id:
+            keys.append(provider_event_id)
+
+    event_id = str(api_event_id or "").strip()
+    if event_id:
+        keys.append(event_id)
+
+    seen: set[str] = set()
+    for key in keys:
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        resolved = personnel_lookup.get(key)
+        if resolved is not None:
+            return resolved
+
+    return None
+
+
 def _parse_iso(value: Any) -> datetime | None:
     text = str(value or "").strip()
     if not text:
@@ -2693,11 +2726,32 @@ def _get_opportunities_payload(
 
     projection_readiness_payload = _projection_readiness_fields(projection_readiness)
 
+    authoritative_schedule_events: list[dict[str, Any]] = []
+    if resolved_season is not None:
+        try:
+            active_schedule = load_active_schedule(
+                season=int(resolved_season),
+                week=int(resolved_week),
+                store=default_schedule_engine_store(),
+            )
+            if active_schedule is not None:
+                for event in list(active_schedule.events or []):
+                    authoritative_schedule_events.append(
+                        {
+                            "source_event_id": str(event.source_event_id),
+                            "canonical_event_key": str(event.canonical_event_key),
+                            "away_team": str(event.away_team),
+                            "home_team": str(event.home_team),
+                        }
+                    )
+        except Exception:
+            authoritative_schedule_events = []
+
     try:
         personnel_lookup = load_personnel_authority_lookup(
             season=int(resolved_season) if resolved_season is not None else 0,
             week=int(resolved_week),
-            schedule_events=schedule_event_records,
+            schedule_events=authoritative_schedule_events or schedule_event_records,
         )
     except Exception:
         personnel_lookup = {}
@@ -2746,14 +2800,19 @@ def _get_opportunities_payload(
 
         opportunities = []
         for week_rank, (_, row) in enumerate(df.iterrows(), start=1):
+            projection_row = projection_lookup.get(str(row["api_event_id"]))
             opp = row_to_opportunity(
                 row,
                 market_snapshot=market_snapshots.get(str(row["api_event_id"])),
                 injury_ctx=shared_injury_ctx,
                 group_rows=df[(df["api_event_id"] == row["api_event_id"]) & (df["market"] == row["market"]) & (df["side"] == row["side"])],
-                game_projection_row=projection_lookup.get(str(row["api_event_id"])),
+                game_projection_row=projection_row,
                 evaluation_timestamp=evaluation_timestamp,
-                personnel_authority=personnel_lookup.get(str(row["api_event_id"])),
+                personnel_authority=_resolve_personnel_authority_for_opportunity(
+                    personnel_lookup=personnel_lookup,
+                    api_event_id=row.get("api_event_id"),
+                    game_projection_row=projection_row,
+                ),
             )
             opp = _apply_projection_readiness_guard(opp, projection_readiness)
             opp["weekRank"] = week_rank
@@ -2958,6 +3017,7 @@ def _get_opportunities_payload(
     all_rows = []
     for week_rank, candidate in enumerate(ordered_candidates, start=1):
         selected = candidate["selected"]
+        projection_row = projection_lookup.get(str(selected["api_event_id"]))
         item = row_to_opportunity(
             selected,
             include_alternates=candidate["alternates"],
@@ -2965,11 +3025,15 @@ def _get_opportunities_payload(
             market_snapshot=market_snapshots.get(str(selected["api_event_id"])),
             injury_ctx=shared_injury_ctx,
             group_rows=candidate["group"],
-            game_projection_row=projection_lookup.get(str(selected["api_event_id"])),
+            game_projection_row=projection_row,
             original_candidate=candidate.get("originalCandidate"),
             current_execution=candidate.get("currentExecution"),
             evaluation_timestamp=evaluation_timestamp,
-                personnel_authority=personnel_lookup.get(str(selected["api_event_id"])),
+            personnel_authority=_resolve_personnel_authority_for_opportunity(
+                personnel_lookup=personnel_lookup,
+                api_event_id=selected.get("api_event_id"),
+                game_projection_row=projection_row,
+            ),
         )
         item = _apply_projection_readiness_guard(item, projection_readiness)
         # globalResearchRank is fallback ordering for research (not validated cross-market quality).
