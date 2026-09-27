@@ -380,6 +380,264 @@ def test_washington_out_does_not_auto_verify_replacement_starter(monkeypatch: py
     assert authority["personnelReadinessReason"] == "QB_RESOLUTION_UNVERIFIED"
 
 
+def test_no_qb_injury_records_resolve_without_starter_evidence() -> None:
+    snapshot = build_personnel_snapshot(
+        season=2026,
+        week=3,
+        source_url=DEFAULT_NFL_INJURY_SOURCE_URL,
+        source_payload={
+            "injuries": [
+                {
+                    "team": "HOU",
+                    "player_name": "Nico Collins",
+                    "position": "WR",
+                    "injury_description": "Ankle",
+                    "practice_status": "Full Participation In Practice",
+                    "game_status": "QUESTIONABLE",
+                }
+            ]
+        },
+        source_timestamp="2026-09-25T17:05:00Z",
+        retrieved_at="2026-09-25T17:06:00Z",
+    )
+
+    lookup = load_personnel_authority_lookup(
+        season=2026,
+        week=3,
+        personnel_snapshot=snapshot,
+        schedule_events=[SimpleNamespace(source_event_id="2026_03_HOU_IND", canonical_event_key="2026_03_HOU_IND", away_team="HOU", home_team="IND")],
+    )
+
+    authority = lookup["2026_03_HOU_IND"]
+    assert authority["awayQBStatus"] == "VERIFIED"
+    assert authority["homeQBStatus"] == "VERIFIED"
+    assert authority["personnelReadiness"] == "CURRENT"
+
+
+def test_full_participation_qb_record_resolves_without_starter_evidence() -> None:
+    snapshot = build_personnel_snapshot(
+        season=2026,
+        week=3,
+        source_url=DEFAULT_NFL_INJURY_SOURCE_URL,
+        source_payload={
+            "injuries": [
+                {
+                    "team": "SEA",
+                    "player_name": "Sam Darnold",
+                    "position": "QB",
+                    "injury_description": "",
+                    "practice_status": "Full Participation In Practice",
+                    "game_status": "Unknown",
+                }
+            ]
+        },
+        source_timestamp="2026-09-25T17:05:00Z",
+        retrieved_at="2026-09-25T17:06:00Z",
+    )
+
+    lookup = load_personnel_authority_lookup(
+        season=2026,
+        week=3,
+        personnel_snapshot=snapshot,
+        schedule_events=[SimpleNamespace(source_event_id="2026_03_SEA_WAS", canonical_event_key="2026_03_SEA_WAS", away_team="SEA", home_team="WAS")],
+    )
+
+    authority = lookup["2026_03_SEA_WAS"]
+    assert authority["awayQBStatus"] == "VERIFIED"
+    assert authority["homeQBStatus"] == "VERIFIED"
+    assert authority["personnelReadiness"] == "CURRENT"
+
+
+def test_out_qb_record_blocks_without_verified_replacement() -> None:
+    snapshot = build_personnel_snapshot(
+        season=2026,
+        week=3,
+        source_url=DEFAULT_NFL_INJURY_SOURCE_URL,
+        source_payload={
+            "injuries": [
+                {
+                    "team": "WAS",
+                    "player_name": "Jayden Daniels",
+                    "position": "QB",
+                    "injury_description": "",
+                    "practice_status": "Did Not Participate In Practice",
+                    "game_status": "OUT",
+                }
+            ]
+        },
+        source_timestamp="2026-09-25T17:05:00Z",
+        retrieved_at="2026-09-25T17:06:00Z",
+    )
+
+    lookup = load_personnel_authority_lookup(
+        season=2026,
+        week=3,
+        personnel_snapshot=snapshot,
+        schedule_events=[SimpleNamespace(source_event_id="2026_03_WAS_SEA", canonical_event_key="2026_03_WAS_SEA", away_team="WAS", home_team="SEA")],
+    )
+
+    authority = lookup["2026_03_WAS_SEA"]
+    assert authority["awayQBStatus"] == "UNVERIFIED"
+    assert authority["homeQBStatus"] == "VERIFIED"
+    assert authority["personnelReadiness"] == "UNAVAILABLE"
+
+
+def test_questionable_qb_record_blocks_without_verified_starter() -> None:
+    snapshot = build_personnel_snapshot(
+        season=2026,
+        week=3,
+        source_url=DEFAULT_NFL_INJURY_SOURCE_URL,
+        source_payload={
+            "injuries": [
+                {
+                    "team": "LAC",
+                    "player_name": "Trey Lance",
+                    "position": "QB",
+                    "injury_description": "",
+                    "practice_status": "Limited Participation In Practice",
+                    "game_status": "QUESTIONABLE",
+                }
+            ]
+        },
+        source_timestamp="2026-09-25T17:05:00Z",
+        retrieved_at="2026-09-25T17:06:00Z",
+    )
+
+    lookup = load_personnel_authority_lookup(
+        season=2026,
+        week=3,
+        personnel_snapshot=snapshot,
+        schedule_events=[SimpleNamespace(source_event_id="2026_03_LAC_BUF", canonical_event_key="2026_03_LAC_BUF", away_team="LAC", home_team="BUF")],
+    )
+
+    authority = lookup["2026_03_LAC_BUF"]
+    assert authority["awayQBStatus"] == "UNVERIFIED"
+    assert authority["homeQBStatus"] == "VERIFIED"
+    assert authority["personnelReadiness"] == "UNAVAILABLE"
+
+
+def test_backup_qb_questionable_fails_closed_without_starter_identity_evidence() -> None:
+    snapshot = build_personnel_snapshot(
+        season=2026,
+        week=3,
+        source_url=DEFAULT_NFL_INJURY_SOURCE_URL,
+        source_payload={
+            "injuries": [
+                {
+                    "team": "KC",
+                    "player_name": "Carson Wentz",
+                    "position": "QB",
+                    "injury_description": "",
+                    "practice_status": "Limited Participation In Practice",
+                    "game_status": "QUESTIONABLE",
+                }
+            ]
+        },
+        source_timestamp="2026-09-25T17:05:00Z",
+        retrieved_at="2026-09-25T17:06:00Z",
+    )
+
+    lookup = load_personnel_authority_lookup(
+        season=2026,
+        week=3,
+        personnel_snapshot=snapshot,
+        schedule_events=[SimpleNamespace(source_event_id="2026_03_KC_MIA", canonical_event_key="2026_03_KC_MIA", away_team="KC", home_team="MIA")],
+    )
+
+    authority = lookup["2026_03_KC_MIA"]
+    assert authority["awayQBStatus"] == "UNVERIFIED"
+    assert authority["personnelReadiness"] == "UNAVAILABLE"
+
+
+def test_questionable_backup_can_resolve_with_verified_starter_evidence() -> None:
+    snapshot = build_personnel_snapshot(
+        season=2026,
+        week=3,
+        source_url=DEFAULT_NFL_INJURY_SOURCE_URL,
+        source_payload={
+            "injuries": [
+                {
+                    "team": "KC",
+                    "player_name": "Carson Wentz",
+                    "position": "QB",
+                    "injury_description": "",
+                    "practice_status": "Limited Participation In Practice",
+                    "game_status": "QUESTIONABLE",
+                }
+            ]
+        },
+        source_timestamp="2026-09-25T17:05:00Z",
+        retrieved_at="2026-09-25T17:06:00Z",
+        starter_evidence=[
+            {
+                "team": "KC",
+                "player": "Patrick Mahomes",
+                "role": "STARTING_QB",
+                "effective_game": "2026_03_KC_MIA",
+                "source": "official-depth-chart",
+                "source_url": "https://example.test/depth-chart",
+                "published_at": "2026-09-25T17:00:00Z",
+                "retrieved_at": "2026-09-25T17:06:00Z",
+                "verification_status": "VERIFIED",
+            }
+        ],
+    )
+
+    lookup = load_personnel_authority_lookup(
+        season=2026,
+        week=3,
+        personnel_snapshot=snapshot,
+        schedule_events=[SimpleNamespace(source_event_id="2026_03_KC_MIA", canonical_event_key="2026_03_KC_MIA", away_team="KC", home_team="MIA")],
+    )
+
+    authority = lookup["2026_03_KC_MIA"]
+    assert authority["awayQBStatus"] == "VERIFIED"
+    assert authority["awayExpectedStartingQB"] == "Patrick Mahomes"
+    assert authority["personnelReadiness"] == "CURRENT"
+
+
+def test_conflicting_qb_statuses_block_and_mark_conflicted() -> None:
+    snapshot = build_personnel_snapshot(
+        season=2026,
+        week=3,
+        source_url=DEFAULT_NFL_INJURY_SOURCE_URL,
+        source_payload={
+            "injuries": [
+                {
+                    "team": "CHI",
+                    "player_name": "Caleb Williams",
+                    "position": "QB",
+                    "injury_description": "",
+                    "practice_status": "Did Not Participate In Practice",
+                    "game_status": "OUT",
+                },
+                {
+                    "team": "CHI",
+                    "player_name": "Tyson Bagent",
+                    "position": "QB",
+                    "injury_description": "",
+                    "practice_status": "Full Participation In Practice",
+                    "game_status": "QUESTIONABLE",
+                },
+            ]
+        },
+        source_timestamp="2026-09-25T17:05:00Z",
+        retrieved_at="2026-09-25T17:06:00Z",
+    )
+
+    lookup = load_personnel_authority_lookup(
+        season=2026,
+        week=3,
+        personnel_snapshot=snapshot,
+        schedule_events=[SimpleNamespace(source_event_id="2026_03_PHI_CHI", canonical_event_key="2026_03_PHI_CHI", away_team="PHI", home_team="CHI")],
+    )
+
+    authority = lookup["2026_03_PHI_CHI"]
+    assert authority["awayQBStatus"] == "VERIFIED"
+    assert authority["homeQBStatus"] == "CONFLICTED"
+    assert authority["personnelReadiness"] == "CONFLICTED"
+
+
 def test_explicit_starter_evidence_can_verify_qb_resolution() -> None:
     injuries = json.loads(_fixture_text("nfl_injuries_week3.json"))
     starter_evidence = json.loads(_fixture_text("starter_evidence_week3.json"))["starter_evidence"]

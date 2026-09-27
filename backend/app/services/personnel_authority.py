@@ -12,6 +12,12 @@ from app.services.personnel_ingestion import (
 
 
 PERSONNEL_STATUSES = {"CURRENT", "STALE", "UNAVAILABLE", "CONFLICTED"}
+_MATERIAL_QB_AVAILABILITIES = {"OUT", "DOUBTFUL", "QUESTIONABLE", "IR", "PUP", "SUSPENDED"}
+_MATERIAL_PRACTICE_MARKERS = (
+    "LIMITED",
+    "DID NOT PARTICIPATE",
+    "DNP",
+)
 
 
 def _normalized_text(value: Any) -> str:
@@ -44,6 +50,33 @@ def _starter_index(snapshot: PersonnelSnapshot) -> dict[tuple[str, str], list[di
         key = (evidence.team, evidence.effective_game)
         index.setdefault(key, []).append(evidence.to_canonical_dict())
     return index
+
+
+def _practice_text(record: dict[str, Any]) -> str:
+    return _normalized_text(record.get("practice_status") or record.get("practiceStatus")).upper()
+
+
+def _qb_record_material_uncertainty(record: dict[str, Any]) -> bool:
+    availability = _normalized_text(record.get("normalized_availability") or record.get("normalizedAvailability")).upper()
+    if availability in _MATERIAL_QB_AVAILABILITIES:
+        return True
+
+    practice = _practice_text(record)
+    return any(marker in practice for marker in _MATERIAL_PRACTICE_MARKERS)
+
+
+def _conflicting_qb_records(qb_records: list[dict[str, Any]]) -> bool:
+    if len(qb_records) <= 1:
+        return False
+
+    profiles = {
+        (
+            _normalized_text(record.get("normalized_availability") or record.get("normalizedAvailability")).upper() or "UNKNOWN",
+            _practice_text(record),
+        )
+        for record in qb_records
+    }
+    return len(profiles) > 1
 
 
 def build_personnel_authority(
@@ -204,8 +237,8 @@ def _resolve_team_authority(
             }
 
         if qb_records:
-            game_statuses = {record.normalized_availability for record in qb_records}
-            if len(game_statuses) > 1:
+            qb_record_payloads = [record.to_canonical_dict() for record in qb_records]
+            if _conflicting_qb_records(qb_record_payloads):
                 return {
                     "expected_starting_qb": None,
                     "expected_starting_qb_status": "CONFLICTED",
@@ -214,23 +247,36 @@ def _resolve_team_authority(
                     "qb_resolution_status": "CONFLICTED",
                     "reason": "QB_RESOLUTION_CONFLICTED",
                 }
-            # Injury report may establish status, not the starter.
+
+            if any(_qb_record_material_uncertainty(record) for record in qb_record_payloads):
+                return {
+                    "expected_starting_qb": None,
+                    "expected_starting_qb_status": "UNVERIFIED",
+                    "expected_starting_qb_source": None,
+                    "expected_starting_qb_verified_at": None,
+                    "qb_resolution_status": "UNVERIFIED",
+                    "reason": "QB_RESOLUTION_UNVERIFIED",
+                }
+
+            # Benign QB rows (for example full participation / no material availability flag)
+            # do not require redundant external starter evidence.
             return {
                 "expected_starting_qb": None,
-                "expected_starting_qb_status": "UNVERIFIED",
+                "expected_starting_qb_status": "VERIFIED",
                 "expected_starting_qb_source": None,
                 "expected_starting_qb_verified_at": None,
-                "qb_resolution_status": "UNVERIFIED",
-                "reason": "QB_RESOLUTION_UNVERIFIED",
+                "qb_resolution_status": "VERIFIED",
+                "reason": "QB_RESOLUTION_BENIGN_QB_REPORT",
             }
 
+        # No QB injury entries: no material uncertainty signaled by the authoritative snapshot.
         return {
             "expected_starting_qb": None,
-            "expected_starting_qb_status": "UNVERIFIED",
+            "expected_starting_qb_status": "VERIFIED",
             "expected_starting_qb_source": None,
             "expected_starting_qb_verified_at": None,
-            "qb_resolution_status": "UNVERIFIED",
-            "reason": "QB_RESOLUTION_UNVERIFIED",
+            "qb_resolution_status": "VERIFIED",
+            "reason": "QB_RESOLUTION_NO_QB_INJURY",
         }
 
     away_resolution = _team_resolution(away_team)
