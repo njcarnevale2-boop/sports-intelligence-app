@@ -297,6 +297,41 @@ def test_html_team_heading_transition_does_not_carry_previous_team() -> None:
     assert by_player["Frank Ragnow"].team == "DET"
 
 
+def test_html_section_subtitle_nickname_maps_team_context() -> None:
+    html = """
+    <html><body>
+        <div class="d3-o-section-sub-title"><span>Falcons</span></div>
+        <div class="d3-o-table--horizontal-scroll">
+            <table class="d3-o-table d3-o-table--detailed d3-o-reports--detailed">
+                <thead>
+                    <tr>
+                        <th>Player</th><th>Position</th><th>Injuries</th><th>Practice Status</th><th>Game Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Michael Penix Jr.</td><td>QB</td><td>Shoulder</td><td>Limited Participation in Practice</td><td>Questionable</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </body></html>
+    """
+
+    snapshot = build_personnel_snapshot(
+        season=2026,
+        week=3,
+        source_url=DEFAULT_NFL_INJURY_SOURCE_URL,
+        source_payload=html,
+        source_timestamp="2026-09-25T17:05:00Z",
+        retrieved_at="2026-09-25T17:06:00Z",
+    )
+
+    assert len(snapshot.records) == 1
+    assert snapshot.records[0].team == "ATL"
+    assert snapshot.records[0].injury_description == "Shoulder"
+
+
 def test_json_injury_fixture_team_normalization_and_provenance() -> None:
     snapshot = build_personnel_snapshot(
         season=2026,

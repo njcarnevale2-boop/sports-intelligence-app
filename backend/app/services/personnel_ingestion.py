@@ -104,6 +104,38 @@ TEAM_ALIASES = {
     "SEATTLE SEAHAWKS": "SEA",
     "TAMPA BAY BUCCANEERS": "TB",
     "TENNESSEE TITANS": "TEN",
+    "49ERS": "SF",
+    "BEARS": "CHI",
+    "BENGALS": "CIN",
+    "BILLS": "BUF",
+    "BRONCOS": "DEN",
+    "BROWNS": "CLE",
+    "BUCCANEERS": "TB",
+    "CARDINALS": "ARI",
+    "CHARGERS": "LAC",
+    "CHIEFS": "KC",
+    "COLTS": "IND",
+    "COMMANDERS": "WAS",
+    "COWBOYS": "DAL",
+    "DOLPHINS": "MIA",
+    "EAGLES": "PHI",
+    "FALCONS": "ATL",
+    "GIANTS": "NYG",
+    "JAGUARS": "JAX",
+    "JETS": "NYJ",
+    "LIONS": "DET",
+    "PACKERS": "GB",
+    "PANTHERS": "CAR",
+    "PATRIOTS": "NE",
+    "RAIDERS": "LV",
+    "RAMS": "LAR",
+    "RAVENS": "BAL",
+    "SAINTS": "NO",
+    "SEAHAWKS": "SEA",
+    "STEELERS": "PIT",
+    "TEXANS": "HOU",
+    "TITANS": "TEN",
+    "VIKINGS": "MIN",
 }
 
 CANONICAL_TEAM_IDS = {
@@ -484,10 +516,13 @@ class _TableParser(HTMLParser):
         self._capture_header = False
         self._in_heading = False
         self._heading_text: list[str] = []
+        self._in_section_subtitle = False
+        self._section_subtitle_text: list[str] = []
         self._latest_team_heading = ""
         self._heading_tags = {"h1", "h2", "h3", "h4", "h5", "h6", "caption"}
 
     def handle_starttag(self, tag: str, attrs):
+        attrs_dict = dict(attrs)
         if tag == "table":
             self._in_table = True
             self._current_headers = []
@@ -502,6 +537,11 @@ class _TableParser(HTMLParser):
         elif tag in self._heading_tags:
             self._in_heading = True
             self._heading_text = []
+        elif tag == "div":
+            classes = str(attrs_dict.get("class") or "")
+            if "d3-o-section-sub-title" in classes:
+                self._in_section_subtitle = True
+                self._section_subtitle_text = []
 
     def handle_endtag(self, tag: str):
         if tag in {"th", "td"} and self._in_cell:
@@ -526,12 +566,20 @@ class _TableParser(HTMLParser):
                 self._latest_team_heading = heading
             self._in_heading = False
             self._heading_text = []
+        elif tag == "div" and self._in_section_subtitle:
+            heading = " ".join(part.strip() for part in self._section_subtitle_text if part.strip()).strip()
+            if heading and normalize_team_id(heading):
+                self._latest_team_heading = heading
+            self._in_section_subtitle = False
+            self._section_subtitle_text = []
 
     def handle_data(self, data: str):
         if self._in_cell:
             self._current_cell_text.append(data)
         if self._in_heading:
             self._heading_text.append(data)
+        if self._in_section_subtitle:
+            self._section_subtitle_text.append(data)
 
 
 def _parse_source_payload(source_payload: bytes | str | dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
@@ -596,7 +644,7 @@ def _extract_html_records(text: str) -> list[dict[str, Any]]:
         if upper_name in {"PLAYER", "NAME", "RESERVE/INJURED", "INJURED RESERVE", "RESERVE"}:
             return False
         position = _normalized_text(_get_value(row_map, "position", "pos", "position_abbreviation", "positionabbreviation"))
-        injury = _normalized_text(_get_value(row_map, "injury_description", "injury", "injurydetail", "description", "detail", "notes"))
+        injury = _normalized_text(_get_value(row_map, "injury_description", "injuries", "injury", "injurydetail", "description", "detail", "notes"))
         practice = _normalized_text(_get_value(row_map, "practice_status", "practicestatus", "practice", "participation_status"))
         game_status = _normalized_text(_get_value(row_map, "game_status", "status", "injury_status", "gamestatus", "availability"))
         if not any([position, injury, practice, game_status]):
@@ -683,7 +731,7 @@ def _normalize_record(
         raise PersonnelIngestionError("Personnel record missing player name")
 
     position = _normalized_text(_get_value(record, "position", "pos", "position_abbreviation", "positionAbbreviation")).upper() or "UNKNOWN"
-    injury_description = _normalized_text(_get_value(record, "injury_description", "injury", "injuryDetail", "description", "detail", "notes"))
+    injury_description = _normalized_text(_get_value(record, "injury_description", "injuries", "injury", "injuryDetail", "description", "detail", "notes"))
     practice_status = _normalized_text(_get_value(record, "practice_status", "practiceStatus", "practice", "participation_status")).title() or "Unknown"
     game_status = _normalized_text(_get_value(record, "game_status", "status", "injury_status", "gameStatus", "availability")).title() or "Unknown"
     normalized_availability = normalize_availability(game_status=game_status, injury_description=injury_description, practice_status=practice_status)
