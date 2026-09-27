@@ -143,6 +143,7 @@ CANONICAL_TEAM_IDS = {
 
 SOURCE_PARSER_VERSION = "personnel_ingestion_v1"
 DEFAULT_PERSONNEL_SNAPSHOT_DIR = runtime_paths.root / "data" / "personnel_snapshots"
+DEFAULT_PERSONNEL_FETCH_EVIDENCE_DIR = runtime_paths.root / "data" / "personnel_fetches"
 DEFAULT_NFL_INJURY_SOURCE_URL = "https://www.nfl.com/injuries/"
 APPROVED_NFL_INJURY_SOURCE_URL = DEFAULT_NFL_INJURY_SOURCE_URL
 DEFAULT_NFL_INJURY_TIMEOUT_SECONDS = 30
@@ -183,8 +184,23 @@ class NFLInjuryFetchResult:
     source_url: str
     final_url: str
     http_status: int
+    content_type: str | None
     source_timestamp: str | None
     retrieved_at: str
+
+
+@dataclass(frozen=True)
+class NFLInjuryFetchArtifact:
+    metadata_path: Path
+    body_path: Path
+    body_bytes: int
+    content_type: str | None
+
+
+@dataclass(frozen=True)
+class NFLInjuryFetchStage:
+    fetch_result: NFLInjuryFetchResult
+    artifact: NFLInjuryFetchArtifact
 
 
 def fetch_nfl_injury_source(
@@ -211,8 +227,10 @@ def fetch_nfl_injury_source(
             final_url = str(response.geturl() or approved_source_url)
             headers = getattr(response, "headers", None)
             source_timestamp = None
+            content_type = None
             if headers is not None:
                 source_timestamp = headers.get("Last-Modified") or headers.get("Date")
+                content_type = headers.get("Content-Type")
     except urllib_error.HTTPError as exc:
         raise PersonnelRetrievalError(f"PERSONNEL_SOURCE_HTTP_ERROR: {exc.code}") from exc
     except (socket.timeout, TimeoutError) as exc:
@@ -239,9 +257,66 @@ def fetch_nfl_injury_source(
         source_url=approved_source_url,
         final_url=final_url,
         http_status=http_status,
+        content_type=content_type,
         source_timestamp=source_timestamp,
         retrieved_at=retrieved_at,
     )
+
+
+def _persist_nfl_injury_fetch_artifact(
+    *,
+    season: int,
+    week: int,
+    fetch_result: NFLInjuryFetchResult,
+    evidence_root: Path | None = None,
+) -> NFLInjuryFetchArtifact:
+    root = Path(evidence_root or DEFAULT_PERSONNEL_FETCH_EVIDENCE_DIR)
+    target_dir = root / f"season={int(season)}" / f"week={int(week)}"
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    response_hash = sha256(fetch_result.body).hexdigest()[:12]
+    stamp = fetch_result.retrieved_at.replace(":", "").replace("-", "")
+    base_name = f"fetch-{stamp}-{response_hash}"
+    body_path = target_dir / f"{base_name}.body.html"
+    metadata_path = target_dir / f"{base_name}.json"
+
+    body_path.write_bytes(fetch_result.body)
+    metadata_payload = {
+        "source_url": fetch_result.source_url,
+        "final_url": fetch_result.final_url,
+        "http_status": int(fetch_result.http_status),
+        "content_type": fetch_result.content_type,
+        "source_timestamp": fetch_result.source_timestamp,
+        "retrieved_at": fetch_result.retrieved_at,
+        "body_bytes": len(fetch_result.body),
+        "body_path": str(body_path),
+        "sha256": sha256(fetch_result.body).hexdigest(),
+    }
+    metadata_path.write_text(json.dumps(metadata_payload, indent=2, sort_keys=True), encoding="utf-8")
+    return NFLInjuryFetchArtifact(
+        metadata_path=metadata_path,
+        body_path=body_path,
+        body_bytes=len(fetch_result.body),
+        content_type=fetch_result.content_type,
+    )
+
+
+def fetch_and_store_nfl_injury_source(
+    *,
+    season: int,
+    week: int,
+    source_url: str = DEFAULT_NFL_INJURY_SOURCE_URL,
+    timeout_seconds: int = DEFAULT_NFL_INJURY_TIMEOUT_SECONDS,
+    evidence_root: Path | None = None,
+) -> NFLInjuryFetchStage:
+    fetch_result = fetch_nfl_injury_source(source_url=source_url, timeout_seconds=timeout_seconds)
+    artifact = _persist_nfl_injury_fetch_artifact(
+        season=season,
+        week=week,
+        fetch_result=fetch_result,
+        evidence_root=evidence_root,
+    )
+    return NFLInjuryFetchStage(fetch_result=fetch_result, artifact=artifact)
 
 
 def _normalized_text(value: Any) -> str:
@@ -407,11 +482,16 @@ class _TableParser(HTMLParser):
         self._current_cell_text: list[str] = []
         self._current_headers: list[str] = []
         self._capture_header = False
+        self._in_heading = False
+        self._heading_text: list[str] = []
+        self._latest_team_heading = ""
+        self._heading_tags = {"h1", "h2", "h3", "h4", "h5", "h6", "caption"}
 
     def handle_starttag(self, tag: str, attrs):
         if tag == "table":
             self._in_table = True
-            self.tables.append({"headers": [], "rows": []})
+            self._current_headers = []
+            self.tables.append({"headers": [], "rows": [], "team_heading": self._latest_team_heading})
         elif self._in_table and tag == "tr":
             self._in_row = True
             self._current_cells = []
@@ -419,6 +499,9 @@ class _TableParser(HTMLParser):
             self._in_cell = True
             self._current_cell_text = []
             self._capture_header = tag == "th" and not self._current_headers
+        elif tag in self._heading_tags:
+            self._in_heading = True
+            self._heading_text = []
 
     def handle_endtag(self, tag: str):
         if tag in {"th", "td"} and self._in_cell:
@@ -437,10 +520,18 @@ class _TableParser(HTMLParser):
             self._current_cells = []
         elif tag == "table":
             self._in_table = False
+        elif tag in self._heading_tags and self._in_heading:
+            heading = " ".join(part.strip() for part in self._heading_text if part.strip()).strip()
+            if heading and normalize_team_id(heading):
+                self._latest_team_heading = heading
+            self._in_heading = False
+            self._heading_text = []
 
     def handle_data(self, data: str):
         if self._in_cell:
             self._current_cell_text.append(data)
+        if self._in_heading:
+            self._heading_text.append(data)
 
 
 def _parse_source_payload(source_payload: bytes | str | dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
@@ -472,18 +563,73 @@ def _extract_html_records(text: str) -> list[dict[str, Any]]:
     parser = _TableParser()
     parser.feed(text)
     rows: list[dict[str, Any]] = []
+
     def _normalize_header(value: str) -> str:
         return re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
 
+    def _team_keys() -> tuple[str, ...]:
+        return ("team", "club", "team_name", "teamname", "abbreviation", "abbr")
+
+    def _heading_team_candidate(row_map: dict[str, Any]) -> str:
+        team_from_field = _get_value(row_map, *_team_keys())
+        candidate = _normalized_text(team_from_field)
+        if candidate and normalize_team_id(candidate):
+            return candidate
+
+        values = [
+            _normalized_text(value)
+            for value in row_map.values()
+            if _normalized_text(value)
+        ]
+        if len(values) == 1 and normalize_team_id(values[0]):
+            return values[0]
+        return ""
+
+    def _player_name(row_map: dict[str, Any]) -> str:
+        return _normalized_text(_get_value(row_map, "player_name", "player", "name", "displayname", "athlete_name"))
+
+    def _looks_like_player_row(row_map: dict[str, Any]) -> bool:
+        player_name = _player_name(row_map)
+        if not player_name:
+            return False
+        upper_name = player_name.upper()
+        if upper_name in {"PLAYER", "NAME", "RESERVE/INJURED", "INJURED RESERVE", "RESERVE"}:
+            return False
+        position = _normalized_text(_get_value(row_map, "position", "pos", "position_abbreviation", "positionabbreviation"))
+        injury = _normalized_text(_get_value(row_map, "injury_description", "injury", "injurydetail", "description", "detail", "notes"))
+        practice = _normalized_text(_get_value(row_map, "practice_status", "practicestatus", "practice", "participation_status"))
+        game_status = _normalized_text(_get_value(row_map, "game_status", "status", "injury_status", "gamestatus", "availability"))
+        if not any([position, injury, practice, game_status]):
+            return False
+        return True
+
+    team_context = ""
+
     for table in parser.tables:
+        table_heading = _normalized_text(table.get("team_heading"))
+        if table_heading and normalize_team_id(table_heading):
+            team_context = table_heading
         headers = [_normalize_header(str(header)) for header in table.get("headers", [])]
         for row in table.get("rows", []):
             if not row:
                 continue
             if headers and len(headers) == len(row):
-                rows.append({headers[idx]: row[idx] for idx in range(len(headers))})
+                mapped = {headers[idx]: row[idx] for idx in range(len(headers))}
             else:
-                rows.append({str(idx): value for idx, value in enumerate(row)})
+                mapped = {str(idx): value for idx, value in enumerate(row)}
+
+            heading_team = _heading_team_candidate(mapped)
+            if heading_team and not _looks_like_player_row(mapped):
+                team_context = heading_team
+                continue
+
+            if not _looks_like_player_row(mapped):
+                continue
+
+            current_team = _normalized_text(_get_value(mapped, *_team_keys()))
+            if not current_team and team_context:
+                mapped["team"] = team_context
+            rows.append(mapped)
     return rows
 
 
@@ -691,8 +837,16 @@ def ingest_nfl_personnel_snapshot(
     starter_evidence: Iterable[dict[str, Any] | PersonnelStarterEvidence] | None = None,
     store_root: Path | None = None,
     timeout_seconds: int = DEFAULT_NFL_INJURY_TIMEOUT_SECONDS,
-) -> tuple[PersonnelSnapshot, NFLInjuryFetchResult, Path]:
-    fetch_result = fetch_nfl_injury_source(source_url=source_url, timeout_seconds=timeout_seconds)
+    fetch_evidence_root: Path | None = None,
+) -> tuple[PersonnelSnapshot, NFLInjuryFetchResult, Path, NFLInjuryFetchArtifact]:
+    fetch_stage = fetch_and_store_nfl_injury_source(
+        season=season,
+        week=week,
+        source_url=source_url,
+        timeout_seconds=timeout_seconds,
+        evidence_root=fetch_evidence_root,
+    )
+    fetch_result = fetch_stage.fetch_result
     snapshot = build_personnel_snapshot(
         season=season,
         week=week,
@@ -704,7 +858,7 @@ def ingest_nfl_personnel_snapshot(
         starter_evidence=starter_evidence,
     )
     snapshot_path = write_personnel_snapshot(snapshot, store_root=store_root)
-    return snapshot, fetch_result, snapshot_path
+    return snapshot, fetch_result, snapshot_path, fetch_stage.artifact
 
 
 def _snapshot_path(snapshot: PersonnelSnapshot, *, store_root: Path | None = None) -> Path:

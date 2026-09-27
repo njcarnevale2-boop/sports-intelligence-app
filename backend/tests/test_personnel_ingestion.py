@@ -13,10 +13,12 @@ import pytest
 from app.services.personnel_authority import load_personnel_authority_lookup
 from app.services.personnel_ingestion import (
     APPROVED_NFL_INJURY_SOURCE_URL,
+    DEFAULT_NFL_INJURY_SOURCE_URL,
     NFLInjuryFetchResult,
     PersonnelIngestionError,
     PersonnelRetrievalError,
     build_personnel_snapshot,
+    fetch_and_store_nfl_injury_source,
     fetch_nfl_injury_source,
     ingest_nfl_personnel_snapshot,
     load_latest_personnel_snapshot,
@@ -196,6 +198,7 @@ def test_fetch_nfl_injury_source_success_preserves_provenance_and_single_attempt
             headers={
                 "Last-Modified": "Wed, 25 Sep 2026 17:05:00 GMT",
                 "Date": "Wed, 25 Sep 2026 17:06:00 GMT",
+                "Content-Type": "text/html; charset=utf-8",
             },
         )
 
@@ -209,41 +212,46 @@ def test_fetch_nfl_injury_source_success_preserves_provenance_and_single_attempt
     assert result.final_url == APPROVED_NFL_INJURY_SOURCE_URL
     assert result.http_status == 200
     assert result.source_timestamp == "Wed, 25 Sep 2026 17:05:00 GMT"
+    assert result.content_type == "text/html; charset=utf-8"
     assert result.retrieved_at
 
 
-def test_ingest_nfl_personnel_snapshot_uses_secure_fetch_helper(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    payload = _fixture_text("nfl_injuries_week3.json")
-    fetch_result = NFLInjuryFetchResult(
-        body=payload.encode("utf-8"),
-        source_url=APPROVED_NFL_INJURY_SOURCE_URL,
-        final_url=APPROVED_NFL_INJURY_SOURCE_URL,
-        http_status=200,
-        source_timestamp="Wed, 25 Sep 2026 17:05:00 GMT",
-        retrieved_at="2026-09-25T17:06:00Z",
-    )
+def test_fetch_and_store_nfl_injury_source_persists_artifacts_before_parse(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls = {"count": 0}
 
-    monkeypatch.setattr("app.services.personnel_ingestion.fetch_nfl_injury_source", lambda **kwargs: fetch_result)
+    def fake_urlopen(*args, **kwargs):
+        calls["count"] += 1
+        return _FakeResponse(
+            body=b"<html><body>fixture</body></html>",
+            status=200,
+            final_url=APPROVED_NFL_INJURY_SOURCE_URL,
+            headers={"Date": "Wed, 25 Sep 2026 17:06:00 GMT", "Content-Type": "text/html"},
+        )
 
-    snapshot, returned_fetch_result, snapshot_path = ingest_nfl_personnel_snapshot(
+    monkeypatch.setattr("app.services.personnel_ingestion.urllib_request.urlopen", fake_urlopen)
+
+    staged = fetch_and_store_nfl_injury_source(
         season=2026,
         week=3,
-        store_root=tmp_path / "personnel",
+        source_url=APPROVED_NFL_INJURY_SOURCE_URL,
+        evidence_root=tmp_path / "fetches",
     )
 
-    assert returned_fetch_result == fetch_result
-    assert snapshot.source_url == APPROVED_NFL_INJURY_SOURCE_URL
-    assert snapshot.source_timestamp == "Wed, 25 Sep 2026 17:05:00 GMT"
-    assert snapshot_path.exists()
-    assert snapshot.personnel_snapshot_id.startswith("personnel-")
-    assert any(record.team == "WAS" for record in snapshot.records)
+    assert calls["count"] == 1
+    assert staged.fetch_result.http_status == 200
+    assert staged.artifact.body_path.exists()
+    assert staged.artifact.metadata_path.exists()
+    payload = json.loads(staged.artifact.metadata_path.read_text(encoding="utf-8"))
+    assert payload["body_bytes"] == len(staged.fetch_result.body)
+    assert payload["http_status"] == 200
+    assert payload["source_url"] == APPROVED_NFL_INJURY_SOURCE_URL
 
 
 def test_html_injury_fixture_parses_statuses_and_position_groups() -> None:
     snapshot = build_personnel_snapshot(
         season=2026,
         week=3,
-        source_url="https://www.nfl.com/injuries/",
+        source_url=DEFAULT_NFL_INJURY_SOURCE_URL,
         source_payload=_fixture_text("nfl_injuries_week3.html"),
         source_timestamp="2026-09-25T17:05:00Z",
         retrieved_at="2026-09-25T17:06:00Z",
@@ -252,20 +260,48 @@ def test_html_injury_fixture_parses_statuses_and_position_groups() -> None:
     assert snapshot.source_timestamp == "2026-09-25T17:05:00Z"
     assert snapshot.records[0].retrieved_at == "2026-09-25T17:06:00Z"
     assert {record.team for record in snapshot.records} == {"WAS", "SEA", "DET"}
-    assert {record.position_group for record in snapshot.records} == {"QB", "WR", "OL"}
+    assert {record.position_group for record in snapshot.records} == {"QB", "WR", "OL", "RB"}
     by_player = {record.player_name: record for record in snapshot.records}
     assert by_player["Jayden Daniels"].normalized_availability == "OUT"
     assert by_player["DK Metcalf"].normalized_availability == "QUESTIONABLE"
     assert by_player["Frank Ragnow"].normalized_availability == "DOUBTFUL"
+    assert by_player["Austin Ekeler"].normalized_availability == "QUESTIONABLE"
     assert by_player["Jayden Daniels"].practice_status == "Dnp"
     assert by_player["Jayden Daniels"].injury_description == "Elbow"
+
+
+def test_html_injury_fixture_ignores_non_player_rows() -> None:
+    snapshot = build_personnel_snapshot(
+        season=2026,
+        week=3,
+        source_url=DEFAULT_NFL_INJURY_SOURCE_URL,
+        source_payload=_fixture_text("nfl_injuries_week3.html"),
+        source_timestamp="2026-09-25T17:05:00Z",
+        retrieved_at="2026-09-25T17:06:00Z",
+    )
+    assert all(record.player_name.upper() != "RESERVE/INJURED" for record in snapshot.records)
+
+
+def test_html_team_heading_transition_does_not_carry_previous_team() -> None:
+    snapshot = build_personnel_snapshot(
+        season=2026,
+        week=3,
+        source_url=DEFAULT_NFL_INJURY_SOURCE_URL,
+        source_payload=_fixture_text("nfl_injuries_week3.html"),
+        source_timestamp="2026-09-25T17:05:00Z",
+        retrieved_at="2026-09-25T17:06:00Z",
+    )
+    by_player = {record.player_name: record for record in snapshot.records}
+    assert by_player["Jayden Daniels"].team == "WAS"
+    assert by_player["DK Metcalf"].team == "SEA"
+    assert by_player["Frank Ragnow"].team == "DET"
 
 
 def test_json_injury_fixture_team_normalization_and_provenance() -> None:
     snapshot = build_personnel_snapshot(
         season=2026,
         week=3,
-        source_url="https://www.nfl.com/injuries/",
+        source_url=DEFAULT_NFL_INJURY_SOURCE_URL,
         source_payload=_fixture_text("nfl_injuries_week3.json"),
         source_timestamp="2026-09-25T17:05:00Z",
         retrieved_at="2026-09-25T17:06:00Z",
@@ -275,7 +311,7 @@ def test_json_injury_fixture_team_normalization_and_provenance() -> None:
     assert normalize_team_id("L.A. Rams") == "LAR"
     assert snapshot.personnel_snapshot_id.startswith("personnel-")
     assert snapshot.personnel_snapshot_hash
-    assert snapshot.records[0].source_url == "https://www.nfl.com/injuries/"
+    assert snapshot.records[0].source_url == DEFAULT_NFL_INJURY_SOURCE_URL
     assert snapshot.records[0].source == "nfl.com/injuries"
 
 
@@ -284,7 +320,7 @@ def test_washington_out_does_not_auto_verify_replacement_starter(monkeypatch: py
     snapshot = build_personnel_snapshot(
         season=2026,
         week=3,
-        source_url="https://www.nfl.com/injuries/",
+        source_url=DEFAULT_NFL_INJURY_SOURCE_URL,
         source_payload=injuries,
         source_timestamp="2026-09-25T17:05:00Z",
         retrieved_at="2026-09-25T17:06:00Z",
@@ -315,7 +351,7 @@ def test_explicit_starter_evidence_can_verify_qb_resolution() -> None:
     snapshot = build_personnel_snapshot(
         season=2026,
         week=3,
-        source_url="https://www.nfl.com/injuries/",
+        source_url=DEFAULT_NFL_INJURY_SOURCE_URL,
         source_payload=injuries,
         source_timestamp="2026-09-25T17:05:00Z",
         retrieved_at="2026-09-25T17:06:00Z",
@@ -356,7 +392,7 @@ def test_duplicate_player_conflict_fails_closed() -> None:
         build_personnel_snapshot(
             season=2026,
             week=3,
-            source_url="https://www.nfl.com/injuries/",
+            source_url=DEFAULT_NFL_INJURY_SOURCE_URL,
             source_payload=payload,
             source_timestamp="2026-09-25T17:05:00Z",
             retrieved_at="2026-09-25T17:06:00Z",
@@ -371,7 +407,7 @@ def test_unknown_team_fails_closed() -> None:
         build_personnel_snapshot(
             season=2026,
             week=3,
-            source_url="https://www.nfl.com/injuries/",
+            source_url=DEFAULT_NFL_INJURY_SOURCE_URL,
             source_payload=payload,
             source_timestamp="2026-09-25T17:05:00Z",
             retrieved_at="2026-09-25T17:06:00Z",
@@ -383,7 +419,7 @@ def test_snapshot_hash_is_deterministic_and_idempotent(tmp_path: Path) -> None:
     first = build_personnel_snapshot(
         season=2026,
         week=3,
-        source_url="https://www.nfl.com/injuries/",
+        source_url=DEFAULT_NFL_INJURY_SOURCE_URL,
         source_payload=payload,
         source_timestamp="2026-09-25T17:05:00Z",
         retrieved_at="2026-09-25T17:06:00Z",
@@ -391,7 +427,7 @@ def test_snapshot_hash_is_deterministic_and_idempotent(tmp_path: Path) -> None:
     second = build_personnel_snapshot(
         season=2026,
         week=3,
-        source_url="https://www.nfl.com/injuries/",
+        source_url=DEFAULT_NFL_INJURY_SOURCE_URL,
         source_payload=payload,
         source_timestamp="2026-09-25T17:05:00Z",
         retrieved_at="2026-09-25T17:06:00Z",
@@ -412,8 +448,64 @@ def test_malformed_source_fails_closed() -> None:
         build_personnel_snapshot(
             season=2026,
             week=3,
-            source_url="https://www.nfl.com/injuries/",
+            source_url=DEFAULT_NFL_INJURY_SOURCE_URL,
             source_payload='{"injuries": [}',
             source_timestamp="2026-09-25T17:05:00Z",
             retrieved_at="2026-09-25T17:06:00Z",
         )
+
+
+def test_ingest_nfl_personnel_snapshot_uses_secure_fetch_helper(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    payload = _fixture_text("nfl_injuries_week3.json")
+    fetch_result = NFLInjuryFetchResult(
+        body=payload.encode("utf-8"),
+        source_url=APPROVED_NFL_INJURY_SOURCE_URL,
+        final_url=APPROVED_NFL_INJURY_SOURCE_URL,
+        http_status=200,
+        content_type="text/html",
+        source_timestamp="Wed, 25 Sep 2026 17:05:00 GMT",
+        retrieved_at="2026-09-25T17:06:00Z",
+    )
+
+    monkeypatch.setattr("app.services.personnel_ingestion.fetch_nfl_injury_source", lambda **kwargs: fetch_result)
+
+    snapshot, returned_fetch_result, snapshot_path, fetch_artifact = ingest_nfl_personnel_snapshot(
+        season=2026,
+        week=3,
+        store_root=tmp_path / "personnel",
+        fetch_evidence_root=tmp_path / "fetches",
+    )
+
+    assert returned_fetch_result == fetch_result
+    assert fetch_artifact.body_path.exists()
+    assert fetch_artifact.metadata_path.exists()
+    assert snapshot.source_url == APPROVED_NFL_INJURY_SOURCE_URL
+    assert snapshot.source_timestamp == "Wed, 25 Sep 2026 17:05:00 GMT"
+    assert snapshot_path.exists()
+    assert snapshot.personnel_snapshot_id.startswith("personnel-")
+    assert any(record.team == "WAS" for record in snapshot.records)
+
+
+def test_offline_end_to_end_fixture_pipeline_has_no_unmapped_players(tmp_path: Path) -> None:
+    snapshot = build_personnel_snapshot(
+        season=2026,
+        week=3,
+        source_url=DEFAULT_NFL_INJURY_SOURCE_URL,
+        source_payload=_fixture_text("nfl_injuries_week3.html"),
+        source_timestamp="2026-09-25T17:05:00Z",
+        retrieved_at="2026-09-25T17:06:00Z",
+    )
+    path = write_personnel_snapshot(snapshot, store_root=tmp_path / "personnel")
+    replay = build_personnel_snapshot(
+        season=2026,
+        week=3,
+        source_url=DEFAULT_NFL_INJURY_SOURCE_URL,
+        source_payload=_fixture_text("nfl_injuries_week3.html"),
+        source_timestamp="2026-09-25T17:05:00Z",
+        retrieved_at="2026-09-25T17:06:00Z",
+    )
+
+    assert path.exists()
+    assert all(record.team for record in snapshot.records)
+    assert all(record.raw_team for record in snapshot.records)
+    assert replay.personnel_snapshot_hash == snapshot.personnel_snapshot_hash
