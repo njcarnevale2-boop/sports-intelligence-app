@@ -16,7 +16,7 @@ import pandas as pd
 from app.config import settings
 from app.runtime_paths import runtime_paths
 from app.services.result_engine import build_canonical_event_identity, normalize_kickoff_utc, normalize_team_id
-from app.services.schedule_engine import ScheduleEngineStore, default_schedule_engine_store, load_canonical_weekly_schedule
+from app.services.schedule_engine import ScheduleEngineStore, default_schedule_engine_store, load_active_schedule
 
 from .hashing import canonical_json, sha256_hex
 from .persistence import PowerEngineStore, default_power_engine_store
@@ -287,6 +287,7 @@ def _projection_identity_payload(artifact: dict[str, Any]) -> dict[str, Any]:
         "source_power_transition_id": artifact.get("source_power_transition_id"),
         "schedule_version": str(artifact["schedule_version"]),
         "schedule_hash": str(artifact["schedule_hash"]),
+        "schedule_source_version": str(artifact["schedule_source_version"]),
         "model_version": str(artifact["model_version"]),
         "probability_version": str(artifact["probability_version"]),
         "methodology_hash": str(artifact["methodology_hash"]),
@@ -370,6 +371,7 @@ def _build_projection_artifact(
         "source_power_transition_id": source_lineage.get("transitionId"),
         "schedule_version": schedule["schedule_version"],
         "schedule_hash": schedule["schedule_hash"],
+        "schedule_source_version": schedule["schedule_source_version"],
         "model_version": model_version,
         "probability_version": probability_version,
         "methodology_hash": active_snapshot.methodology_hash,
@@ -400,6 +402,7 @@ def _build_projection_artifact(
         "source_power_transition_id": source_lineage.get("transitionId"),
         "schedule_version": schedule["schedule_version"],
         "schedule_hash": schedule["schedule_hash"],
+        "schedule_source_version": schedule["schedule_source_version"],
         "model_version": model_version,
         "probability_version": probability_version,
         "methodology_hash": active_snapshot.methodology_hash,
@@ -595,6 +598,8 @@ def _active_conflict_reason(existing_artifact: dict[str, Any], candidate: dict[s
         return "POWER_SNAPSHOT_CONFLICT"
     if str(existing_artifact.get("schedule_hash")) != str(candidate.get("schedule_hash")):
         return "SCHEDULE_HASH_CONFLICT"
+    if str(existing_artifact.get("schedule_source_version")) != str(candidate.get("schedule_source_version")):
+        return "SCHEDULE_SOURCE_VERSION_CONFLICT"
     if str(existing_artifact.get("model_version")) != str(candidate.get("model_version")):
         return "MODEL_VERSION_CONFLICT"
     if str(existing_artifact.get("probability_version")) != str(candidate.get("probability_version")):
@@ -616,7 +621,7 @@ def publish_weekly_projections(
     probability_version: str | None = None,
 ) -> dict[str, Any]:
     store = power_store or default_power_engine_store()
-    canonical_schedule_store = schedule_store or default_schedule_engine_store()
+    authoritative_schedule_store = schedule_store or default_schedule_engine_store()
 
     if season <= 0:
         raise ProjectionPublicationError("SEASON_INVALID")
@@ -634,9 +639,10 @@ def publish_weekly_projections(
     probability_version_value = str(probability_version or settings.DEFAULT_PROBABILITY_ENGINE_VERSION)
 
     source_lineage = active_power_transition_observability(power_store=store, season=season)
-    persisted_schedule = load_canonical_weekly_schedule(season=season, week=target_week, store=canonical_schedule_store)
-    if persisted_schedule is None:
-        raise ProjectionPublicationError("CANONICAL_SCHEDULE_MISSING")
+    try:
+        persisted_schedule = load_active_schedule(season=season, week=target_week, store=authoritative_schedule_store)
+    except Exception as exc:
+        raise ProjectionPublicationError("ACTIVE_SCHEDULE_UNAVAILABLE") from exc
     schedule = {
         "events": [
             CanonicalScheduleEvent(
@@ -653,6 +659,7 @@ def publish_weekly_projections(
         "expected_game_count": persisted_schedule.event_count,
         "schedule_hash": persisted_schedule.schedule_hash,
         "schedule_version": persisted_schedule.schedule_version,
+        "schedule_source_version": persisted_schedule.source_version,
     }
 
     ratings_records = [{"team": team.team_id, "power_points": float(team.power)} for team in active_snapshot.teams]
@@ -856,6 +863,7 @@ def active_projection_observability(
         "sourcePowerTransitionId": artifact.get("source_power_transition_id"),
         "scheduleVersion": str(artifact["schedule_version"]),
         "scheduleHash": str(artifact["schedule_hash"]),
+        "scheduleSourceVersion": str(artifact.get("schedule_source_version") or "") or None,
         "modelVersion": str(artifact["model_version"]),
         "probabilityVersion": str(artifact["probability_version"]),
         "methodologyHash": str(artifact["methodology_hash"]),
@@ -873,8 +881,10 @@ def resolve_projection_readiness(
     season: int | None,
     week: int | None,
     power_store: PowerEngineStore | None = None,
+    schedule_store: ScheduleEngineStore | None = None,
 ) -> dict[str, Any]:
     store = power_store or default_power_engine_store()
+    authoritative_schedule_store = schedule_store or default_schedule_engine_store()
 
     base = {
         "projectionReadiness": "INVALID",
@@ -886,6 +896,7 @@ def resolve_projection_readiness(
         "projectionArtifactHash": None,
         "projectionScheduleVersion": None,
         "projectionScheduleHash": None,
+        "projectionScheduleSourceVersion": None,
         "projectionValidationStatus": None,
         "projectionPowerSnapshotId": None,
         "projectionPowerSnapshotHash": None,
@@ -1051,6 +1062,7 @@ def resolve_projection_readiness(
 
     schedule_version = str(artifact.get("schedule_version") or "").strip()
     schedule_hash = str(artifact.get("schedule_hash") or "").strip()
+    schedule_source_version = str(artifact.get("schedule_source_version") or "").strip()
     if not schedule_version:
         return {
             **base,
@@ -1065,6 +1077,27 @@ def resolve_projection_readiness(
             "projectionReadinessReason": "SCHEDULE_HASH_MISSING",
             "projectionValidationStatus": validation_status,
         }
+    if not schedule_source_version:
+        return {
+            **base,
+            "projectionReadiness": "INVALID",
+            "projectionReadinessReason": "SCHEDULE_SOURCE_VERSION_MISSING",
+            "projectionValidationStatus": validation_status,
+        }
+
+    try:
+        active_schedule = load_active_schedule(
+            season=expected_season,
+            week=expected_week,
+            store=authoritative_schedule_store,
+        )
+    except Exception:
+        return {
+            **base,
+            "projectionReadiness": "INVALID",
+            "projectionReadinessReason": "ACTIVE_SCHEDULE_UNAVAILABLE",
+            "projectionValidationStatus": validation_status,
+        }
 
     base.update(
         {
@@ -1075,6 +1108,7 @@ def resolve_projection_readiness(
             "projectionArtifactHash": str(artifact.get("artifact_hash") or pointer.artifact_hash),
             "projectionScheduleVersion": str(artifact.get("schedule_version") or "") or None,
             "projectionScheduleHash": str(artifact.get("schedule_hash") or "") or None,
+            "projectionScheduleSourceVersion": str(artifact.get("schedule_source_version") or "") or None,
             "projectionValidationStatus": validation_status,
             "projectionPowerSnapshotId": str(artifact.get("power_snapshot_id") or pointer.power_snapshot_id),
             "projectionPowerSnapshotHash": str(artifact.get("power_snapshot_hash") or pointer.power_snapshot_hash),
@@ -1091,6 +1125,14 @@ def resolve_projection_readiness(
         stale_reasons.append("WEEK_MISMATCH")
     if power_through_week != expected_power_through_week:
         stale_reasons.append("POWER_THROUGH_WEEK_MISMATCH")
+    if schedule_version != str(active_schedule.schedule_version):
+        stale_reasons.append("SCHEDULE_VERSION_MISMATCH")
+    if schedule_hash != str(active_schedule.schedule_hash):
+        stale_reasons.append("SCHEDULE_HASH_MISMATCH")
+    if schedule_source_version != str(active_schedule.source_version):
+        stale_reasons.append("SCHEDULE_SOURCE_VERSION_MISMATCH")
+    if expected_game_count != int(active_schedule.event_count):
+        stale_reasons.append("SCHEDULE_EVENT_COUNT_MISMATCH")
 
     if stale_reasons:
         return {

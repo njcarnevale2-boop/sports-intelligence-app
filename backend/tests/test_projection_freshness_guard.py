@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import csv
+import gzip
+import io
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -9,8 +12,11 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
+from app.services.power_engine import CANONICAL_NFL_TEAMS
 from app.services.power_engine.persistence import PowerEngineStore
 from app.services.power_engine.projection_publication import resolve_projection_readiness
+from app.services.result_engine import ResultEngineStore
+from app.services.schedule_engine import ScheduleEngineStore, ingest_nflverse_schedule_source_bytes, load_active_schedule
 
 
 @dataclass
@@ -302,6 +308,9 @@ def _seed_projection_authority(
     artifact_hash: str = "artifact-hash-1",
     artifact_id: str = "proj-artifact-1",
     validation_status: str = "VALID",
+    schedule_version: str = "schedule-v1:2026:3:test",
+    schedule_hash: str = "schedule-hash-1",
+    schedule_source_version: str = "source-v1",
 ) -> None:
     projections_root = store.root_dir / "projections"
     artifacts_dir = projections_root / "artifacts"
@@ -319,8 +328,9 @@ def _seed_projection_authority(
         "power_through_week": power_through_week,
         "power_snapshot_id": "snap-1",
         "power_snapshot_hash": "snap-hash-1",
-        "schedule_version": "schedule-v1:2026:3:test",
-        "schedule_hash": "schedule-hash-1",
+        "schedule_version": schedule_version,
+        "schedule_hash": schedule_hash,
+        "schedule_source_version": schedule_source_version,
         "model_version": "model-v1",
         "probability_version": "prob-v1",
         "methodology_hash": "methodology-hash",
@@ -359,7 +369,7 @@ def _seed_projection_authority(
         "artifact_hash": pointer_hash,
         "power_snapshot_id": "snap-1",
         "power_snapshot_hash": "snap-hash-1",
-        "schedule_hash": "schedule-hash-1",
+        "schedule_hash": schedule_hash,
         "activated_at": _iso_now(),
     }
 
@@ -368,11 +378,88 @@ def _seed_projection_authority(
     (active_dir / f"active-{season}-{week}.json").write_text(json.dumps(pointer), encoding="utf-8")
 
 
+def _seed_active_schedule_authority(tmp_path: Path, *, season: int = 2026, week: int = 3):
+    schedule_store = ScheduleEngineStore(root_dir=tmp_path / "schedule")
+    result_store = ResultEngineStore(root_dir=tmp_path / "result")
+    power_store = PowerEngineStore(root_dir=tmp_path / "power")
+
+    output = io.StringIO()
+    writer = csv.DictWriter(
+        output,
+        fieldnames=[
+            "game_id",
+            "season",
+            "week",
+            "game_type",
+            "gameday",
+            "gametime",
+            "away_team",
+            "home_team",
+            "weekday",
+            "location",
+            "result",
+            "total",
+            "overtime",
+            "old_game_id",
+            "gsis",
+            "nfl_detail_id",
+            "pfr",
+            "pff",
+            "espn",
+        ],
+    )
+    writer.writeheader()
+    for idx in range(16):
+        away = CANONICAL_NFL_TEAMS[idx * 2]
+        home = CANONICAL_NFL_TEAMS[idx * 2 + 1]
+        writer.writerow(
+            {
+                "game_id": f"{season}_{week:02d}_{away}_{home}",
+                "season": str(season),
+                "week": str(week),
+                "game_type": "REG",
+                "gameday": "2026-09-27",
+                "gametime": f"{13 + (idx % 6):02d}:00",
+                "away_team": away,
+                "home_team": home,
+                "weekday": "Sunday",
+            }
+        )
+
+    payload = gzip.compress(output.getvalue().encode("utf-8"), mtime=0)
+    ingest_nflverse_schedule_source_bytes(
+        payload_bytes=payload,
+        source_uri="https://github.com/nflverse/nflverse-data/releases/download/schedules/games.csv.gz",
+        release_tag="schedules",
+        release_id="freshness-r1",
+        release_published_at="2025-10-01T11:19:34Z",
+        release_updated_at="2026-09-26T20:37:03Z",
+        target_commitish="main",
+        asset_name="games.csv.gz",
+        asset_id="freshness-a1",
+        asset_updated_at="2026-09-26T20:37:02Z",
+        asset_size_bytes_reported=len(payload),
+        asset_digest_reported=None,
+        http_etag='"abc"',
+        http_last_modified="Sat, 26 Sep 2026 20:37:02 GMT",
+        store=schedule_store,
+        result_store=result_store,
+        power_store=power_store,
+    )
+    return schedule_store, load_active_schedule(season=season, week=week, store=schedule_store)
+
+
 def test_projection_readiness_current_exact_lineage(tmp_path):
     store = PowerEngineStore(root_dir=tmp_path / "power")
-    _seed_projection_authority(store=store)
+    schedule_store, active = _seed_active_schedule_authority(tmp_path)
+    _seed_projection_authority(
+        store=store,
+        schedule_version=active.schedule_version,
+        schedule_hash=active.schedule_hash,
+        schedule_source_version=active.source_version,
+    )
 
-    readiness = resolve_projection_readiness(season=2026, week=3, power_store=store)
+    readiness = resolve_projection_readiness(season=2026, week=3, power_store=store, schedule_store=schedule_store)
 
     assert readiness["projectionReadiness"] == "CURRENT"
     assert readiness["projectionPowerThroughWeek"] == 2
@@ -380,18 +467,46 @@ def test_projection_readiness_current_exact_lineage(tmp_path):
 
 def test_projection_readiness_stale_power_wrong_week_and_wrong_season(tmp_path):
     store = PowerEngineStore(root_dir=tmp_path / "power")
+    schedule_store, active = _seed_active_schedule_authority(tmp_path)
 
-    _seed_projection_authority(store=store, power_through_week=0)
-    assert resolve_projection_readiness(season=2026, week=3, power_store=store)["projectionReadiness"] == "STALE"
+    _seed_projection_authority(
+        store=store,
+        power_through_week=0,
+        schedule_version=active.schedule_version,
+        schedule_hash=active.schedule_hash,
+        schedule_source_version=active.source_version,
+    )
+    assert resolve_projection_readiness(season=2026, week=3, power_store=store, schedule_store=schedule_store)["projectionReadiness"] == "STALE"
 
-    _seed_projection_authority(store=store, artifact_id="proj-artifact-2", artifact_week=2)
-    assert resolve_projection_readiness(season=2026, week=3, power_store=store)["projectionReadiness"] == "STALE"
+    _seed_projection_authority(
+        store=store,
+        artifact_id="proj-artifact-2",
+        artifact_week=2,
+        schedule_version=active.schedule_version,
+        schedule_hash=active.schedule_hash,
+        schedule_source_version=active.source_version,
+    )
+    assert resolve_projection_readiness(season=2026, week=3, power_store=store, schedule_store=schedule_store)["projectionReadiness"] == "STALE"
 
-    _seed_projection_authority(store=store, artifact_id="proj-artifact-3", artifact_week=4)
-    assert resolve_projection_readiness(season=2026, week=3, power_store=store)["projectionReadiness"] == "STALE"
+    _seed_projection_authority(
+        store=store,
+        artifact_id="proj-artifact-3",
+        artifact_week=4,
+        schedule_version=active.schedule_version,
+        schedule_hash=active.schedule_hash,
+        schedule_source_version=active.source_version,
+    )
+    assert resolve_projection_readiness(season=2026, week=3, power_store=store, schedule_store=schedule_store)["projectionReadiness"] == "STALE"
 
-    _seed_projection_authority(store=store, artifact_id="proj-artifact-4", artifact_season=2025)
-    assert resolve_projection_readiness(season=2026, week=3, power_store=store)["projectionReadiness"] == "STALE"
+    _seed_projection_authority(
+        store=store,
+        artifact_id="proj-artifact-4",
+        artifact_season=2025,
+        schedule_version=active.schedule_version,
+        schedule_hash=active.schedule_hash,
+        schedule_source_version=active.source_version,
+    )
+    assert resolve_projection_readiness(season=2026, week=3, power_store=store, schedule_store=schedule_store)["projectionReadiness"] == "STALE"
 
 
 def test_projection_readiness_missing_and_invalid_pointer_artifact_states(tmp_path):

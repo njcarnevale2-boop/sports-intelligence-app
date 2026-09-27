@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+import csv
+import gzip
+import io
+import json
 from pathlib import Path
 import threading
 
@@ -10,7 +14,6 @@ import pandas as pd
 import pytest
 
 import app.services.power_engine.projection_publication as publication_module
-import app.services.schedule_engine.service as schedule_module
 from app.services.power_engine import (
     CANONICAL_NFL_TEAMS,
     PowerEngineStore,
@@ -21,10 +24,17 @@ from app.services.power_engine import (
     apply_frozen_weekly_power_transition,
     list_projection_artifacts,
     publish_weekly_projections,
+    resolve_projection_readiness,
     snapshot_hash,
 )
 from app.services.result_engine import ResultEngineStore, freeze_week_result_set
-from app.services.schedule_engine import ScheduleEngineStore, load_canonical_weekly_schedule, materialize_canonical_weekly_schedule
+from app.services.schedule_engine import (
+    ScheduleEngineStore,
+    ingest_nflverse_schedule_source_bytes,
+    load_active_schedule,
+    load_canonical_weekly_schedule,
+    materialize_canonical_weekly_schedule,
+)
 from result_engine_test_utils import make_accepted_result, make_identity
 
 
@@ -91,6 +101,91 @@ def _write_schedule_source(tmp_path: Path, rows: list[dict]) -> Path:
         )
     con.close()
     return path
+
+
+def _build_csv_gz(rows: list[dict]) -> bytes:
+    output = io.StringIO()
+    writer = csv.DictWriter(
+        output,
+        fieldnames=[
+            "game_id",
+            "season",
+            "week",
+            "game_type",
+            "gameday",
+            "gametime",
+            "away_team",
+            "home_team",
+            "weekday",
+            "location",
+            "result",
+            "total",
+            "overtime",
+            "old_game_id",
+            "gsis",
+            "nfl_detail_id",
+            "pfr",
+            "pff",
+            "espn",
+        ],
+    )
+    writer.writeheader()
+    for row in rows:
+        payload = {key: "" for key in writer.fieldnames}
+        payload.update(
+            {
+                "game_id": row["game_id"],
+                "season": str(row["season"]),
+                "week": str(row["week"]),
+                "game_type": "REG",
+                "gameday": row["gameday"],
+                "gametime": row["gametime"],
+                "away_team": row["away_team"],
+                "home_team": row["home_team"],
+            }
+        )
+        writer.writerow(payload)
+    return gzip.compress(output.getvalue().encode("utf-8"), mtime=0)
+
+
+def _ingest_active_schedule_from_duckdb(
+    *,
+    tmp_path: Path,
+    power_store: PowerEngineStore,
+    season: int,
+    week: int,
+    release_id: str = "251386473",
+    asset_id: str = "591892633",
+):
+    week_rows = [row for row in _read_schedule_source_rows(tmp_path) if int(row["season"]) == season and int(row["week"]) == week]
+    payload = _build_csv_gz(week_rows)
+    return ingest_nflverse_schedule_source_bytes(
+        payload_bytes=payload,
+        source_uri="https://github.com/nflverse/nflverse-data/releases/download/schedules/games.csv.gz",
+        release_tag="schedules",
+        release_id=release_id,
+        release_published_at="2025-10-01T11:19:34Z",
+        release_updated_at="2026-09-26T20:37:03Z",
+        target_commitish="main",
+        asset_name="games.csv.gz",
+        asset_id=asset_id,
+        asset_updated_at="2026-09-26T20:37:02Z",
+        asset_size_bytes_reported=len(payload),
+        asset_digest_reported=None,
+        http_etag='"abc"',
+        http_last_modified="Sat, 26 Sep 2026 20:37:02 GMT",
+        store=_schedule_store(tmp_path),
+        result_store=_result_store(tmp_path),
+        power_store=power_store,
+    )
+
+
+def _has_active_schedule(tmp_path: Path, *, season: int, week: int) -> bool:
+    try:
+        load_active_schedule(season=season, week=week, store=_schedule_store(tmp_path))
+        return True
+    except Exception:
+        return False
 
 
 def _read_schedule_source_rows(tmp_path: Path) -> list[dict]:
@@ -230,15 +325,6 @@ def _write_valid_week3_schedule(tmp_path: Path, *, season: int = 2026, week: int
     return schedule_path, projection_path
 
 
-def _materialize_schedule(tmp_path: Path, *, season: int, week: int) -> dict:
-    return materialize_canonical_weekly_schedule(
-        season=season,
-        week=week,
-        store=_schedule_store(tmp_path),
-        duckdb_path=_schedule_duckdb_path(tmp_path),
-    )
-
-
 def _publish(
     *,
     tmp_path: Path,
@@ -259,14 +345,14 @@ def _publish(
         active_snapshot is not None
         and active_snapshot.season == season
         and active_snapshot.through_week + 1 == target_week
-        and load_canonical_weekly_schedule(season=season, week=target_week, store=schedule_store) is None
+        and not _has_active_schedule(tmp_path, season=season, week=target_week)
         and _schedule_duckdb_path(tmp_path).exists()
     ):
-        materialize_canonical_weekly_schedule(
+        _ingest_active_schedule_from_duckdb(
+            tmp_path=tmp_path,
+            power_store=power_store,
             season=season,
             week=target_week,
-            store=schedule_store,
-            duckdb_path=_schedule_duckdb_path(tmp_path),
         )
     return publish_weekly_projections(
         season=season,
@@ -391,11 +477,11 @@ def test_e_target_week_not_n_plus_one(tmp_path: Path):
         _publish(tmp_path=tmp_path, power_store=power_store, season=2026, target_week=4)
 
 
-def test_f_missing_canonical_schedule(tmp_path: Path):
+def test_f_missing_active_schedule(tmp_path: Path):
     power_store = _power_store(tmp_path)
     _seed_active_lineage(power_store, season=2026, through_week=2, snapshot_id="power-2026-wk2", lineage_id="ln-2026-wk2")
 
-    with pytest.raises(ValueError, match="CANONICAL_SCHEDULE_MISSING"):
+    with pytest.raises(ValueError, match="ACTIVE_SCHEDULE_UNAVAILABLE"):
         _publish(tmp_path=tmp_path, power_store=power_store, season=2026, target_week=3)
 
 
@@ -657,11 +743,11 @@ def test_t_conflicting_schedule_hash(tmp_path: Path):
     rows = _read_schedule_source_rows(conflict_root)
     rows[0]["gametime"] = "21:20"
     _rewrite_schedule_source_rows(conflict_root, rows)
-    materialize_canonical_weekly_schedule(
+    _ingest_active_schedule_from_duckdb(
+        tmp_path=conflict_root,
+        power_store=power_store,
         season=2026,
         week=3,
-        store=conflict_store,
-        duckdb_path=_schedule_duckdb_path(conflict_root),
     )
 
     with pytest.raises(ValueError, match="SCHEDULE_HASH_CONFLICT"):
@@ -893,13 +979,20 @@ def test_ac_legacy_csv_deletion_or_change_does_not_change_output(tmp_path: Path)
     assert out_left["artifact"]["projection_rows"] == out_right["artifact"]["projection_rows"]
 
 
-def test_ak_missing_canonical_schedule_fails_even_if_legacy_exists(tmp_path: Path):
+def test_ak_missing_active_schedule_fails_even_if_legacy_exists(tmp_path: Path):
     power_store = _power_store(tmp_path)
     _seed_active_lineage(power_store, season=2026, through_week=2, snapshot_id="power-2026-wk2", lineage_id="ln-2026-wk2")
     _write_conflicting_legacy_projection_csv(tmp_path)
+    _write_valid_week3_schedule(tmp_path)
+    materialize_canonical_weekly_schedule(season=2026, week=3, store=_schedule_store(tmp_path), duckdb_path=_schedule_duckdb_path(tmp_path))
 
-    with pytest.raises(ValueError, match="CANONICAL_SCHEDULE_MISSING"):
-        _publish(tmp_path=tmp_path, power_store=power_store, season=2026, target_week=3)
+    with pytest.raises(ValueError, match="ACTIVE_SCHEDULE_UNAVAILABLE"):
+        publish_weekly_projections(
+            season=2026,
+            target_week=3,
+            power_store=power_store,
+            schedule_store=_schedule_store(tmp_path),
+        )
 
 
 def test_al_canonical_schedule_event_ids_are_preserved(tmp_path: Path):
@@ -1024,9 +1117,7 @@ def test_aii_direct_publication_requires_preexisting_schedule(tmp_path: Path, mo
     artifact_dir = power_store.root_dir / "projections" / "artifacts"
     active_path = power_store.root_dir / "projections" / "active" / "active-2026-3.json"
 
-    monkeypatch.setattr(schedule_module.duckdb, "connect", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("duckdb should not be read by publication")))
-
-    with pytest.raises(ValueError, match="CANONICAL_SCHEDULE_MISSING"):
+    with pytest.raises(ValueError, match="ACTIVE_SCHEDULE_UNAVAILABLE"):
         publish_weekly_projections(
             season=2026,
             target_week=3,
@@ -1037,15 +1128,14 @@ def test_aii_direct_publication_requires_preexisting_schedule(tmp_path: Path, mo
     assert not artifact_dir.exists() or not list(artifact_dir.glob("*.json"))
     assert not active_path.exists()
 
-    monkeypatch.undo()
-    materialize_canonical_weekly_schedule(season=2026, week=3, store=schedule_store, duckdb_path=_schedule_duckdb_path(tmp_path))
+    _ingest_active_schedule_from_duckdb(tmp_path=tmp_path, power_store=power_store, season=2026, week=3)
     out = publish_weekly_projections(season=2026, target_week=3, power_store=power_store, schedule_store=schedule_store)
     assert out["status"] == "APPLIED"
 
 
 def test_ajj_concurrent_identical_projection_publication(tmp_path: Path):
     _write_valid_week3_schedule(tmp_path)
-    materialize_canonical_weekly_schedule(season=2026, week=3, store=_schedule_store(tmp_path), duckdb_path=_schedule_duckdb_path(tmp_path))
+    _ingest_active_schedule_from_duckdb(tmp_path=tmp_path, power_store=_power_store(tmp_path), season=2026, week=3)
 
     power_root = tmp_path / "power-root"
     _seed_active_lineage(PowerEngineStore(root_dir=power_root), season=2026, through_week=2, snapshot_id="power-2026-wk2", lineage_id="ln-2026-wk2")
@@ -1079,7 +1169,7 @@ def test_ajj_concurrent_identical_projection_publication(tmp_path: Path):
 
 def test_akk_concurrent_conflicting_projection_publication(tmp_path: Path):
     _write_valid_week3_schedule(tmp_path)
-    materialize_canonical_weekly_schedule(season=2026, week=3, store=_schedule_store(tmp_path), duckdb_path=_schedule_duckdb_path(tmp_path))
+    _ingest_active_schedule_from_duckdb(tmp_path=tmp_path, power_store=_power_store(tmp_path), season=2026, week=3)
 
     power_root = tmp_path / "power-root"
     _seed_active_lineage(PowerEngineStore(root_dir=power_root), season=2026, through_week=2, snapshot_id="power-2026-wk2", lineage_id="ln-2026-wk2")
@@ -1139,7 +1229,7 @@ def test_all_rollout_failure_after_pointer_write_preserves_authority(tmp_path: P
 
     _write_valid_week3_schedule(tmp_path, week=4)
 
-    materialize_canonical_weekly_schedule(season=2026, week=4, store=_schedule_store(tmp_path), duckdb_path=_schedule_duckdb_path(tmp_path))
+    _ingest_active_schedule_from_duckdb(tmp_path=tmp_path, power_store=power_store, season=2026, week=4)
 
     original_persist = publication_module._persist_active_projection_pointer
 
@@ -1163,7 +1253,7 @@ def test_amm_crash_after_replace_restart_safe(tmp_path: Path, monkeypatch: pytes
     power_store = _power_store(tmp_path)
     _seed_active_lineage(power_store, season=2026, through_week=2, snapshot_id="power-2026-wk2", lineage_id="ln-2026-wk2")
     _write_valid_week3_schedule(tmp_path)
-    materialize_canonical_weekly_schedule(season=2026, week=3, store=_schedule_store(tmp_path), duckdb_path=_schedule_duckdb_path(tmp_path))
+    _ingest_active_schedule_from_duckdb(tmp_path=tmp_path, power_store=power_store, season=2026, week=3)
 
     original_persist = publication_module._persist_active_projection_pointer
 
@@ -1193,3 +1283,114 @@ def test_amm_crash_after_replace_restart_safe(tmp_path: Path, monkeypatch: pytes
     assert obs["artifactId"] is not None
     assert obs["validationStatus"] == "VALID"
     assert replay["status"] == "ALREADY_ACTIVE"
+
+
+def test_amn_exact_active_schedule_lineage_is_persisted(tmp_path: Path):
+    power_store = _power_store(tmp_path)
+    _seed_active_lineage(power_store, season=2026, through_week=2, snapshot_id="power-2026-wk2", lineage_id="ln-2026-wk2")
+    _write_valid_week3_schedule(tmp_path)
+
+    _ingest_active_schedule_from_duckdb(tmp_path=tmp_path, power_store=power_store, season=2026, week=3)
+    active = load_active_schedule(season=2026, week=3, store=_schedule_store(tmp_path))
+
+    out = publish_weekly_projections(
+        season=2026,
+        target_week=3,
+        power_store=power_store,
+        schedule_store=_schedule_store(tmp_path),
+    )
+
+    assert out["artifact"]["schedule_version"] == active.schedule_version
+    assert out["artifact"]["schedule_hash"] == active.schedule_hash
+    assert out["artifact"]["schedule_source_version"] == active.source_version
+
+
+def test_amo_active_pointer_tamper_fails_closed(tmp_path: Path):
+    power_store = _power_store(tmp_path)
+    _seed_active_lineage(power_store, season=2026, through_week=2, snapshot_id="power-2026-wk2", lineage_id="ln-2026-wk2")
+    _write_valid_week3_schedule(tmp_path)
+    _ingest_active_schedule_from_duckdb(tmp_path=tmp_path, power_store=power_store, season=2026, week=3)
+
+    pointer_path = _schedule_store(tmp_path).root_dir / "active" / "2026" / "week-3.json"
+    payload = json.loads(pointer_path.read_text(encoding="utf-8"))
+    payload["schedule_hash"] = "tampered-hash"
+    pointer_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="ACTIVE_SCHEDULE_UNAVAILABLE"):
+        publish_weekly_projections(
+            season=2026,
+            target_week=3,
+            power_store=power_store,
+            schedule_store=_schedule_store(tmp_path),
+        )
+
+
+def test_amp_readiness_uses_same_active_schedule_authority(tmp_path: Path):
+    power_store = _power_store(tmp_path)
+    _seed_active_lineage(power_store, season=2026, through_week=2, snapshot_id="power-2026-wk2", lineage_id="ln-2026-wk2")
+    _write_valid_week3_schedule(tmp_path)
+    _ingest_active_schedule_from_duckdb(tmp_path=tmp_path, power_store=power_store, season=2026, week=3, release_id="r1", asset_id="a1")
+
+    publish_weekly_projections(
+        season=2026,
+        target_week=3,
+        power_store=power_store,
+        schedule_store=_schedule_store(tmp_path),
+    )
+
+    current = resolve_projection_readiness(
+        season=2026,
+        week=3,
+        power_store=power_store,
+        schedule_store=_schedule_store(tmp_path),
+    )
+    assert current["projectionReadiness"] == "CURRENT"
+
+    rows = _read_schedule_source_rows(tmp_path)
+    rows[0]["gametime"] = "21:20"
+    _rewrite_schedule_source_rows(tmp_path, rows)
+    _ingest_active_schedule_from_duckdb(tmp_path=tmp_path, power_store=power_store, season=2026, week=3, release_id="r2", asset_id="a2")
+
+    stale = resolve_projection_readiness(
+        season=2026,
+        week=3,
+        power_store=power_store,
+        schedule_store=_schedule_store(tmp_path),
+    )
+    assert stale["projectionReadiness"] == "STALE"
+    assert "SCHEDULE_HASH_MISMATCH" in str(stale["projectionReadinessReason"])
+
+
+def test_amq_legacy_canonical_mutation_is_inert(tmp_path: Path):
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    power_left = _power_store(left)
+    power_right = _power_store(right)
+    _seed_active_lineage(power_left, season=2026, through_week=2, snapshot_id="power-2026-wk2", lineage_id="ln-2026-wk2")
+    _seed_active_lineage(power_right, season=2026, through_week=2, snapshot_id="power-2026-wk2", lineage_id="ln-2026-wk2")
+    _write_valid_week3_schedule(left)
+    _write_valid_week3_schedule(right)
+    _ingest_active_schedule_from_duckdb(tmp_path=left, power_store=power_left, season=2026, week=3)
+    _ingest_active_schedule_from_duckdb(tmp_path=right, power_store=power_right, season=2026, week=3)
+
+    materialize_canonical_weekly_schedule(season=2026, week=3, store=_schedule_store(right), duckdb_path=_schedule_duckdb_path(right))
+    legacy_path = _schedule_store(right)._week_path(2026, 3)
+    legacy_payload = json.loads(legacy_path.read_text(encoding="utf-8"))
+    legacy_payload["schedule_hash"] = "legacy-tampered-hash"
+    legacy_path.write_text(json.dumps(legacy_payload), encoding="utf-8")
+
+    out_left = publish_weekly_projections(
+        season=2026,
+        target_week=3,
+        power_store=power_left,
+        schedule_store=_schedule_store(left),
+    )
+    out_right = publish_weekly_projections(
+        season=2026,
+        target_week=3,
+        power_store=power_right,
+        schedule_store=_schedule_store(right),
+    )
+
+    assert out_left["artifact"]["artifact_id"] == out_right["artifact"]["artifact_id"]
+    assert out_left["artifact"]["artifact_hash"] == out_right["artifact"]["artifact_hash"]
