@@ -123,6 +123,7 @@ def _patch_current_execution_fixture(
             "projectionArtifactHash": "artifact-hash-test-current",
             "projectionScheduleVersion": "schedule-v1:test",
             "projectionScheduleHash": "schedule-hash-test",
+            "projectionScheduleSourceVersion": "source-version-test",
             "projectionValidationStatus": "VALID",
             "projectionPowerSnapshotId": "snap-test-current",
             "projectionPowerSnapshotHash": "snap-hash-test-current",
@@ -155,10 +156,11 @@ def _patch_current_execution_fixture(
     )
     monkeypatch.setattr(
         opportunities_route,
-        "load_canonical_weekly_schedule",
+        "load_active_schedule",
         lambda season, week, store=None: SimpleNamespace(
             schedule_version="schedule-v1:test",
             schedule_hash="schedule-hash-test",
+            source_version="source-version-test",
             season=season,
             week=week,
             events=[
@@ -347,14 +349,17 @@ def test_stale_quote_has_no_sizing(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     _patch_current_execution_fixture(monkeypatch, tmp_path, artifact_row=artifact_row, current_quotes=current_quotes, fair_price_result=fair)
 
     prod_payload = opportunities_route.get_opportunities(limit=10, best_lines_only=True, week=1)
-    assert prod_payload["count"] == 1
+    assert prod_payload["count"] == 0
 
-    opp = prod_payload["opportunities"][0]
+    audit_payload = opportunities_route.get_opportunities(limit=10, best_lines_only=True, include_experimental=True, week=1)
+    assert audit_payload["count"] == 1
+
+    opp = audit_payload["opportunities"][0]
     assert opp["currentExecution"]["status"] == "STALE_APPROVED_MARKET"
-    assert opp["qualificationStatus"] == "QUALIFIED"
-    assert opp["recommendation"] == "STRONG BET"
+    assert opp["qualificationStatus"] == "NOT_QUALIFIED"
+    assert opp["recommendation"] == "WATCH"
     assert opp["productionEligible"] is True
-    assert opp["currentQualification"]["status"] == "QUALIFIED"
+    assert opp["currentQualification"]["status"] == "NOT_QUALIFIED"
     assert opp["currentQualification"]["actionable"] is False
     assert opp["book"] is None
     assert opp["point"] is None
@@ -379,7 +384,7 @@ def test_freshness_changes_do_not_change_opportunity_identity(tmp_path: Path, mo
     stale_quotes = [_current_quote(point=4.0, price=-105.0, minutes_old=45)]
     stale_fair = _FakeFairPriceResult()
     _patch_current_execution_fixture(monkeypatch, stale_tmp, artifact_row=artifact_row, current_quotes=stale_quotes, fair_price_result=stale_fair)
-    stale = opportunities_route.get_opportunities(limit=10, best_lines_only=True, week=1)["opportunities"][0]
+    stale = opportunities_route.get_opportunities(limit=10, best_lines_only=True, include_experimental=True, week=1)["opportunities"][0]
 
     restored_tmp = tmp_path / "restored"
     restored_tmp.mkdir()
@@ -392,7 +397,7 @@ def test_freshness_changes_do_not_change_opportunity_identity(tmp_path: Path, mo
     assert fresh["currentExecution"]["status"] == "AVAILABLE"
     assert stale["currentExecution"]["status"] == "STALE_APPROVED_MARKET"
     assert restored["currentExecution"]["status"] == "AVAILABLE"
-    assert stale["qualificationStatus"] == "QUALIFIED"
+    assert stale["qualificationStatus"] == "NOT_QUALIFIED"
     assert stale["currentQualification"]["actionable"] is False
     assert restored["currentQualification"]["actionable"] is True
 

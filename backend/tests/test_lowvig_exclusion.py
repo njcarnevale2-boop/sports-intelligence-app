@@ -206,6 +206,7 @@ def test_current_opportunities_skip_lowvig_and_recompute_from_remaining_quotes(t
             "projectionArtifactHash": "artifact-hash-test-current",
             "projectionScheduleVersion": "schedule-v1:test",
             "projectionScheduleHash": "schedule-hash-test",
+            "projectionScheduleSourceVersion": "source-version-test",
             "projectionValidationStatus": "VALID",
             "projectionPowerSnapshotId": "snap-test-current",
             "projectionPowerSnapshotHash": "snap-hash-test-current",
@@ -238,10 +239,11 @@ def test_current_opportunities_skip_lowvig_and_recompute_from_remaining_quotes(t
     )
     monkeypatch.setattr(
         opportunities,
-        "load_canonical_weekly_schedule",
+        "load_active_schedule",
         lambda season, week, store=None: SimpleNamespace(
             schedule_version="schedule-v1:test",
             schedule_hash="schedule-hash-test",
+            source_version="source-version-test",
             season=season,
             week=week,
             events=[

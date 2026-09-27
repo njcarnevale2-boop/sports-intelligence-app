@@ -84,6 +84,7 @@ def _patch_dependencies(monkeypatch, tmp_path: Path, rows: list[dict]):
             "projectionArtifactHash": "artifact-hash-test-current",
             "projectionScheduleVersion": "schedule-v1:test",
             "projectionScheduleHash": "schedule-hash-test",
+            "projectionScheduleSourceVersion": "source-version-test",
             "projectionValidationStatus": "VALID",
             "projectionPowerSnapshotId": "snap-test-current",
             "projectionPowerSnapshotHash": "snap-hash-test-current",
@@ -117,10 +118,11 @@ def _patch_dependencies(monkeypatch, tmp_path: Path, rows: list[dict]):
     )
     monkeypatch.setattr(
         opportunities_route,
-        "load_canonical_weekly_schedule",
+        "load_active_schedule",
         lambda season, week, store=None: SimpleNamespace(
             schedule_version="schedule-v1:test",
             schedule_hash="schedule-hash-test",
+            source_version="source-version-test",
             season=season,
             week=week,
             events=[
@@ -655,23 +657,21 @@ def test_ranked_candidate_without_fresh_approved_quote_fails_closed_but_preserve
     )
 
     prod_payload = opportunities_route.get_opportunities(limit=10, best_lines_only=True, week=1)
-    assert prod_payload["count"] == 1
-    assert prod_payload["productionCount"] == 1
-    prod_opp = prod_payload["opportunities"][0]
-    assert prod_opp["currentExecution"]["status"] == "STALE_APPROVED_MARKET"
-    assert prod_opp["qualificationStatus"] == "QUALIFIED"
-    assert prod_opp["currentQualification"]["actionable"] is False
+    assert prod_payload["count"] == 0
+    assert prod_payload["productionCount"] == 0
 
     audit_payload = opportunities_route.get_opportunities(limit=10, best_lines_only=True, include_experimental=True, week=1)
     assert audit_payload["count"] == 1
-    assert audit_payload["productionCount"] == 1
-    assert audit_payload["experimentalCount"] == 0
+    assert audit_payload["productionCount"] == 0
+    assert audit_payload["experimentalCount"] == 1
     opp = audit_payload["opportunities"][0]
     assert opp["currentExecution"]["status"] == "STALE_APPROVED_MARKET"
-    assert opp["qualificationStatus"] == "QUALIFIED"
+    assert opp["qualificationStatus"] == "NOT_QUALIFIED"
     assert opp["book"] is None
     assert opp["point"] is None
     assert opp["price"] is None
+    assert opp["recommendation"] == "WATCH"
+    assert opp["currentQualification"]["status"] == "NOT_QUALIFIED"
     assert opp["currentQualification"]["actionable"] is False
     assert opp["originalCandidate"]["sportsbook"] == "BetUS"
     assert opp["originalCandidate"]["point"] == 9.5

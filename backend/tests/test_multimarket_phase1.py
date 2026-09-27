@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -163,6 +164,72 @@ def test_get_opportunities_generates_moneyline_and_total_candidates(tmp_path, mo
 
     monkeypatch.setattr(route, "RANKED_BET_BOARD", ranked_board)
     monkeypatch.setattr(route, "GAME_PROJECTIONS", projections)
+    monkeypatch.setattr(
+        route,
+        "resolve_projection_readiness",
+        lambda season, week: {
+            "projectionReadiness": "CURRENT",
+            "projectionReadinessReason": "LINEAGE_CURRENT",
+            "projectionSeason": season,
+            "projectionWeek": week,
+            "projectionPowerThroughWeek": None if week is None else int(week) - 1,
+            "projectionArtifactId": "proj-test-current",
+            "projectionArtifactHash": "artifact-hash-test-current",
+            "projectionScheduleVersion": "schedule-v1:test",
+            "projectionScheduleHash": "schedule-hash-test",
+            "projectionScheduleSourceVersion": "source-version-test",
+            "projectionValidationStatus": "VALID",
+            "projectionPowerSnapshotId": "snap-test-current",
+            "projectionPowerSnapshotHash": "snap-hash-test-current",
+            "projectionActivatedAt": "2026-09-13T15:00:00Z",
+            "expectedPowerThroughWeek": None if week is None else int(week) - 1,
+        },
+    )
+    monkeypatch.setattr(
+        route,
+        "load_active_projection_artifact_by_identity",
+        lambda season, week, artifact_id, artifact_hash: {
+            "projection_rows": [
+                {
+                    "event_id": "evt-1",
+                    "season": 2026,
+                    "week": 1,
+                    "kickoff_utc": "2026-09-13T17:00:00Z",
+                    "away_team": "NYG",
+                    "home_team": "DAL",
+                    "away_power": 0.0,
+                    "home_power": 0.0,
+                    "model_margin_home": -2.5,
+                    "model_total_baseline": 46.5,
+                    "canonical_event_key": "cev-evt-1",
+                    "model_version": "model-v1",
+                    "probability_version": "prob-v1",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        route,
+        "load_active_schedule",
+        lambda season, week, store=None: SimpleNamespace(
+            schedule_version="schedule-v1:test",
+            schedule_hash="schedule-hash-test",
+            source_version="source-version-test",
+            season=season,
+            week=week,
+            events=[
+                SimpleNamespace(
+                    source_event_id="evt-1",
+                    canonical_event_key="cev-evt-1",
+                    season=season,
+                    week=week,
+                    kickoff_utc="2026-09-13T17:00:00Z",
+                    away_team="NYG",
+                    home_team="DAL",
+                )
+            ],
+        ),
+    )
 
     monkeypatch.setattr(
         route,
@@ -289,7 +356,9 @@ def test_get_opportunities_generates_moneyline_and_total_candidates(tmp_path, mo
     assert by_market["total"]["productionEligible"] is False
     assert by_market["total"]["marketValidationStatus"] == "SHADOW_VALIDATION"
 
-    assert by_market["spread"]["productionRank"] is not None
+    assert by_market["spread"]["productionRank"] is None
+    assert by_market["spread"]["qualificationStatus"] == "NOT_QUALIFIED"
+    assert by_market["spread"]["currentQualification"]["actionable"] is False
     assert by_market["moneyline"]["productionRank"] is None
     assert by_market["total"]["productionRank"] is None
 

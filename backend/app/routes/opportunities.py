@@ -42,12 +42,14 @@ from app.services.probability_engine import (
     ev_per_dollar_with_push,
     fair_price_from_win_push,
     moneyline_outcome_probabilities,
+    spread_outcome_probabilities,
     total_outcome_probabilities,
 )
 from app.services.week_resolution import build_week_readiness, resolve_canonical_week_metadata
 from app.services.power_engine import load_active_projection_artifact_by_identity, resolve_projection_readiness
 from app.services.result_engine import normalize_kickoff_utc, normalize_team_id
-from app.services.schedule_engine import default_schedule_engine_store, load_canonical_weekly_schedule
+from app.services.schedule_engine import default_schedule_engine_store
+from app.services.schedule_engine.source_ingestion import load_active_schedule
 from app.config import settings
 from app.runtime_paths import runtime_paths
 
@@ -1565,6 +1567,32 @@ def row_to_opportunity(
             "reason": "Current qualification recalculated from current executable line/price.",
         }
 
+    if execution_status != "AVAILABLE":
+        result["recommendation"] = "WATCH"
+        result["qualificationStatus"] = "NOT_QUALIFIED"
+        result["qualificationReasons"] = [
+            "Current executable market is unavailable or stale.",
+        ]
+        result["currentQualification"] = {
+            "status": "NOT_QUALIFIED",
+            "recommendation": "WATCH",
+            "actionable": False,
+            "reason": "Current executable market is unavailable or stale.",
+        }
+
+    if result.get("currentWinProbability") is None or result.get("currentEV") is None:
+        result["recommendation"] = "WATCH"
+        result["qualificationStatus"] = "NOT_QUALIFIED"
+        result["qualificationReasons"] = [
+            "Current probability or expected value is unavailable; qualification is fail-closed.",
+        ]
+        result["currentQualification"] = {
+            "status": "NOT_QUALIFIED",
+            "recommendation": "WATCH",
+            "actionable": False,
+            "reason": "Current probability or expected value is unavailable.",
+        }
+
     current_sizing = _build_current_sizing(
         current_execution=current_execution,
         current_qualification=result.get("currentQualification"),
@@ -1669,6 +1697,61 @@ def load_game_projection_lookup(
     return out
 
 
+def _event_identity_key(*, away_team: Any, home_team: Any, kickoff_utc: Any) -> tuple[str, str, str]:
+    away = normalize_team_id(away_team)
+    home = normalize_team_id(home_team)
+    kickoff = normalize_kickoff_utc(str(kickoff_utc or ""))
+    return away, home, kickoff
+
+
+def _build_market_event_identity_bridge(
+    *,
+    expected_identity_by_source_event_id: dict[str, tuple[str, str, str]],
+) -> tuple[dict[str, str], dict[str, str]]:
+    source_event_id_by_identity = {
+        identity: source_event_id
+        for source_event_id, identity in expected_identity_by_source_event_id.items()
+    }
+
+    provider_identity_by_event_id: dict[str, tuple[str, str, str]] = {}
+    provider_event_ids_by_source_event_id: dict[str, set[str]] = {}
+
+    for market_row in market_data_service.load_normalized_market_rows():
+        provider_event_id = str(market_row.get("eventId") or "").strip()
+        if not provider_event_id:
+            continue
+        try:
+            market_identity = _event_identity_key(
+                away_team=market_row.get("awayTeam"),
+                home_team=market_row.get("homeTeam"),
+                kickoff_utc=market_row.get("commenceTime"),
+            )
+        except Exception:
+            continue
+
+        source_event_id = source_event_id_by_identity.get(market_identity)
+        if source_event_id is None:
+            continue
+
+        prior_identity = provider_identity_by_event_id.get(provider_event_id)
+        if prior_identity is not None and prior_identity != market_identity:
+            raise ValueError("ACTIVE_PROJECTION_EVENT_ID_BRIDGE_PROVIDER_ID_CONFLICT")
+        provider_identity_by_event_id[provider_event_id] = market_identity
+
+        provider_event_ids_by_source_event_id.setdefault(source_event_id, set()).add(provider_event_id)
+
+    provider_event_id_by_source_event_id: dict[str, str] = {}
+    source_event_id_by_provider_event_id: dict[str, str] = {}
+    for source_event_id, provider_event_ids in provider_event_ids_by_source_event_id.items():
+        if len(provider_event_ids) > 1:
+            raise ValueError("ACTIVE_PROJECTION_EVENT_ID_BRIDGE_AMBIGUOUS")
+        provider_event_id = next(iter(provider_event_ids))
+        provider_event_id_by_source_event_id[source_event_id] = provider_event_id
+        source_event_id_by_provider_event_id[provider_event_id] = source_event_id
+
+    return provider_event_id_by_source_event_id, source_event_id_by_provider_event_id
+
+
 def _load_active_projection_lookup_for_week(
     *,
     resolved_season: int,
@@ -1694,41 +1777,56 @@ def _load_active_projection_lookup_for_week(
 
     schedule_version = str(readiness.get("projectionScheduleVersion") or "").strip()
     schedule_hash = str(readiness.get("projectionScheduleHash") or "").strip()
+    schedule_source_version = str(readiness.get("projectionScheduleSourceVersion") or "").strip()
     if not schedule_version:
         raise ValueError("ACTIVE_PROJECTION_SCHEDULE_VERSION_MISSING")
     if not schedule_hash:
         raise ValueError("ACTIVE_PROJECTION_SCHEDULE_HASH_MISSING")
+    if not schedule_source_version:
+        raise ValueError("ACTIVE_PROJECTION_SCHEDULE_SOURCE_VERSION_MISSING")
 
-    canonical_schedule = load_canonical_weekly_schedule(
+    active_schedule = load_active_schedule(
         season=resolved_season,
         week=resolved_week,
         store=default_schedule_engine_store(),
     )
-    if canonical_schedule is None:
-        raise ValueError("ACTIVE_PROJECTION_CANONICAL_SCHEDULE_MISSING")
-    if str(canonical_schedule.schedule_version) != schedule_version:
+    if active_schedule is None:
+        raise ValueError("ACTIVE_PROJECTION_ACTIVE_SCHEDULE_MISSING")
+    if str(active_schedule.schedule_version) != schedule_version:
         raise ValueError("ACTIVE_PROJECTION_SCHEDULE_VERSION_MISMATCH")
-    if str(canonical_schedule.schedule_hash) != schedule_hash:
+    if str(active_schedule.schedule_hash) != schedule_hash:
         raise ValueError("ACTIVE_PROJECTION_SCHEDULE_HASH_MISMATCH")
+    if str(active_schedule.source_version) != schedule_source_version:
+        raise ValueError("ACTIVE_PROJECTION_SCHEDULE_SOURCE_VERSION_MISMATCH")
 
-    canonical_events = list(canonical_schedule.events)
-    if not canonical_events:
-        raise ValueError("ACTIVE_PROJECTION_CANONICAL_SCHEDULE_EMPTY")
+    active_events = list(active_schedule.events)
+    if not active_events:
+        raise ValueError("ACTIVE_PROJECTION_ACTIVE_SCHEDULE_EMPTY")
 
     expected_by_event_id: dict[str, Any] = {}
     expected_by_canonical_key: dict[str, Any] = {}
-    for event in canonical_events:
+    expected_identity_by_source_event_id: dict[str, tuple[str, str, str]] = {}
+    for event in active_events:
         event_id = str(event.source_event_id)
         canonical_event_key = str(event.canonical_event_key)
         if event_id in expected_by_event_id:
-            raise ValueError("ACTIVE_PROJECTION_CANONICAL_DUPLICATE_EVENT_ID")
+            raise ValueError("ACTIVE_PROJECTION_ACTIVE_SCHEDULE_DUPLICATE_EVENT_ID")
         if canonical_event_key in expected_by_canonical_key:
-            raise ValueError("ACTIVE_PROJECTION_CANONICAL_DUPLICATE_CANONICAL_KEY")
+            raise ValueError("ACTIVE_PROJECTION_ACTIVE_SCHEDULE_DUPLICATE_CANONICAL_KEY")
         expected_by_event_id[event_id] = event
         expected_by_canonical_key[canonical_event_key] = event
+        expected_identity_by_source_event_id[event_id] = _event_identity_key(
+            away_team=event.away_team,
+            home_team=event.home_team,
+            kickoff_utc=event.kickoff_utc,
+        )
+
+    provider_event_id_by_source_event_id, source_event_id_by_provider_event_id = _build_market_event_identity_bridge(
+        expected_identity_by_source_event_id=expected_identity_by_source_event_id,
+    )
 
     event_ids = {str(event_id) for event_id in week_event_ids}
-    lookup: dict[str, pd.Series] = {}
+    lookup_by_source_event_id: dict[str, pd.Series] = {}
     seen_event_ids: set[str] = set()
     seen_canonical_keys: set[str] = set()
     for row in rows:
@@ -1786,8 +1884,9 @@ def _load_active_projection_lookup_for_week(
         normalized["kickoff_utc"] = row_kickoff
         normalized["away_team"] = row_away
         normalized["home_team"] = row_home
-        if not event_ids or event_id in event_ids:
-            lookup[event_id] = pd.Series(normalized)
+        normalized["source_event_id"] = event_id
+        normalized["provider_api_event_id"] = provider_event_id_by_source_event_id.get(event_id)
+        lookup_by_source_event_id[event_id] = pd.Series(normalized)
 
     expected_event_ids = set(expected_by_event_id.keys())
     expected_canonical_keys = set(expected_by_canonical_key.keys())
@@ -1796,8 +1895,38 @@ def _load_active_projection_lookup_for_week(
     if seen_canonical_keys != expected_canonical_keys:
         raise ValueError("ACTIVE_PROJECTION_CANONICAL_COVERAGE_MISMATCH")
 
-    if event_ids and set(lookup.keys()) != event_ids:
-        raise ValueError("ACTIVE_PROJECTION_EVENT_COVERAGE_MISMATCH")
+    if not event_ids:
+        return lookup_by_source_event_id
+
+    resolved_sources: set[str] = set()
+    lookup: dict[str, pd.Series] = {}
+    unresolved_event_ids: set[str] = set()
+    for requested_event_id in event_ids:
+        if requested_event_id in lookup_by_source_event_id:
+            source_event_id = requested_event_id
+        else:
+            source_event_id = source_event_id_by_provider_event_id.get(requested_event_id)
+
+        if not source_event_id:
+            unresolved_event_ids.add(requested_event_id)
+            continue
+
+        if source_event_id in resolved_sources:
+            raise ValueError("ACTIVE_PROJECTION_EVENT_BRIDGE_DUPLICATE_REQUEST")
+        resolved_sources.add(source_event_id)
+
+        row = lookup_by_source_event_id.get(source_event_id)
+        if row is None:
+            unresolved_event_ids.add(requested_event_id)
+            continue
+
+        projected = row.copy()
+        projected["api_event_id"] = requested_event_id
+        projected["provider_api_event_id"] = requested_event_id
+        lookup[requested_event_id] = projected
+
+    if unresolved_event_ids:
+        raise ValueError("ACTIVE_PROJECTION_EVENT_BRIDGE_MISSING")
 
     return lookup
 
@@ -1978,6 +2107,169 @@ def _build_generated_multimarket_candidates(
             "recommendation": recommendation,
             "confidence_score": confidence_score,
             "data_completeness": 1.0 if projection is not None else 0.75,
+            "market_confidence": max(0.0, min(1.0, books_tracked / 10.0)),
+            "model_confidence": 0.7,
+            "rank": 9999,
+            "qualification_status": quality_status,
+            "qualification_reasons": quality_reasons,
+        }
+
+        candidates.append(
+            {
+                "selected": pd.Series(enriched),
+                "group": group,
+                "groupMinRank": 9999,
+            }
+        )
+
+    return candidates
+
+
+def _build_generated_spread_candidates(
+    week_event_ids: set[str],
+    projection_lookup: dict[str, pd.Series],
+    market_snapshots: dict[str, dict],
+) -> list[dict]:
+    records = [
+        row
+        for row in market_data_service.load_normalized_market_rows()
+        if str(row.get("eventId") or "") in week_event_ids and str(row.get("market") or "") == "spread"
+    ]
+    if not records:
+        return []
+
+    df = pd.DataFrame(records)
+    if df.empty:
+        return []
+
+    df = df.copy()
+    df["api_event_id"] = df["eventId"].astype(str)
+    df["commence_time"] = df.get("commenceTime")
+    df["away_team"] = df.get("awayTeam")
+    df["home_team"] = df.get("homeTeam")
+    df["sportsbook"] = df.get("sportsbook")
+    df["price"] = pd.to_numeric(df.get("americanOdds"), errors="coerce")
+    df["point"] = pd.to_numeric(df.get("point"), errors="coerce")
+    if "lastUpdated" in df.columns:
+        last_updated_series = df["lastUpdated"]
+    else:
+        last_updated_series = pd.Series([None] * len(df), index=df.index)
+    df["quoteAgeMinutes"] = last_updated_series.map(_quote_age_minutes)
+    df["quoteFresh"] = df["quoteAgeMinutes"].map(
+        lambda age: age is not None and age <= float(CURRENT_ACTIONABLE_MAX_ODDS_AGE_MINUTES)
+    )
+    df = filter_current_market_sportsbook_rows(df)
+
+    grouped = df.groupby(["api_event_id", "market", "side"], dropna=False, sort=False)
+    selected_rows: list[pd.Series] = []
+    group_map: dict[int, pd.DataFrame] = {}
+    selection_prices: dict[tuple[str, str, str], float] = {}
+    for _, group in grouped:
+        selected = best_line_for_group(group)
+        if selected is None:
+            continue
+        selected_rows.append(selected)
+        group_map[id(selected)] = group.copy()
+        price = safe_float(selected.get("price"))
+        if price is not None:
+            selection_prices[(str(selected.get("api_event_id") or ""), "spread", str(selected.get("side") or "").lower())] = float(price)
+
+    candidates: list[dict] = []
+    for selected in selected_rows:
+        event_id = str(selected.get("api_event_id") or "")
+        side = str(selected.get("side") or "").lower()
+        point = safe_float(selected.get("point"))
+        price = safe_float(selected.get("price"))
+        projection = projection_lookup.get(event_id)
+
+        if projection is None:
+            continue
+
+        model_margin_home = safe_float(projection.get("model_margin_home"))
+        spread_probs = spread_outcome_probabilities(
+            model_margin_home=model_margin_home,
+            side=side,
+            spread_point=point,
+        )
+        if spread_probs.status != "AVAILABLE" or price is None:
+            continue
+
+        raw_model_prob = _unit_probability(spread_probs.win)
+        calibrated_prob = apply_guarded_isotonic(raw_model_prob)
+
+        opposite_side = "away" if side == "home" else "home"
+        opposite_price = selection_prices.get((event_id, "spread", opposite_side))
+        no_vig_self, _ = _devig_two_way(price, opposite_price)
+        implied_prob_raw = no_vig_self if no_vig_self is not None else _implied_probability_from_american(price)
+        implied_prob_unit = _unit_probability(implied_prob_raw)
+
+        calibrated_edge = None
+        if calibrated_prob is not None and implied_prob_unit is not None:
+            calibrated_edge = calibrated_prob - implied_prob_unit
+
+        ev = ev_per_dollar_with_push(
+            win_probability=float(spread_probs.win),
+            push_probability=float(spread_probs.push),
+            american_odds=float(price),
+        )
+        fair_odds = fair_price_from_win_push(
+            win_probability=float(spread_probs.win),
+            push_probability=float(spread_probs.push),
+        )
+
+        snapshot = market_snapshots.get(event_id, {})
+        books_tracked = int(snapshot.get("booksTracked") or 0)
+        confidence_score = max(55.0, min(90.0, 55.0 + (books_tracked * 3.0)))
+        recommendation, quality_status, quality_reasons = _qualify_market_candidate(
+            market="spread",
+            calibrated_edge=calibrated_edge,
+            current_ev=ev,
+            confidence_score=confidence_score,
+        )
+
+        group = group_map[id(selected)].copy()
+
+        def _group_spread_ev(row: pd.Series) -> float | None:
+            candidate_point = safe_float(row.get("point"))
+            candidate_price = safe_float(row.get("price"))
+            if candidate_point is None or candidate_price is None:
+                return None
+            candidate_probs = spread_outcome_probabilities(
+                model_margin_home=model_margin_home,
+                side=side,
+                spread_point=candidate_point,
+            )
+            if candidate_probs.status != "AVAILABLE":
+                return None
+            return ev_per_dollar_with_push(
+                win_probability=float(candidate_probs.win),
+                push_probability=float(candidate_probs.push),
+                american_odds=float(candidate_price),
+            )
+
+        group["ev_per_dollar"] = group.apply(_group_spread_ev, axis=1)
+
+        enriched = {
+            "api_event_id": event_id,
+            "commence_time": selected.get("commence_time"),
+            "away_team": selected.get("away_team"),
+            "home_team": selected.get("home_team"),
+            "market": "spread",
+            "side": side,
+            "point": point,
+            "sportsbook": selected.get("sportsbook"),
+            "price": price,
+            "model_prob": raw_model_prob,
+            "implied_prob_raw": implied_prob_unit,
+            "market_no_vig_prob": implied_prob_unit,
+            "fair_odds": fair_odds,
+            "edge_pp": calibrated_edge,
+            "ev_per_dollar": ev,
+            "kelly_full": 0.0,
+            "kelly_20pct": 0.0,
+            "recommendation": recommendation,
+            "confidence_score": confidence_score,
+            "data_completeness": 1.0,
             "market_confidence": max(0.0, min(1.0, books_tracked / 10.0)),
             "model_confidence": 0.7,
             "rank": 9999,
@@ -2498,6 +2790,11 @@ def _get_opportunities_payload(
                 }
             )
 
+    generated_spread_candidates = _build_generated_spread_candidates(
+        week_event_ids=week_event_ids,
+        projection_lookup=projection_lookup,
+        market_snapshots=market_snapshots,
+    )
     generated_candidates = _build_generated_multimarket_candidates(
         week_event_ids=week_event_ids,
         projection_lookup=projection_lookup,
@@ -2513,7 +2810,7 @@ def _get_opportunities_payload(
         for item in candidate_rows
     }
 
-    for gen in generated_candidates:
+    for gen in [*generated_spread_candidates, *generated_candidates]:
         selected = gen["selected"].copy()
         selected["model_timestamp"] = evaluation_timestamp
         key = (

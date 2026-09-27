@@ -56,6 +56,7 @@ def _base_readiness(*, status: str, reason: str) -> dict:
         "projectionArtifactHash": "hash-test",
         "projectionScheduleVersion": "schedule-v1:2026:3:test",
         "projectionScheduleHash": "schedule-hash-test",
+        "projectionScheduleSourceVersion": "source-version-test",
         "projectionValidationStatus": "VALID" if status == "CURRENT" else "VALID",
         "projectionPowerSnapshotId": "snap-test",
         "projectionPowerSnapshotHash": "snap-hash-test",
@@ -179,10 +180,11 @@ def _patch_opportunities_dependencies(monkeypatch, tmp_path: Path, *, readiness:
     )
     monkeypatch.setattr(
         opportunities_route,
-        "load_canonical_weekly_schedule",
+        "load_active_schedule",
         lambda season, week, store=None: SimpleNamespace(
             schedule_version=str(readiness.get("projectionScheduleVersion") or "schedule-v1:2026:3:test"),
             schedule_hash=str(readiness.get("projectionScheduleHash") or "schedule-hash-test"),
+            source_version=str(readiness.get("projectionScheduleSourceVersion") or "source-version-test"),
             season=season,
             week=week,
             events=[
@@ -541,7 +543,7 @@ def test_opportunities_current_lineage_preserves_numerical_outputs(tmp_path, mon
     readiness = _base_readiness(status="CURRENT", reason="LINEAGE_CURRENT")
     opportunities_route = _patch_opportunities_dependencies(monkeypatch, tmp_path, readiness=readiness)
 
-    payload = opportunities_route.get_opportunities(limit=10, best_lines_only=True, week=3)
+    payload = opportunities_route.get_opportunities(limit=10, best_lines_only=True, include_experimental=True, week=3)
     opp = payload["opportunities"][0]
 
     assert payload["projectionReadiness"] == "CURRENT"
@@ -595,12 +597,57 @@ def test_current_projection_with_stale_market_keeps_projection_current(tmp_path,
         quote_last_updated=stale_quote,
     )
 
-    payload = opportunities_route.get_opportunities(limit=10, best_lines_only=True, week=3)
+    payload = opportunities_route.get_opportunities(limit=10, best_lines_only=True, include_experimental=True, week=3)
     opp = payload["opportunities"][0]
 
     assert payload["projectionReadiness"] == "CURRENT"
     assert opp["projectionReadiness"] == "CURRENT"
     assert opp["currentExecution"]["status"] == "STALE_APPROVED_MARKET"
+    assert opp["currentQualification"]["actionable"] is False
+
+
+def test_current_projection_with_missing_current_numerics_fails_closed(tmp_path, monkeypatch):
+    readiness = _base_readiness(status="CURRENT", reason="LINEAGE_CURRENT")
+    stale_quote = (datetime.now(timezone.utc) - timedelta(minutes=240)).isoformat()
+    opportunities_route = _patch_opportunities_dependencies(
+        monkeypatch,
+        tmp_path,
+        readiness=readiness,
+        quote_last_updated=stale_quote,
+    )
+
+    monkeypatch.setattr(
+        opportunities_route,
+        "build_fair_price_result",
+        lambda row, group_rows, game_projection_row, minimum_playable_ev: _FakeFairPriceResult(
+            current_win_probability=None,
+            current_push_probability=None,
+            current_loss_probability=None,
+            current_ev=None,
+            fair_price=None,
+            fair_line=None,
+            true_playable_to=None,
+            true_playable_to_status="UNAVAILABLE",
+            true_playable_to_reason="TEST_MISSING_NUMERICS",
+            worst_observed_playable_price=None,
+            worst_observed_playable_price_status="UNAVAILABLE",
+            worst_observed_playable_price_reason="TEST_MISSING_NUMERICS",
+            playable_to=None,
+            playable_to_status="UNAVAILABLE",
+            playable_to_reason="TEST_MISSING_NUMERICS",
+            best_available_price=None,
+            best_available_line=None,
+        ),
+    )
+
+    payload = opportunities_route.get_opportunities(limit=10, best_lines_only=True, include_experimental=True, week=3)
+    opp = payload["opportunities"][0]
+
+    assert opp["projectionReadiness"] == "CURRENT"
+    assert opp["currentExecution"]["status"] == "STALE_APPROVED_MARKET"
+    assert opp["currentWinProbability"] is None
+    assert opp["currentEV"] is None
+    assert opp["qualificationStatus"] == "NOT_QUALIFIED"
     assert opp["currentQualification"]["actionable"] is False
 
 
@@ -660,6 +707,7 @@ def _canonical_schedule_for_identity_tests(events: list[dict]) -> SimpleNamespac
     return SimpleNamespace(
         schedule_version="schedule-v1:2026:3:test",
         schedule_hash="schedule-hash-test",
+        source_version="source-version-test",
         season=2026,
         week=3,
         events=[SimpleNamespace(**event) for event in events],
@@ -709,7 +757,7 @@ def test_active_projection_identity_exact_canonical_match_is_accepted(monkeypatc
             }
         ]
     )
-    monkeypatch.setattr(opportunities_route, "load_canonical_weekly_schedule", lambda season, week, store=None: schedule)
+    monkeypatch.setattr(opportunities_route, "load_active_schedule", lambda season, week, store=None: schedule)
     monkeypatch.setattr(
         opportunities_route,
         "load_active_projection_artifact_by_identity",
@@ -751,7 +799,7 @@ def test_active_projection_identity_missing_canonical_event_fails_closed(monkeyp
             },
         ]
     )
-    monkeypatch.setattr(opportunities_route, "load_canonical_weekly_schedule", lambda season, week, store=None: schedule)
+    monkeypatch.setattr(opportunities_route, "load_active_schedule", lambda season, week, store=None: schedule)
     monkeypatch.setattr(
         opportunities_route,
         "load_active_projection_artifact_by_identity",
@@ -835,7 +883,7 @@ def test_active_projection_identity_fail_closed_matrix(monkeypatch, rows, error)
             }
         ]
     )
-    monkeypatch.setattr(opportunities_route, "load_canonical_weekly_schedule", lambda season, week, store=None: schedule)
+    monkeypatch.setattr(opportunities_route, "load_active_schedule", lambda season, week, store=None: schedule)
     monkeypatch.setattr(
         opportunities_route,
         "load_active_projection_artifact_by_identity",
@@ -877,7 +925,7 @@ def test_active_projection_identity_reordered_rows_are_accepted(monkeypatch):
             },
         ]
     )
-    monkeypatch.setattr(opportunities_route, "load_canonical_weekly_schedule", lambda season, week, store=None: schedule)
+    monkeypatch.setattr(opportunities_route, "load_active_schedule", lambda season, week, store=None: schedule)
 
     rows_a = [
         _active_projection_row(event_id="evt-guard-1", canonical_event_key="cev-guard-1"),
