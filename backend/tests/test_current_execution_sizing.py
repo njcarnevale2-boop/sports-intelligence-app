@@ -176,6 +176,27 @@ def _patch_current_execution_fixture(
             ],
         ),
     )
+    monkeypatch.setattr(
+        opportunities_route,
+        "load_personnel_authority_lookup",
+        lambda **kwargs: {
+            event_id: {
+                "personnelReadiness": "CURRENT",
+                "personnelReadinessReason": "TEST_CURRENT",
+                "personnelSourceVersion": "synthetic-test",
+                "awayExpectedStartingQB": "Synthetic Away QB",
+                "homeExpectedStartingQB": "Synthetic Home QB",
+                "awayQBStatus": "CURRENT",
+                "homeQBStatus": "CURRENT",
+                "awayQBVerifiedAt": "2026-09-13T15:00:00Z",
+                "homeQBVerifiedAt": "2026-09-13T15:00:00Z",
+                "awayQBSource": "synthetic",
+                "homeQBSource": "synthetic",
+                "personnelVerifiedAt": "2026-09-13T15:00:00Z",
+                "personnelNumericallyAdjusted": False,
+            }
+        },
+    )
     monkeypatch.setattr(games_module, "RANKED_BET_BOARD", ranked_board)
     monkeypatch.setattr(games_module, "GAME_PROJECTIONS", projections)
     monkeypatch.setattr(opportunities_route, "_build_generated_multimarket_candidates", lambda **kwargs: [])

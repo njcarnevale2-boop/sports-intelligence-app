@@ -225,6 +225,27 @@ def _patch_opportunities_dependencies(monkeypatch, tmp_path: Path, *, readiness:
         "build_fair_price_result",
         lambda row, group_rows, game_projection_row, minimum_playable_ev: _FakeFairPriceResult(),
     )
+    monkeypatch.setattr(
+        opportunities_route,
+        "load_personnel_authority_lookup",
+        lambda **kwargs: {
+            "evt-guard-1": {
+                "personnelReadiness": "CURRENT",
+                "personnelReadinessReason": "TEST_CURRENT",
+                "personnelSourceVersion": "synthetic-test",
+                "awayExpectedStartingQB": "Synthetic Away QB",
+                "homeExpectedStartingQB": "Synthetic Home QB",
+                "awayQBStatus": "CURRENT",
+                "homeQBStatus": "CURRENT",
+                "awayQBVerifiedAt": "2026-09-20T15:00:00Z",
+                "homeQBVerifiedAt": "2026-09-20T15:00:00Z",
+                "awayQBSource": "synthetic",
+                "homeQBSource": "synthetic",
+                "personnelVerifiedAt": "2026-09-20T15:00:00Z",
+                "personnelNumericallyAdjusted": False,
+            }
+        },
+    )
 
     now_iso = quote_last_updated or datetime.now(timezone.utc).isoformat()
 

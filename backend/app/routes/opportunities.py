@@ -47,6 +47,7 @@ from app.services.probability_engine import (
 )
 from app.services.week_resolution import build_week_readiness, resolve_canonical_week_metadata
 from app.services.power_engine import load_active_projection_artifact_by_identity, resolve_projection_readiness
+from app.services.personnel_authority import load_personnel_authority_lookup
 from app.services.result_engine import normalize_kickoff_utc, normalize_team_id
 from app.services.schedule_engine import default_schedule_engine_store
 from app.services.schedule_engine.source_ingestion import load_active_schedule
@@ -412,6 +413,68 @@ def _build_current_sizing(
         "recommendedAmount": round(float(recommended_amount), 2),
         "recommendedUnits": round(float(recommended_units), 2),
     }
+
+
+def _personnel_readiness_fields(personnel: dict[str, Any] | None) -> dict[str, Any]:
+    personnel = dict(personnel or {})
+    return {
+        "personnelReadiness": str(personnel.get("personnelReadiness") or personnel.get("personnel_status") or "UNAVAILABLE").upper(),
+        "personnelReadinessReason": str(personnel.get("personnelReadinessReason") or personnel.get("personnel_readiness_reason") or "QB_STATUS_UNVERIFIED"),
+        "personnelSourceVersion": personnel.get("personnelSourceVersion") or personnel.get("personnel_source_version"),
+        "awayExpectedStartingQB": personnel.get("awayExpectedStartingQB") or personnel.get("away_expected_starting_qb"),
+        "homeExpectedStartingQB": personnel.get("homeExpectedStartingQB") or personnel.get("home_expected_starting_qb"),
+        "awayQBStatus": personnel.get("awayQBStatus") or personnel.get("away_qb_status"),
+        "homeQBStatus": personnel.get("homeQBStatus") or personnel.get("home_qb_status"),
+        "awayQBVerifiedAt": personnel.get("awayQBVerifiedAt") or personnel.get("away_qb_verified_at"),
+        "homeQBVerifiedAt": personnel.get("homeQBVerifiedAt") or personnel.get("home_qb_verified_at"),
+        "awayQBSource": personnel.get("awayQBSource") or personnel.get("away_qb_source"),
+        "homeQBSource": personnel.get("homeQBSource") or personnel.get("home_qb_source"),
+        "personnelVerifiedAt": personnel.get("personnelVerifiedAt") or personnel.get("personnel_verified_at"),
+        "personnelNumericallyAdjusted": bool(personnel.get("personnelNumericallyAdjusted") or personnel.get("personnel_numerically_adjusted") or False),
+    }
+
+
+def _apply_personnel_readiness_guard(opportunity: dict[str, Any], personnel: dict[str, Any] | None) -> dict[str, Any]:
+    guarded = dict(opportunity)
+    guarded.update(_personnel_readiness_fields(personnel))
+
+    if str(guarded.get("personnelReadiness") or "UNAVAILABLE").upper() == "CURRENT":
+        return guarded
+
+    reason = str(guarded.get("personnelReadinessReason") or "QB_STATUS_UNVERIFIED")
+    message = f"Personnel readiness is {guarded['personnelReadiness']}: {reason}"
+    guarded["recommendation"] = "WATCH"
+    guarded["qualificationStatus"] = "NOT_QUALIFIED"
+    guarded["qualificationReasons"] = [message]
+    guarded["currentQualification"] = {
+        "status": "NOT_QUALIFIED",
+        "recommendation": "WATCH",
+        "actionable": False,
+        "reason": message,
+    }
+    guarded["currentSizing"] = {
+        "status": "UNAVAILABLE",
+        "reason": message,
+        "line": _safe_float((guarded.get("currentExecution") or {}).get("point")),
+        "price": _safe_float((guarded.get("currentExecution") or {}).get("price")),
+        "sportsbook": (guarded.get("currentExecution") or {}).get("sportsbook"),
+        "unitSize": float(PERSONAL_LEDGER_DEFAULT_UNIT_SIZE),
+        "bankrollBasis": float(PERSONAL_LEDGER_STARTING_BANKROLL),
+        "fullKellyFraction": None,
+        "fractionalKellyFraction": None,
+        "bankrollPercent": None,
+        "recommendedAmount": None,
+        "recommendedUnits": None,
+    }
+    guarded["sizingStatus"] = "UNAVAILABLE"
+    guarded["sizingReason"] = message
+    guarded["kellyFull"] = None
+    guarded["kelly20"] = None
+    guarded["bankrollPercent"] = None
+    guarded["recommendedUnits"] = None
+    guarded["recommendedAmount"] = None
+    guarded["productionEligible"] = False
+    return guarded
 
 
 def _parse_iso(value: Any) -> datetime | None:
@@ -1245,6 +1308,7 @@ def row_to_opportunity(
     original_candidate: dict[str, Any] | None = None,
     current_execution: dict[str, Any] | None = None,
     evaluation_timestamp: str | None = None,
+    personnel_authority: dict[str, Any] | None = None,
 ):
     away_code = normalize_team_code(row.get("away_team", ""))
     home_code = normalize_team_code(row.get("home_team", ""))
@@ -1362,6 +1426,7 @@ def row_to_opportunity(
         "projectionEventId": game_projection_row.get("event_id") if game_projection_row is not None else None,
         "projectionCanonicalEventKey": game_projection_row.get("canonical_event_key") if game_projection_row is not None else None,
     }
+    result.update(_personnel_readiness_fields(personnel_authority))
 
     if original_candidate is not None:
         result["originalCandidate"] = original_candidate
@@ -1458,6 +1523,8 @@ def row_to_opportunity(
     result["bestAvailablePrice"] = fair_price_result.best_available_price
     result["bestAvailableLine"] = fair_price_result.best_available_line
     result["pushAwareEV"] = fair_price_result.current_ev
+
+    result = _apply_personnel_readiness_guard(result, personnel_authority)
 
     if market_key == "total" and safe_float(game_projection_row.get("model_total_baseline") if game_projection_row is not None else None) is None:
         total_reason = "Authoritative total baseline is unavailable in the active projection artifact."
@@ -1592,6 +1659,8 @@ def row_to_opportunity(
             "actionable": False,
             "reason": "Current probability or expected value is unavailable.",
         }
+
+    result = _apply_personnel_readiness_guard(result, personnel_authority)
 
     current_sizing = _build_current_sizing(
         current_execution=current_execution,
@@ -2588,6 +2657,7 @@ def _get_opportunities_payload(
                 if game_season is not None:
                     resolved_season = int(game_season)
                     break
+        schedule_event_records = selected_week_games
     else:
         available_weeks = list(available_weeks_override)
         canonical_week = dict(canonical_week_override)
@@ -2599,6 +2669,7 @@ def _get_opportunities_payload(
         week_event_ids = {str(event_id) for event_id in week_event_ids_override}
         week_scheduled_games = int(week_scheduled_games_override)
         resolved_season = safe_int(canonical_week.get("season"))
+        schedule_event_records = []
 
     projection_readiness = _resolve_projection_readiness_for_request(
         season=resolved_season,
@@ -2621,6 +2692,15 @@ def _get_opportunities_payload(
         }
 
     projection_readiness_payload = _projection_readiness_fields(projection_readiness)
+
+    try:
+        personnel_lookup = load_personnel_authority_lookup(
+            season=int(resolved_season) if resolved_season is not None else 0,
+            week=int(resolved_week),
+            schedule_events=schedule_event_records,
+        )
+    except Exception:
+        personnel_lookup = {}
 
     if not df.empty and "api_event_id" in df.columns:
         df["api_event_id"] = df["api_event_id"].astype(str)
@@ -2673,6 +2753,7 @@ def _get_opportunities_payload(
                 group_rows=df[(df["api_event_id"] == row["api_event_id"]) & (df["market"] == row["market"]) & (df["side"] == row["side"])],
                 game_projection_row=projection_lookup.get(str(row["api_event_id"])),
                 evaluation_timestamp=evaluation_timestamp,
+                personnel_authority=personnel_lookup.get(str(row["api_event_id"])),
             )
             opp = _apply_projection_readiness_guard(opp, projection_readiness)
             opp["weekRank"] = week_rank
@@ -2888,6 +2969,7 @@ def _get_opportunities_payload(
             original_candidate=candidate.get("originalCandidate"),
             current_execution=candidate.get("currentExecution"),
             evaluation_timestamp=evaluation_timestamp,
+                personnel_authority=personnel_lookup.get(str(selected["api_event_id"])),
         )
         item = _apply_projection_readiness_guard(item, projection_readiness)
         # globalResearchRank is fallback ordering for research (not validated cross-market quality).

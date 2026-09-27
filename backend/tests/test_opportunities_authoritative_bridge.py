@@ -231,6 +231,28 @@ def _patch_offline_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fx: 
             return {"summary": "neutral", "severity": "neutral"}
 
     monkeypatch.setattr(route, "InjuryMatchupContext", _FakeInjuryContext)
+    monkeypatch.setattr(
+        route,
+        "load_personnel_authority_lookup",
+        lambda **kwargs: {
+            event_id: {
+                "personnelReadiness": "CURRENT",
+                "personnelReadinessReason": "TEST_CURRENT",
+                "personnelSourceVersion": "synthetic-test",
+                "awayExpectedStartingQB": "Synthetic Away QB",
+                "homeExpectedStartingQB": "Synthetic Home QB",
+                "awayQBStatus": "CURRENT",
+                "homeQBStatus": "CURRENT",
+                "awayQBVerifiedAt": "2026-09-27T03:13:22Z",
+                "homeQBVerifiedAt": "2026-09-27T03:13:22Z",
+                "awayQBSource": "synthetic",
+                "homeQBSource": "synthetic",
+                "personnelVerifiedAt": "2026-09-27T03:13:22Z",
+                "personnelNumericallyAdjusted": False,
+            }
+            for event_id in fx.provider_event_ids
+        },
+    )
     monkeypatch.setattr(route, "_record_history_for_snapshot", lambda *args, **kwargs: [])
 
 

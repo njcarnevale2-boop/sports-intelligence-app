@@ -164,6 +164,28 @@ def _patch_dependencies(monkeypatch, tmp_path: Path, rows: list[dict]):
         "build_fair_price_result",
         lambda row, group_rows, game_projection_row, minimum_playable_ev: _FakeFairPriceResult(),
     )
+    monkeypatch.setattr(
+        opportunities_route,
+        "load_personnel_authority_lookup",
+        lambda **kwargs: {
+            str(r["api_event_id"]): {
+                "personnelReadiness": "CURRENT",
+                "personnelReadinessReason": "TEST_CURRENT",
+                "personnelSourceVersion": "synthetic-test",
+                "awayExpectedStartingQB": "Synthetic Away QB",
+                "homeExpectedStartingQB": "Synthetic Home QB",
+                "awayQBStatus": "CURRENT",
+                "homeQBStatus": "CURRENT",
+                "awayQBVerifiedAt": "2026-09-13T15:00:00Z",
+                "homeQBVerifiedAt": "2026-09-13T15:00:00Z",
+                "awayQBSource": "synthetic",
+                "homeQBSource": "synthetic",
+                "personnelVerifiedAt": "2026-09-13T15:00:00Z",
+                "personnelNumericallyAdjusted": False,
+            }
+            for r in rows
+        },
+    )
 
     monkeypatch.setattr(
         opportunities_route.market_data_service,

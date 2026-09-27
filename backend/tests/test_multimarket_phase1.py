@@ -63,6 +63,27 @@ def test_row_to_opportunity_moneyline_has_no_point(monkeypatch):
         "build_fair_price_result",
         lambda row, group_rows, game_projection_row, minimum_playable_ev: _FakeFairPriceResult(),
     )
+    monkeypatch.setattr(
+        route,
+        "load_personnel_authority_lookup",
+        lambda **kwargs: {
+            "evt-ml-1": {
+                "personnelReadiness": "CURRENT",
+                "personnelReadinessReason": "TEST_CURRENT",
+                "personnelSourceVersion": "synthetic-test",
+                "awayExpectedStartingQB": "Synthetic Away QB",
+                "homeExpectedStartingQB": "Synthetic Home QB",
+                "awayQBStatus": "CURRENT",
+                "homeQBStatus": "CURRENT",
+                "awayQBVerifiedAt": "2026-09-13T15:00:00Z",
+                "homeQBVerifiedAt": "2026-09-13T15:00:00Z",
+                "awayQBSource": "synthetic",
+                "homeQBSource": "synthetic",
+                "personnelVerifiedAt": "2026-09-13T15:00:00Z",
+                "personnelNumericallyAdjusted": False,
+            }
+        },
+    )
 
     row = pd.Series(
         {
@@ -244,6 +265,27 @@ def test_get_opportunities_generates_moneyline_and_total_candidates(tmp_path, mo
         },
     )
     monkeypatch.setattr(route, "InjuryMatchupContext", _FakeInjuryContext)
+    monkeypatch.setattr(
+        route,
+        "load_personnel_authority_lookup",
+        lambda **kwargs: {
+            "evt-1": {
+                "personnelReadiness": "CURRENT",
+                "personnelReadinessReason": "TEST_CURRENT",
+                "personnelSourceVersion": "synthetic-test",
+                "awayExpectedStartingQB": "Synthetic Away QB",
+                "homeExpectedStartingQB": "Synthetic Home QB",
+                "awayQBStatus": "CURRENT",
+                "homeQBStatus": "CURRENT",
+                "awayQBVerifiedAt": "2026-09-13T15:00:00Z",
+                "homeQBVerifiedAt": "2026-09-13T15:00:00Z",
+                "awayQBSource": "synthetic",
+                "homeQBSource": "synthetic",
+                "personnelVerifiedAt": "2026-09-13T15:00:00Z",
+                "personnelNumericallyAdjusted": False,
+            }
+        },
+    )
 
     monkeypatch.setattr(
         route.market_data_service,

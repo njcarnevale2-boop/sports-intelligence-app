@@ -323,6 +323,27 @@ def test_current_opportunities_skip_lowvig_and_recompute_from_remaining_quotes(t
 
     monkeypatch.setattr(opportunities, "InjuryMatchupContext", _FakeInjuryContext)
     monkeypatch.setattr(
+        opportunities,
+        "load_personnel_authority_lookup",
+        lambda **kwargs: {
+            "evt-lowvig": {
+                "personnelReadiness": "CURRENT",
+                "personnelReadinessReason": "TEST_CURRENT",
+                "personnelSourceVersion": "synthetic-test",
+                "awayExpectedStartingQB": "Synthetic Away QB",
+                "homeExpectedStartingQB": "Synthetic Home QB",
+                "awayQBStatus": "CURRENT",
+                "homeQBStatus": "CURRENT",
+                "awayQBVerifiedAt": "2026-09-07T00:00:00Z",
+                "homeQBVerifiedAt": "2026-09-07T00:00:00Z",
+                "awayQBSource": "synthetic",
+                "homeQBSource": "synthetic",
+                "personnelVerifiedAt": "2026-09-07T00:00:00Z",
+                "personnelNumericallyAdjusted": False,
+            }
+        },
+    )
+    monkeypatch.setattr(
         "app.services.games.service.list_games",
         lambda week=None, game_date=None, include_enrichment=True: {"availableWeeks": [1], "games": [{"eventId": "evt-lowvig", "season": 2026, "week": 1}]},
     )
