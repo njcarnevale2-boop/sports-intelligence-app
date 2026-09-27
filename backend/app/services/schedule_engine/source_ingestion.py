@@ -358,14 +358,6 @@ def _validate_and_parse_source_csv_gz(
         away_team = str(raw.get("away_team") or "").strip()
         home_team = str(raw.get("home_team") or "").strip()
 
-        schedule_service._parse_gameday(gameday)
-        schedule_service._parse_gametime(gametime)
-
-        away_norm = normalize_team_id(away_team)
-        home_norm = normalize_team_id(home_team)
-        if away_norm == home_norm:
-            raise ScheduleSourceIngestionError("SCHEDULE_SOURCE_IDENTITY_INVALID")
-
         game_type_counts[game_type] += 1
         season_min = season if season_min is None else min(season_min, season)
         season_max = season if season_max is None else max(season_max, season)
@@ -378,8 +370,8 @@ def _validate_and_parse_source_csv_gz(
                 "game_type": game_type,
                 "gameday": gameday,
                 "gametime": gametime,
-                "away_team": away_norm,
-                "home_team": home_norm,
+                "away_team": away_team,
+                "home_team": home_team,
             }
         )
 
@@ -444,6 +436,51 @@ def _canonical_schedule_from_rows(
     )
     schedule_service._validate_schedule(schedule)
     return schedule
+
+
+def _week_required_field_missing_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+    missing_gameday = 0
+    missing_gametime = 0
+    missing_away_team = 0
+    missing_home_team = 0
+    invalid_team_id = 0
+    complete_source_rows = 0
+
+    for row in rows:
+        gameday = str(row.get("gameday") or "").strip()
+        gametime = str(row.get("gametime") or "").strip()
+        away_team = str(row.get("away_team") or "").strip()
+        home_team = str(row.get("home_team") or "").strip()
+
+        if not gameday:
+            missing_gameday += 1
+        if not gametime:
+            missing_gametime += 1
+        if not away_team:
+            missing_away_team += 1
+        if not home_team:
+            missing_home_team += 1
+
+        if not (gameday and gametime and away_team and home_team):
+            continue
+
+        try:
+            normalize_team_id(away_team)
+            normalize_team_id(home_team)
+        except Exception:
+            invalid_team_id += 1
+            continue
+
+        complete_source_rows += 1
+
+    return {
+        "missingGameday": missing_gameday,
+        "missingGametime": missing_gametime,
+        "missingAwayTeam": missing_away_team,
+        "missingHomeTeam": missing_home_team,
+        "invalidTeamId": invalid_team_id,
+        "completeSourceRows": complete_source_rows,
+    }
 
 
 def _persist_manifest_and_source_bytes(
@@ -802,6 +839,28 @@ def ingest_nflverse_schedule_source_bytes(
     for (season, week) in sorted(grouped.keys()):
         week_rows = grouped[(season, week)]
         with _file_lock(_active_pointer_lock_path(target_store, season, week)):
+            missing_counts = _week_required_field_missing_counts(week_rows)
+            if any(missing_counts[key] > 0 for key in ("missingGameday", "missingGametime", "missingAwayTeam", "missingHomeTeam", "invalidTeamId")):
+                week_results.append(
+                    {
+                        "season": season,
+                        "week": week,
+                        "status": "CONFLICT_INCOMPLETE_WEEK",
+                        "reason": "TARGET_WEEK_REQUIRED_FIELDS_MISSING",
+                        "sourceRowCount": len(week_rows),
+                        "completeSourceRowCount": int(missing_counts["completeSourceRows"]),
+                        "canonicalEventCount": 0,
+                        "missingRequiredFieldCounts": {
+                            "missingGameday": int(missing_counts["missingGameday"]),
+                            "missingGametime": int(missing_counts["missingGametime"]),
+                            "missingAwayTeam": int(missing_counts["missingAwayTeam"]),
+                            "missingHomeTeam": int(missing_counts["missingHomeTeam"]),
+                            "invalidTeamId": int(missing_counts["invalidTeamId"]),
+                        },
+                    }
+                )
+                continue
+
             candidate = _canonical_schedule_from_rows(
                 season=season,
                 week=week,

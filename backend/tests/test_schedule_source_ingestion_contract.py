@@ -398,6 +398,72 @@ def test_schema_and_duplicate_validation_failures(tmp_path: Path):
         _ingest(tmp_path / "dup", _build_csv_gz(dup))
 
 
+def test_unrelated_future_week_missing_gametime_does_not_block_complete_target_week(tmp_path: Path):
+    rows = _rows_week3() + [
+        {
+            "game_id": "2026_22_SB_TEST",
+            "season": "2026",
+            "week": "22",
+            "game_type": "SB",
+            "gameday": "2027-02-06",
+            "gametime": "",
+            "away_team": "KC",
+            "home_team": "SF",
+        }
+    ]
+
+    out = _ingest(tmp_path, _build_csv_gz(rows))
+    by_week = {item["week"]: item for item in out["weeks"]}
+
+    assert by_week[3]["status"] == "PROMOTED_INITIAL"
+    assert by_week[22]["status"] == "CONFLICT_INCOMPLETE_WEEK"
+    assert by_week[22]["missingRequiredFieldCounts"]["missingGametime"] == 1
+
+    active = load_active_schedule(season=2026, week=3, store=_store(tmp_path))
+    assert active.event_count == 2
+
+
+def test_target_week_missing_gametime_fails_closed_and_blocks_silent_drop(tmp_path: Path):
+    rows = _rows_week3()
+    rows[0]["gametime"] = ""
+
+    out = _ingest(tmp_path, _build_csv_gz(rows))
+    week = out["weeks"][0]
+
+    assert week["status"] == "CONFLICT_INCOMPLETE_WEEK"
+    assert week["reason"] == "TARGET_WEEK_REQUIRED_FIELDS_MISSING"
+    assert week["sourceRowCount"] == 2
+    assert week["completeSourceRowCount"] == 1
+    assert week["canonicalEventCount"] == 0
+    assert week["missingRequiredFieldCounts"]["missingGametime"] == 1
+
+    with pytest.raises(ScheduleSourceIngestionError, match="ACTIVE_SCHEDULE_POINTER_MISSING"):
+        load_active_schedule(season=2026, week=3, store=_store(tmp_path))
+
+
+def test_existing_active_pointer_preserved_when_correction_loses_target_gametime(tmp_path: Path):
+    _ingest(tmp_path, _build_csv_gz(_rows_week3()))
+    active_before = load_active_schedule(season=2026, week=3, store=_store(tmp_path))
+
+    corrected = _rows_week3(kickoff_a="20:25")
+    corrected[1]["gametime"] = ""
+    out = _ingest(
+        tmp_path,
+        _build_csv_gz(corrected),
+        release_id="r2",
+        asset_id="a2",
+        asset_updated_at="2026-09-26T21:00:00Z",
+    )
+    week = out["weeks"][0]
+
+    assert week["status"] == "CONFLICT_INCOMPLETE_WEEK"
+    assert week["missingRequiredFieldCounts"]["missingGametime"] == 1
+
+    active_after = load_active_schedule(season=2026, week=3, store=_store(tmp_path))
+    assert active_after.schedule_version == active_before.schedule_version
+    assert active_after.schedule_hash == active_before.schedule_hash
+
+
 def test_game_type_preserved_for_postseason(tmp_path: Path):
     out = _ingest(tmp_path, _build_csv_gz(_rows_week18_and_wc()))
     assert {item["week"] for item in out["weeks"]} == {18, 19}
@@ -569,20 +635,28 @@ def test_invalid_kickoff_and_team_validation_fails_closed(tmp_path: Path):
     with pytest.raises(Exception, match="SCHEDULE_GAMETIME_INVALID"):
         _ingest(tmp_path / "kickoff", _build_csv_gz(bad_kickoff))
 
+    missing_gameday = _rows_week3()
+    missing_gameday[0]["gameday"] = ""
+    out_gameday = _ingest(tmp_path / "gameday", _build_csv_gz(missing_gameday))
+    assert out_gameday["weeks"][0]["status"] == "CONFLICT_INCOMPLETE_WEEK"
+    assert out_gameday["weeks"][0]["missingRequiredFieldCounts"]["missingGameday"] == 1
+
     missing_away = _rows_week3()
     missing_away[0]["away_team"] = ""
-    with pytest.raises(Exception):
-        _ingest(tmp_path / "away", _build_csv_gz(missing_away))
+    out_away = _ingest(tmp_path / "away", _build_csv_gz(missing_away))
+    assert out_away["weeks"][0]["status"] == "CONFLICT_INCOMPLETE_WEEK"
+    assert out_away["weeks"][0]["missingRequiredFieldCounts"]["missingAwayTeam"] == 1
 
     missing_home = _rows_week3()
     missing_home[0]["home_team"] = ""
-    with pytest.raises(Exception):
-        _ingest(tmp_path / "home", _build_csv_gz(missing_home))
+    out_home = _ingest(tmp_path / "home", _build_csv_gz(missing_home))
+    assert out_home["weeks"][0]["status"] == "CONFLICT_INCOMPLETE_WEEK"
+    assert out_home["weeks"][0]["missingRequiredFieldCounts"]["missingHomeTeam"] == 1
 
     same_team = _rows_week3()
     same_team[0]["away_team"] = "ATL"
     same_team[0]["home_team"] = "ATL"
-    with pytest.raises(ScheduleSourceIngestionError, match="SCHEDULE_SOURCE_IDENTITY_INVALID"):
+    with pytest.raises(Exception, match="SCHEDULE_IDENTITY_INVALID"):
         _ingest(tmp_path / "identity", _build_csv_gz(same_team))
 
 
