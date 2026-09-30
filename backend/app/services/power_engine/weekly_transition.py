@@ -648,6 +648,178 @@ def apply_frozen_weekly_power_transition(
         }
 
 
+def replay_frozen_weekly_power_transition_for_lineage(
+    *,
+    season: int,
+    week: int,
+    parent_lineage_id: str,
+    prior_snapshot_id: str,
+    root_snapshot_id: str,
+    power_store: PowerEngineStore | None = None,
+    result_store: ResultEngineStore | None = None,
+    updater_version: str = UPDATER_VERSION,
+    methodology: FrozenMethodology = FROZEN_METHODOLOGY,
+    methodology_hash_value: str | None = None,
+    expected_result_set_version: str | None = None,
+    expected_result_set_hash: str | None = None,
+    set_active: bool = False,
+) -> dict[str, Any]:
+    store = power_store or default_power_engine_store()
+    frozen_store = result_store or default_result_engine_store()
+
+    if week <= 0:
+        raise PowerWeeklyTransitionError("WEEK_INVALID")
+    if season <= 0:
+        raise PowerWeeklyTransitionError("SEASON_INVALID")
+
+    expected_mh = methodology_hash_value or _expected_methodology_hash(methodology=methodology, updater_version=updater_version)
+    created_at = _utc_now_iso()
+
+    with _transition_lock(store, season=season, week=week):
+        frozen = load_frozen_week_result_set(frozen_store, season=season, week=week)
+        _validate_frozen_results_inputs(season=season, week=week, frozen=frozen)
+
+        if expected_result_set_version and expected_result_set_version != frozen.result_set_version:
+            raise PowerWeeklyTransitionError("RESULT_SET_VERSION_CONFLICT")
+        if expected_result_set_hash and expected_result_set_hash != frozen.result_set_hash:
+            raise PowerWeeklyTransitionError("RESULT_SET_HASH_CONFLICT")
+
+        parent_lineage = store.get_lineage(parent_lineage_id)
+        if parent_lineage.season != season:
+            raise PowerWeeklyTransitionError("LINEAGE_SEASON_MISMATCH")
+        if parent_lineage.active_snapshot_id != prior_snapshot_id:
+            raise PowerWeeklyTransitionError("LINEAGE_PRIOR_SNAPSHOT_MISMATCH")
+
+        prior_snapshot = store.get_snapshot(prior_snapshot_id)
+        if prior_snapshot.season != season:
+            raise PowerWeeklyTransitionError("PRIOR_SNAPSHOT_SEASON_MISMATCH")
+        _validate_prior_snapshot(season=season, week=week, snapshot=prior_snapshot)
+
+        applied, staged = _load_transition_records(store)
+        season_week_applied = [
+            rec
+            for rec in applied.values()
+            if rec.season == season and rec.week == week and rec.parent_lineage_id == parent_lineage.lineage_id
+        ]
+        matching_result_identity = [
+            rec
+            for rec in season_week_applied
+            if rec.result_set_version == frozen.result_set_version
+            and rec.result_set_hash == frozen.result_set_hash
+            and rec.methodology_hash == expected_mh
+            and rec.updater_version == updater_version
+            and rec.prior_snapshot_id == prior_snapshot.snapshot_id
+            and rec.prior_snapshot_hash == prior_snapshot.snapshot_hash
+        ]
+        if matching_result_identity:
+            rec = sorted(matching_result_identity, key=lambda item: item.transition_id)[0]
+            return {
+                "status": "ALREADY_APPLIED",
+                "transition": asdict(rec),
+                "season": season,
+                "week": week,
+            }
+
+        results, sorted_game_ids = _map_and_validate_week_results(
+            season=season,
+            week=week,
+            frozen=frozen,
+            prior_snapshot=prior_snapshot,
+        )
+
+        week_update = apply_week_results(
+            snapshot=prior_snapshot,
+            results=results,
+            generated_at=frozen.frozen_at_utc,
+            updater_version=updater_version,
+            methodology=methodology,
+        )
+        new_snapshot = week_update.snapshot_after
+        if new_snapshot.through_week != week:
+            raise PowerWeeklyTransitionError("NEW_SNAPSHOT_THROUGH_WEEK_MISMATCH")
+        if new_snapshot.methodology_hash != expected_mh:
+            raise PowerWeeklyTransitionError("METHODOLOGY_HASH_CONFLICT")
+        if new_snapshot.updater_version != updater_version:
+            raise PowerWeeklyTransitionError("UPDATER_VERSION_CONFLICT")
+
+        new_lineage_id = _derive_new_lineage_id(
+            season=season,
+            week=week,
+            new_snapshot_hash=new_snapshot.snapshot_hash,
+            parent_lineage_id=parent_lineage.lineage_id,
+        )
+
+        transition = _transition_record_from(
+            season=season,
+            week=week,
+            prior_snapshot=prior_snapshot,
+            new_snapshot=new_snapshot,
+            result_set_version=frozen.result_set_version,
+            result_set_hash=frozen.result_set_hash,
+            methodology_hash=expected_mh,
+            updater_version=updater_version,
+            game_ids_sorted=sorted_game_ids,
+            parent_lineage_id=parent_lineage.lineage_id,
+            new_lineage_id=new_lineage_id,
+            created_at=created_at,
+        )
+
+        conflict = _existing_transition_conflict(
+            records={**applied, **staged},
+            season=season,
+            week=week,
+            parent_lineage_id=parent_lineage.lineage_id,
+            expected_idempotency_key=transition.idempotency_key,
+        )
+        if conflict is not None:
+            raise PowerWeeklyTransitionError("CONFLICTING_REPLAY")
+
+        existing_staged = staged.get(transition.transition_id)
+        if existing_staged is not None and existing_staged.payload_hash != transition.payload_hash:
+            raise PowerWeeklyTransitionError("CONFLICTING_REPLAY")
+
+        active_lineage_id = None
+        if not set_active:
+            active_lineage_id = store.get_active_lineage(season).lineage_id
+
+        candidate_lineage = PowerLineageRecord(
+            lineage_id=new_lineage_id,
+            parent_lineage_id=parent_lineage.lineage_id,
+            root_snapshot_id=root_snapshot_id,
+            active_snapshot_id=new_snapshot.snapshot_id,
+            season=season,
+            through_week=week,
+            status="ACTIVE" if set_active else "SUPERSEDED",
+            created_at=created_at,
+            superseded_at=None if set_active else created_at,
+            superseded_by=None if set_active else active_lineage_id,
+        )
+
+        store.persist_snapshot(new_snapshot)
+        _persist_week_ledger(
+            store=store,
+            lineage_id=transition.new_lineage_id,
+            snapshot_before=prior_snapshot,
+            snapshot_after=new_snapshot,
+            results=results,
+            updates=week_update.updates,
+            generated_at=frozen.frozen_at_utc,
+        )
+
+        if existing_staged is None:
+            _persist_transition_staged(store, transition)
+
+        store.create_lineage(candidate_lineage, set_active=set_active)
+        _persist_transition_applied(store, transition)
+
+        return {
+            "status": "APPLIED",
+            "transition": asdict(transition),
+            "season": season,
+            "week": week,
+        }
+
+
 def list_power_weekly_transitions(
     *,
     power_store: PowerEngineStore | None = None,

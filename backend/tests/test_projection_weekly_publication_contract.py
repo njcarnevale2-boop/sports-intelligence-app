@@ -706,6 +706,62 @@ def test_r_exact_replay_already_active(tmp_path: Path):
     assert first["artifact"]["artifact_id"] == second["artifact"]["artifact_id"]
 
 
+def test_r_replay_with_validation_timestamp_drift_is_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    power_store = _power_store(tmp_path)
+    _seed_active_lineage(power_store, season=2026, through_week=2, snapshot_id="power-2026-wk2", lineage_id="ln-2026-wk2")
+    _write_valid_week3_schedule(tmp_path)
+
+    monkeypatch.setattr(publication_module, "_utc_now_iso", lambda: "2026-09-24T10:00:00Z")
+    first = _publish(tmp_path=tmp_path, power_store=power_store, season=2026, target_week=3)
+    validation_id = first["artifact"]["validation_report_id"]
+    validation_path = power_store.root_dir / "projections" / "validations" / f"{validation_id}.json"
+    first_validation_payload = validation_path.read_text(encoding="utf-8")
+
+    monkeypatch.setattr(publication_module, "_utc_now_iso", lambda: "2026-09-24T10:00:01Z")
+    second = _publish(tmp_path=tmp_path, power_store=power_store, season=2026, target_week=3)
+    second_validation_payload = validation_path.read_text(encoding="utf-8")
+
+    assert first["status"] == "APPLIED"
+    assert second["status"] == "ALREADY_ACTIVE"
+    assert first["artifact"]["artifact_id"] == second["artifact"]["artifact_id"]
+    assert first_validation_payload == second_validation_payload
+
+
+def test_r_conflicting_validation_replay_fails_closed_and_preserves_active_pointer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    power_store = _power_store(tmp_path)
+    _seed_active_lineage(power_store, season=2026, through_week=2, snapshot_id="power-2026-wk2", lineage_id="ln-2026-wk2")
+    _write_valid_week3_schedule(tmp_path)
+
+    first = _publish(tmp_path=tmp_path, power_store=power_store, season=2026, target_week=3)
+    obs_before = active_projection_observability(power_store=power_store, season=2026, week=3)
+
+    original_validation_builder = publication_module._validation_for_candidate
+
+    def _conflicting_validation(*, artifact, schedule_events):
+        payload = original_validation_builder(artifact=artifact, schedule_events=schedule_events)
+        checks = dict(payload["checks"])
+        checks["artifact_hash_valid"] = not checks["artifact_hash_valid"]
+        payload["checks"] = checks
+        return payload
+
+    monkeypatch.setattr(publication_module, "_validation_for_candidate", _conflicting_validation)
+
+    with pytest.raises(ValueError, match="VALIDATION_ID_COLLISION"):
+        _publish(tmp_path=tmp_path, power_store=power_store, season=2026, target_week=3)
+
+    obs_after = active_projection_observability(power_store=power_store, season=2026, week=3)
+    artifacts = list_projection_artifacts(season=2026, week=3, power_store=power_store)
+
+    assert first["status"] == "APPLIED"
+    assert obs_before["artifactId"] == first["artifact"]["artifact_id"]
+    assert obs_after["artifactId"] == obs_before["artifactId"]
+    assert obs_after["artifactHash"] == obs_before["artifactHash"]
+    assert len(artifacts) == 1
+
+
 def test_s_conflicting_power_snapshot(tmp_path: Path):
     power_store = _power_store(tmp_path)
     _seed_active_lineage(power_store, season=2026, through_week=2, snapshot_id="power-2026-wk2-a", lineage_id="ln-2026-wk2-a")

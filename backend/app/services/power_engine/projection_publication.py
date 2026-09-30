@@ -466,7 +466,13 @@ def _persist_projection_validation(store: PowerEngineStore, validation: dict[str
     if path.exists():
         existing = _read_json_file(path, field_name="projection validation")
         if canonical_json(existing) != serialized:
-            raise ProjectionPublicationError("VALIDATION_ID_COLLISION")
+            # Allow deterministic replay where only validation timestamp differs.
+            existing_stable = dict(existing)
+            existing_stable.pop("validated_at", None)
+            candidate_stable = dict(validation)
+            candidate_stable.pop("validated_at", None)
+            if canonical_json(existing_stable) != canonical_json(candidate_stable):
+                raise ProjectionPublicationError("VALIDATION_ID_COLLISION")
         return existing
 
     _atomic_write_text(path, serialized)

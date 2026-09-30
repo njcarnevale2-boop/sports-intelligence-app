@@ -46,7 +46,13 @@ from .weekly_transition import (
     PowerWeeklyTransitionRecord,
     active_power_transition_observability,
     apply_frozen_weekly_power_transition,
+    replay_frozen_weekly_power_transition_for_lineage,
     list_power_weekly_transitions,
+)
+from .preseason import (
+    PRESEASON_METHODOLOGY_VERSION,
+    PreseasonRegressionMethodology,
+    build_preseason_regressed_root_snapshot,
 )
 
 
@@ -90,5 +96,9 @@ __all__ = [
     "PowerWeeklyTransitionRecord",
     "active_power_transition_observability",
     "apply_frozen_weekly_power_transition",
+    "replay_frozen_weekly_power_transition_for_lineage",
     "list_power_weekly_transitions",
+    "PRESEASON_METHODOLOGY_VERSION",
+    "PreseasonRegressionMethodology",
+    "build_preseason_regressed_root_snapshot",
 ]
