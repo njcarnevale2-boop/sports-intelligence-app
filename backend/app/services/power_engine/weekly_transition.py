@@ -663,6 +663,7 @@ def replay_frozen_weekly_power_transition_for_lineage(
     expected_result_set_version: str | None = None,
     expected_result_set_hash: str | None = None,
     set_active: bool = False,
+    superseded_by_lineage_id: str | None = None,
 ) -> dict[str, Any]:
     store = power_store or default_power_engine_store()
     frozen_store = result_store or default_result_engine_store()
@@ -780,7 +781,13 @@ def replay_frozen_weekly_power_transition_for_lineage(
 
         active_lineage_id = None
         if not set_active:
-            active_lineage_id = store.get_active_lineage(season).lineage_id
+            if superseded_by_lineage_id is not None:
+                superseding_lineage = store.get_lineage(superseded_by_lineage_id)
+                if superseding_lineage.season != season:
+                    raise PowerWeeklyTransitionError("SUPERSEDED_BY_SEASON_MISMATCH")
+                active_lineage_id = superseding_lineage.lineage_id
+            else:
+                active_lineage_id = store.get_active_lineage(season).lineage_id
 
         candidate_lineage = PowerLineageRecord(
             lineage_id=new_lineage_id,

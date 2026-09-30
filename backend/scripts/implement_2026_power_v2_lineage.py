@@ -109,10 +109,16 @@ def _build_reconstructed_2025_terminal_snapshot(
     )
 
 
-def _read_phase0_identities() -> dict:
+def _read_phase0_identities(*, allow_missing_active: bool = False) -> dict:
     store = default_power_engine_store()
-    active_lineage = store.get_active_lineage(TARGET_SEASON)
-    active_snapshot = store.get_snapshot(active_lineage.active_snapshot_id)
+    active_lineage = None
+    active_snapshot = None
+    try:
+        active_lineage = store.get_active_lineage(TARGET_SEASON)
+        active_snapshot = store.get_snapshot(active_lineage.active_snapshot_id)
+    except PowerEnginePersistenceError:
+        if not allow_missing_active:
+            raise
     transitions = [asdict(item) for item in list_power_weekly_transitions(power_store=store, season=TARGET_SEASON)]
 
     snapshots = {snap.snapshot_id: snap for snap in store.list_snapshots(season=TARGET_SEASON)}
@@ -121,15 +127,62 @@ def _read_phase0_identities() -> dict:
     week3 = next((asdict(snap) for snap in snapshots.values() if snap.through_week == 3), None)
 
     return {
-        "activeLineage": asdict(active_lineage),
-        "activeSnapshot": asdict(active_snapshot),
+        "activeLineage": None if active_lineage is None else asdict(active_lineage),
+        "activeSnapshot": None if active_snapshot is None else asdict(active_snapshot),
         "week1Snapshot": week1,
         "week2Snapshot": week2,
         "week3Snapshot": week3,
-        "powerObservability": active_power_transition_observability(power_store=store, season=TARGET_SEASON),
+        "powerObservability": None if active_lineage is None else active_power_transition_observability(power_store=store, season=TARGET_SEASON),
         "projectionWeek3": active_projection_observability(season=TARGET_SEASON, week=3, power_store=store),
         "transitions": transitions,
     }
+
+
+def _is_bootstrap_safe_lineage_id(value: str) -> bool:
+    return (
+        value.startswith(f"ln-{TARGET_SEASON}-v2-wk0-")
+        or value.startswith(f"ln-{TARGET_SEASON}-wk1-")
+        or value.startswith(f"ln-{TARGET_SEASON}-wk2-")
+    )
+
+
+def _is_bootstrap_safe_snapshot_id(value: str) -> bool:
+    return (
+        value.startswith("power-2025-terminal-reconstructed-")
+        or value.startswith(f"power-root-{TARGET_SEASON}-v2-")
+        or value.startswith(f"power-{TARGET_SEASON}-wk1-")
+        or value.startswith(f"power-{TARGET_SEASON}-wk2-")
+    )
+
+
+def _assert_bootstrap_store_safe(*, store) -> None:
+    try:
+        active = store.get_active_lineage(TARGET_SEASON)
+        raise RuntimeError(f"BOOTSTRAP_REQUIRES_NO_ACTIVE_LINEAGE|found={active.lineage_id}")
+    except PowerEnginePersistenceError:
+        pass
+
+    lineages = store.list_lineages(season=TARGET_SEASON)
+    for lineage in lineages:
+        if not _is_bootstrap_safe_lineage_id(lineage.lineage_id):
+            raise RuntimeError(f"BOOTSTRAP_REQUIRES_EMPTY_OR_KNOWN_STORE|unexpected_lineage={lineage.lineage_id}")
+
+    snapshots = [
+        *store.list_snapshots(season=SOURCE_SEASON),
+        *store.list_snapshots(season=TARGET_SEASON),
+    ]
+    for snapshot in snapshots:
+        if not _is_bootstrap_safe_snapshot_id(snapshot.snapshot_id):
+            raise RuntimeError(f"BOOTSTRAP_REQUIRES_EMPTY_OR_KNOWN_STORE|unexpected_snapshot={snapshot.snapshot_id}")
+
+    transitions = list_power_weekly_transitions(power_store=store, season=TARGET_SEASON)
+    for transition in transitions:
+        if transition.week not in {1, 2}:
+            raise RuntimeError(f"BOOTSTRAP_REQUIRES_EMPTY_OR_KNOWN_STORE|unexpected_transition_week={transition.week}")
+        if not _is_bootstrap_safe_lineage_id(transition.parent_lineage_id):
+            raise RuntimeError(
+                f"BOOTSTRAP_REQUIRES_EMPTY_OR_KNOWN_STORE|unexpected_parent_lineage={transition.parent_lineage_id}"
+            )
 
 
 def _lineage_semantic_payload(lineage: PowerLineageRecord) -> dict:
@@ -169,13 +222,13 @@ def _create_lineage_idempotent(*, store, lineage: PowerLineageRecord) -> PowerLi
         raise
 
 
-def _create_v2_root_lineage(research_artifact_path: Path, *, apply: bool) -> dict:
+def _create_v2_root_lineage(research_artifact_path: Path, *, apply: bool, bootstrap_empty_store: bool = False) -> dict:
     store = default_power_engine_store()
     result_store: ResultEngineStore = default_result_engine_store()
     deterministic_generated_at = DETERMINISTIC_V2_GENERATED_AT
 
-    phase0 = _read_phase0_identities()
-    active_v1 = store.get_active_lineage(TARGET_SEASON)
+    phase0 = _read_phase0_identities(allow_missing_active=bootstrap_empty_store)
+    active_v1 = None if bootstrap_empty_store else store.get_active_lineage(TARGET_SEASON)
 
     terminal_map, research_hash, research_path = _load_terminal_map(research_artifact_path)
     source_snapshot = _build_reconstructed_2025_terminal_snapshot(
@@ -198,18 +251,33 @@ def _create_v2_root_lineage(research_artifact_path: Path, *, apply: bool) -> dic
     mean = sum(team.power for team in v2_root.teams) / float(len(v2_root.teams))
     root_stddev = (sum((team.power - mean) ** 2 for team in v2_root.teams) / float(len(v2_root.teams))) ** 0.5
     v2_lineage_id = f"ln-2026-v2-wk0-{v2_root.snapshot_hash[:12]}"
-    v2_lineage = PowerLineageRecord(
-        lineage_id=v2_lineage_id,
-        parent_lineage_id=active_v1.lineage_id,
-        root_snapshot_id=v2_root.snapshot_id,
-        active_snapshot_id=v2_root.snapshot_id,
-        season=TARGET_SEASON,
-        through_week=0,
-        status="SUPERSEDED",
-        created_at=deterministic_generated_at,
-        superseded_at=deterministic_generated_at,
-        superseded_by=active_v1.lineage_id,
-    )
+    if bootstrap_empty_store:
+        v2_lineage = PowerLineageRecord(
+            lineage_id=v2_lineage_id,
+            parent_lineage_id=None,
+            root_snapshot_id=v2_root.snapshot_id,
+            active_snapshot_id=v2_root.snapshot_id,
+            season=TARGET_SEASON,
+            through_week=0,
+            status="ACTIVE",
+            created_at=deterministic_generated_at,
+            superseded_at=None,
+            superseded_by=None,
+        )
+    else:
+        assert active_v1 is not None
+        v2_lineage = PowerLineageRecord(
+            lineage_id=v2_lineage_id,
+            parent_lineage_id=active_v1.lineage_id,
+            root_snapshot_id=v2_root.snapshot_id,
+            active_snapshot_id=v2_root.snapshot_id,
+            season=TARGET_SEASON,
+            through_week=0,
+            status="SUPERSEDED",
+            created_at=deterministic_generated_at,
+            superseded_at=deterministic_generated_at,
+            superseded_by=active_v1.lineage_id,
+        )
 
     freeze_wk1 = load_frozen_week_result_set(result_store, season=TARGET_SEASON, week=1)
     freeze_wk2 = load_frozen_week_result_set(result_store, season=TARGET_SEASON, week=2)
@@ -233,6 +301,7 @@ def _create_v2_root_lineage(research_artifact_path: Path, *, apply: bool) -> dic
         },
         "preflight": preflight,
         "apply": apply,
+        "bootstrapEmptyStore": bootstrap_empty_store,
         "applied": False,
     }
 
@@ -243,6 +312,9 @@ def _create_v2_root_lineage(research_artifact_path: Path, *, apply: bool) -> dic
         raise RuntimeError("Missing required frozen result set: weekly-result-set-2026-1")
     if freeze_wk2 is None:
         raise RuntimeError("Missing required frozen result set: weekly-result-set-2026-2")
+
+    if bootstrap_empty_store:
+        _assert_bootstrap_store_safe(store=store)
 
     persisted_source = _persist_snapshot_idempotent(store=store, snapshot=source_snapshot)
     persisted_root = _persist_snapshot_idempotent(store=store, snapshot=v2_root)
@@ -257,6 +329,7 @@ def _create_v2_root_lineage(research_artifact_path: Path, *, apply: bool) -> dic
         power_store=store,
         result_store=result_store,
         set_active=False,
+        superseded_by_lineage_id=created_lineage.lineage_id if bootstrap_empty_store else None,
     )
     wk1_lineage_id = wk1["transition"]["new_lineage_id"]
     wk1_snapshot_id = wk1["transition"]["new_snapshot_id"]
@@ -270,9 +343,10 @@ def _create_v2_root_lineage(research_artifact_path: Path, *, apply: bool) -> dic
         power_store=store,
         result_store=result_store,
         set_active=False,
+        superseded_by_lineage_id=created_lineage.lineage_id if bootstrap_empty_store else None,
     )
 
-    post = _read_phase0_identities()
+    post = _read_phase0_identities(allow_missing_active=bootstrap_empty_store)
     out.update(
         {
             "applied": True,
@@ -285,7 +359,7 @@ def _create_v2_root_lineage(research_artifact_path: Path, *, apply: bool) -> dic
             },
             "post": post,
             "invariants": {
-                "ACTIVE_POWER_LINEAGE_CHANGED": post["activeLineage"]["lineage_id"] != phase0["activeLineage"]["lineage_id"],
+                "ACTIVE_POWER_LINEAGE_CHANGED": (post["activeLineage"] or {}).get("lineage_id") != (phase0["activeLineage"] or {}).get("lineage_id"),
                 "ACTIVE_PROJECTION_CHANGED": post["projectionWeek3"].get("artifactId") != phase0["projectionWeek3"].get("artifactId"),
                 "V1_ARTIFACT_MUTATION": False,
             },
@@ -306,9 +380,18 @@ def main() -> int:
         action="store_true",
         help="Apply runtime mutations. Omit for read-only proof/dry-run.",
     )
+    parser.add_argument(
+        "--bootstrap-empty-store",
+        action="store_true",
+        help="Fail-closed mode for bootstrapping an empty/known staging store without requiring an active v1 lineage.",
+    )
     args = parser.parse_args()
 
-    result = _create_v2_root_lineage(Path(args.research_artifact), apply=bool(args.apply))
+    result = _create_v2_root_lineage(
+        Path(args.research_artifact),
+        apply=bool(args.apply),
+        bootstrap_empty_store=bool(args.bootstrap_empty_store),
+    )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 

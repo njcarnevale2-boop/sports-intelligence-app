@@ -5,6 +5,7 @@ import importlib.util
 import json
 from pathlib import Path
 from types import ModuleType
+import pytest
 
 from app.services.power_engine import (
     CANONICAL_NFL_TEAMS,
@@ -323,3 +324,75 @@ def test_v2_lineage_research_input_changes_root_identity(tmp_path: Path, monkeyp
 
     assert out_a["v2RootPreview"]["snapshotId"] != out_b["v2RootPreview"]["snapshotId"]
     assert out_a["v2RootPreview"]["snapshotHash"] != out_b["v2RootPreview"]["snapshotHash"]
+
+
+def test_v2_lineage_bootstrap_empty_store_idempotent_and_non_activating(tmp_path: Path, monkeypatch) -> None:
+    power_store = _power_store(tmp_path)
+    result_store = _result_store(tmp_path)
+
+    _freeze_week(
+        store=result_store,
+        season=2026,
+        week=1,
+        games=[("ARI", "ATL", "2026-09-10T00:15:00Z")],
+    )
+    _freeze_week(
+        store=result_store,
+        season=2026,
+        week=2,
+        games=[("BAL", "BUF", "2026-09-17T00:15:00Z")],
+    )
+
+    module = _load_v2_lineage_script_module()
+    monkeypatch.setattr(module, "default_power_engine_store", lambda: power_store)
+    monkeypatch.setattr(module, "default_result_engine_store", lambda: result_store)
+
+    research_artifact = _write_research_artifact(tmp_path)
+
+    run1 = module._create_v2_root_lineage(research_artifact, apply=True, bootstrap_empty_store=True)
+    run2 = module._create_v2_root_lineage(research_artifact, apply=True, bootstrap_empty_store=True)
+
+    assert run1["applied"] is True
+    assert run2["applied"] is True
+    assert run1["bootstrapEmptyStore"] is True
+    assert run2["bootstrapEmptyStore"] is True
+
+    assert run1["created"]["rootSnapshot"]["snapshot_id"] == run2["created"]["rootSnapshot"]["snapshot_id"]
+    assert run1["created"]["rootSnapshot"]["snapshot_hash"] == run2["created"]["rootSnapshot"]["snapshot_hash"]
+    assert run1["created"]["week1"]["transition"]["new_snapshot_id"] == run2["created"]["week1"]["transition"]["new_snapshot_id"]
+    assert run1["created"]["week1"]["transition"]["new_snapshot_hash"] == run2["created"]["week1"]["transition"]["new_snapshot_hash"]
+    assert run1["created"]["week2"]["transition"]["new_snapshot_id"] == run2["created"]["week2"]["transition"]["new_snapshot_id"]
+    assert run1["created"]["week2"]["transition"]["new_snapshot_hash"] == run2["created"]["week2"]["transition"]["new_snapshot_hash"]
+
+    assert run2["created"]["week1"]["status"] in {"APPLIED", "ALREADY_APPLIED"}
+    assert run2["created"]["week2"]["status"] in {"APPLIED", "ALREADY_APPLIED"}
+    assert run2["post"]["activeLineage"] is None
+    assert run2["post"]["projectionWeek3"]["artifactId"] is None
+
+
+def test_v2_lineage_bootstrap_nonempty_store_fails_closed(tmp_path: Path, monkeypatch) -> None:
+    power_store = _power_store(tmp_path)
+    result_store = _result_store(tmp_path)
+    _seed_active_lineage(power_store, season=2026, through_week=0, snapshot_id="power-root-v1")
+
+    _freeze_week(
+        store=result_store,
+        season=2026,
+        week=1,
+        games=[("ARI", "ATL", "2026-09-10T00:15:00Z")],
+    )
+    _freeze_week(
+        store=result_store,
+        season=2026,
+        week=2,
+        games=[("BAL", "BUF", "2026-09-17T00:15:00Z")],
+    )
+
+    module = _load_v2_lineage_script_module()
+    monkeypatch.setattr(module, "default_power_engine_store", lambda: power_store)
+    monkeypatch.setattr(module, "default_result_engine_store", lambda: result_store)
+
+    research_artifact = _write_research_artifact(tmp_path)
+
+    with pytest.raises(RuntimeError, match="BOOTSTRAP_REQUIRES_NO_ACTIVE_LINEAGE"):
+        module._create_v2_root_lineage(research_artifact, apply=True, bootstrap_empty_store=True)
