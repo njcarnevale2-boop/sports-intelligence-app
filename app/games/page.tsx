@@ -55,6 +55,17 @@ type GamesResponse = {
   games: GameCard[];
 };
 
+type CanonicalWeekResponse = {
+  week?: number | null;
+  defaultWeek?: number | null;
+  canonicalWeek?: { week?: number | null };
+};
+
+type ProjectionReadinessResponse = {
+  projectionReadiness?: string;
+  projectionReadinessReason?: string;
+};
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -70,13 +81,14 @@ function signedSpread(spread: number) {
   return spread > 0 ? `+${spread}` : `${spread}`;
 }
 
-function formatTeamSpread(game: GameCard) {
-  if (game.spread == null) return "—";
+function formatTeamSpread(game: GameCard, projectionCurrent: boolean) {
+  if (!projectionCurrent || game.spreadSource !== "CONSENSUS_AVERAGE" || game.spread == null) return "—";
   const homeLabel = game.homeAbbreviation || game.homeTeam;
   return `${homeLabel} ${signedSpread(game.spread)}`;
 }
 
-function compactBetStatus(game: GameCard) {
+function compactBetStatus(game: GameCard, projectionCurrent: boolean) {
+  if (!projectionCurrent) return "PROJECTION PENDING";
   const marketStatus = String(game.marketDataStatus || "").toUpperCase();
   const recommendation = String(game.recommendation || "").toUpperCase();
   const qualification = String(game.qualificationStatus || "").toUpperCase();
@@ -89,7 +101,7 @@ function compactBetStatus(game: GameCard) {
   if (hasOpportunity && qualification === "QUALIFIED") {
     const price = game.bestOpportunityDetail?.price;
     const pricedPick = price != null ? `${game.bestOpportunity} (${price > 0 ? `+${price}` : `${price}`})` : game.bestOpportunity;
-    return `SIA PLAY · ${pricedPick}`;
+    return `QUALIFIED OPPORTUNITY · ${pricedPick}`;
   }
 
   if (recommendation.includes("LEAN")) return "LEAN";
@@ -106,6 +118,8 @@ export default function GamesPage() {
   const [availableWeeks, setAvailableWeeks] = useState<number[]>([]);
   const [availableDates, setAvailableDates] = useState<string[]>([]);
   const [marketStatus, setMarketStatus] = useState<string | null>(null);
+  const [projectionReadiness, setProjectionReadiness] = useState("CHECKING");
+  const [projectionReadinessReason, setProjectionReadinessReason] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [week, setWeek] = useState<number | null>(null);
@@ -113,24 +127,22 @@ export default function GamesPage() {
 
   // Initialize: fetch metadata and set initial week once on mount
   useEffect(() => {
+    let cancelled = false;
     async function initializeMetadata() {
       try {
-        const data = await fetchJson<GamesResponse>(
-          `/api/games`,
+        const data = await fetchJson<CanonicalWeekResponse>(
+          `/api/decision-board?weekOnly=true`,
           undefined,
           GAMES_REQUEST_TIMEOUT_MS
         );
 
-        setAvailableWeeks(data.availableWeeks ?? []);
-        setAvailableDates(data.availableDates ?? []);
-        setMarketStatus(data.dataStatus?.marketIntelligence ?? null);
-
         const resolvedDefaultWeek =
-          data.defaultWeek ?? data.canonicalWeek?.week ?? data.availableWeeks?.[0] ?? null;
-        if (resolvedDefaultWeek != null) {
-          setWeek(Number(resolvedDefaultWeek));
-        }
+          data.defaultWeek ?? data.canonicalWeek?.week ?? data.week ?? null;
+        if (cancelled) return;
+        if (resolvedDefaultWeek == null) throw new Error("Canonical week unavailable");
+        setWeek(Number(resolvedDefaultWeek));
       } catch (err) {
+        if (cancelled) return;
         const msg = err instanceof Error ? err.message : "";
         setError(
           msg === "Request timed out"
@@ -138,15 +150,19 @@ export default function GamesPage() {
             : "Unable to load the NFL slate right now."
         );
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     }
 
     void initializeMetadata();
+    return () => {
+      cancelled = true;
+    };
   }, []); // Run only on mount
 
   // Fetch games when week/date changes
   useEffect(() => {
+    let cancelled = false;
     async function load() {
       // Skip if week hasn't been initialized yet
       if (week === null) return;
@@ -165,12 +181,17 @@ export default function GamesPage() {
           GAMES_REQUEST_TIMEOUT_MS
         );
 
-        setGames(data.games ?? []);
+          if (cancelled) return;
+          setGames(data.games ?? []);
+          setAvailableWeeks(data.availableWeeks ?? []);
+          setAvailableDates(data.availableDates ?? []);
+          setMarketStatus(data.dataStatus?.marketIntelligence ?? null);
 
         if (selectedDate !== "All" && data.availableDates && !data.availableDates.includes(selectedDate)) {
           setSelectedDate("All");
         }
       } catch (err) {
+        if (cancelled) return;
         const msg = err instanceof Error ? err.message : "";
         setError(
           msg === "Request timed out"
@@ -178,12 +199,45 @@ export default function GamesPage() {
             : "Unable to load the NFL slate right now."
         );
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     }
 
     void load();
+    return () => {
+      cancelled = true;
+    };
   }, [week, selectedDate]);
+
+  useEffect(() => {
+    if (week === null) return;
+    let cancelled = false;
+    setProjectionReadiness("CHECKING");
+    setProjectionReadinessReason("");
+
+    async function loadProjectionReadiness() {
+      try {
+        const data = await fetchJson<ProjectionReadinessResponse>(
+          `/api/decision-board?limit=1&week=${week}`,
+          undefined,
+          GAMES_REQUEST_TIMEOUT_MS
+        );
+        if (cancelled) return;
+        setProjectionReadiness(String(data.projectionReadiness || "UNAVAILABLE").toUpperCase());
+        setProjectionReadinessReason(data.projectionReadinessReason || "PROJECTION_READINESS_UNAVAILABLE");
+      } catch {
+        if (!cancelled) {
+          setProjectionReadiness("UNAVAILABLE");
+          setProjectionReadinessReason("PROJECTION_READINESS_UNAVAILABLE");
+        }
+      }
+    }
+
+    void loadProjectionReadiness();
+    return () => {
+      cancelled = true;
+    };
+  }, [week]);
 
   function changeWeek(w: number) {
     setSelectedDate("All");
@@ -200,8 +254,10 @@ export default function GamesPage() {
       : null;
 
   const qualifiedCount = useMemo(
-    () => games.filter((g) => g.bestOpportunity).length,
-    [games]
+    () => projectionReadiness === "CURRENT"
+      ? games.filter((game) => game.bestOpportunity && game.qualificationStatus === "QUALIFIED").length
+      : 0,
+    [games, projectionReadiness]
   );
 
   const groupedGames = useMemo(() => {
@@ -231,7 +287,7 @@ export default function GamesPage() {
             )}
             {!loading && (
               <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-zinc-400">
-                {games.length} Games Analyzed
+                {games.length} Games Scheduled
               </span>
             )}
             {!loading && qualifiedCount > 0 && (
@@ -243,6 +299,13 @@ export default function GamesPage() {
               <span className="text-zinc-700">Market {marketStatus}</span>
             )}
           </div>
+          {projectionReadiness !== "CURRENT" && (
+            <p role="status" className="mt-3 rounded-lg border border-amber-400/20 bg-amber-400/[0.04] px-3 py-2 text-xs text-amber-200">
+              {projectionReadiness === "CHECKING"
+                ? "Checking current projection readiness…"
+                : `Current model analysis unavailable (${projectionReadinessReason || projectionReadiness}). Scheduled matchups are shown without legacy projection analysis.`}
+            </p>
+          )}
         </header>
 
         {/* WEEK NAVIGATION */}
@@ -333,7 +396,7 @@ export default function GamesPage() {
                   </h2>
                   <div className="space-y-2">
                     {dayGames.map((game) => (
-                      <GameRow key={game.eventId} game={game} />
+                      <GameRow key={game.eventId} game={game} projectionCurrent={projectionReadiness === "CURRENT"} />
                     ))}
                   </div>
                 </section>
@@ -351,8 +414,8 @@ export default function GamesPage() {
 // Game row — scannable rigid layout, no overlap
 // ---------------------------------------------------------------------------
 
-function GameRow({ game }: { game: GameCard }) {
-  const hasOpp = Boolean(game.bestOpportunity);
+function GameRow({ game, projectionCurrent }: { game: GameCard; projectionCurrent: boolean }) {
+  const hasOpp = projectionCurrent && Boolean(game.bestOpportunity) && String(game.qualificationStatus || "").toUpperCase() === "QUALIFIED";
   const kickoffDate = formatKickoffDateEt(game.commenceTime);
   const kickoffTime = formatKickoffTimeEt(game.commenceTime);
 
@@ -384,7 +447,7 @@ function GameRow({ game }: { game: GameCard }) {
         <div className="flex flex-col items-start min-w-[70px] flex-shrink-0">
           <span className="text-[10px] text-zinc-600">{game.spreadSource === "CONSENSUS_AVERAGE" ? "CONSENSUS" : "SPREAD"}</span>
           <span className="text-sm font-semibold text-zinc-200 mt-0.5">
-            {formatTeamSpread(game)}
+            {formatTeamSpread(game, projectionCurrent)}
           </span>
         </div>
 
@@ -392,7 +455,7 @@ function GameRow({ game }: { game: GameCard }) {
         <div className="flex flex-col items-start min-w-[70px] flex-shrink-0">
           <span className="text-[10px] text-zinc-600">TOTAL</span>
           <span className="text-sm font-semibold text-zinc-200 mt-0.5">
-            {game.total != null ? game.total.toFixed(1) : "—"}
+            {projectionCurrent && game.total != null ? game.total.toFixed(1) : "—"}
           </span>
         </div>
 
@@ -401,11 +464,11 @@ function GameRow({ game }: { game: GameCard }) {
           {hasOpp ? (
             <>
               <span className={`text-[11px] font-semibold ${scoreTone(game.sportsIntelligenceScore)}`}>
-                {compactBetStatus(game)}
+                {compactBetStatus(game, projectionCurrent)}
               </span>
             </>
           ) : (
-            <span className="text-[11px] text-zinc-500">{compactBetStatus(game)}</span>
+            <span className="text-[11px] text-zinc-500">{compactBetStatus(game, projectionCurrent)}</span>
           )}
         </div>
 
@@ -445,13 +508,13 @@ function GameRow({ game }: { game: GameCard }) {
           <div className="flex flex-col items-center">
             <span className="text-[10px] text-zinc-600">{game.spreadSource === "CONSENSUS_AVERAGE" ? "CONSENSUS" : "SPREAD"}</span>
             <span className="font-semibold text-zinc-200 mt-0.5">
-              {formatTeamSpread(game)}
+              {formatTeamSpread(game, projectionCurrent)}
             </span>
           </div>
           <div className="flex flex-col items-center">
             <span className="text-[10px] text-zinc-600">TOTAL</span>
             <span className="font-semibold text-zinc-200 mt-0.5">
-              {game.total != null ? game.total.toFixed(1) : "—"}
+              {projectionCurrent && game.total != null ? game.total.toFixed(1) : "—"}
             </span>
           </div>
         </div>
@@ -460,13 +523,13 @@ function GameRow({ game }: { game: GameCard }) {
         {hasOpp && (
           <div className="text-center mb-3 pb-3 border-b border-white/[0.05]">
             <div className={`text-[11px] font-semibold ${scoreTone(game.sportsIntelligenceScore)}`}>
-              {compactBetStatus(game)}
+              {compactBetStatus(game, projectionCurrent)}
             </div>
           </div>
         )}
         {!hasOpp && (
           <div className="text-center mb-3 pb-3 border-b border-white/[0.05]">
-            <div className="text-[11px] text-zinc-500">{compactBetStatus(game)}</div>
+            <div className="text-[11px] text-zinc-500">{compactBetStatus(game, projectionCurrent)}</div>
           </div>
         )}
 

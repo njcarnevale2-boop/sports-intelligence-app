@@ -69,8 +69,22 @@ type NoBetState = {
   } | null;
 };
 
+type GameDecision = {
+  eventId: string;
+  matchup: string;
+  awayAbbreviation: string;
+  homeAbbreviation: string;
+  commenceTime: string;
+  status: "APPROVED" | "NO_PLAY" | "PENDING";
+  reason: string;
+  selection?: string | null;
+};
+
 type DecisionBoardResponse = {
   week?: number;
+  projectionReadiness?: string;
+  projectionReadinessReason?: string;
+  officialPublicationStatus?: string;
   dataStatus?: string;
   lastUpdated?: string | null;
   snapshotId?: string;
@@ -78,6 +92,8 @@ type DecisionBoardResponse = {
   count: number;
   officialMarketsDisplayed: string[];
   noBetState?: NoBetState | null;
+  gameDecisions?: GameDecision[];
+  gameDecisionSummary?: { approved: number; noPlay: number; pending: number; scheduled: number };
   crossMarketComparable: boolean;
   universalSia3: string;
 };
@@ -183,26 +199,6 @@ function marketLineLabel(game?: GameSummary | null) {
   return "Current line unavailable";
 }
 
-function currentVerdict(game?: GameSummary | null) {
-  const recommendation = String(game?.recommendation || "").toUpperCase();
-  const betStatus = String(game?.betStatus || "").toUpperCase();
-  if (recommendation.includes("LEAN") || betStatus.includes("LEAN")) return "WATCH";
-  if (recommendation.includes("WATCH") || betStatus.includes("WATCH")) return "WAIT FOR BETTER LINE";
-  if (game?.bestOpportunity) return "BET";
-  return "PASS";
-}
-
-function compactWatchReason(game?: GameSummary | null) {
-  const recommendation = String(game?.recommendation || "").toUpperCase();
-  if (recommendation.includes("LEAN")) {
-    return "SIA sees a lean, but the current number is not yet the right execution point.";
-  }
-  if (recommendation.includes("WATCH")) {
-    return "SIA is watching this game for a better price or line move.";
-  }
-  return "SIA is waiting for a more attractive number before publishing a bet.";
-}
-
 export default function Home() {
   const [board, setBoard] = useState<DecisionBoardResponse | null>(null);
   const [games, setGames] = useState<GameSummary[]>([]);
@@ -228,9 +224,25 @@ export default function Home() {
         setGamesLoading(true);
 
         try {
-          const gamesPayload = await fetchJson<GamesResponse>(payload.week != null ? `/api/games?week=${payload.week}` : "/api/games");
+          const gamesPayload = await fetchJson<GamesResponse>(
+            payload.week != null ? `/api/games?week=${payload.week}` : "/api/games",
+            undefined,
+            HOME_DECISION_BOARD_TIMEOUT_MS
+          );
+          const decisionByEventId = new Map((payload.gameDecisions || []).map((decision) => [decision.eventId, decision]));
+          const projectionCurrent = String(payload.projectionReadiness || "").toUpperCase() === "CURRENT";
+          const officialPublished = String(payload.officialPublicationStatus || "").toUpperCase() === "PUBLISHED";
           if (!cancelled) {
-            setGames(gamesPayload.games || []);
+            setGames((gamesPayload.games || []).map((game): GameSummary => {
+              const decision = decisionByEventId.get(game.eventId);
+              const approved = projectionCurrent && officialPublished && decision?.status === "APPROVED";
+              return {
+                ...game,
+                bestOpportunity: approved ? decision.selection ?? null : null,
+                qualificationStatus: approved ? "QUALIFIED" : decision?.status === "NO_PLAY" && projectionCurrent ? "NO_PLAY" : "PENDING",
+                betStatus: approved ? "APPROVED" : decision?.status === "NO_PLAY" && projectionCurrent ? "NO_PLAY" : "PENDING",
+              };
+            }));
           }
         } catch {
           if (!cancelled) {
@@ -258,59 +270,49 @@ export default function Home() {
     };
   }, []);
 
-  const items = board?.decisionBoard || [];
+  const projectionCurrent = String(board?.projectionReadiness || "").toUpperCase() === "CURRENT";
+  const officialPublished = String(board?.officialPublicationStatus || "").toUpperCase() === "PUBLISHED";
+  const items = projectionCurrent && officialPublished ? board?.decisionBoard || [] : [];
   const primary = items[0] || null;
   const alsoWorthBetting = items.slice(1, 3);
   const gameByEventId = useMemo(() => new Map(games.map((game) => [game.eventId, game])), [games]);
 
   const watchlist = useMemo(() => {
-    const fromGames: WatchlistItem[] = games
-      .filter((game) => {
-        const recommendation = String(game.recommendation || "").toUpperCase();
-        const betStatus = String(game.betStatus || "").toUpperCase();
-        return !game.bestOpportunity && (recommendation.includes("LEAN") || recommendation.includes("WATCH") || betStatus.includes("LEAN"));
-      })
-      .sort((a, b) => (b.sportsIntelligenceScore ?? 0) - (a.sportsIntelligenceScore ?? 0))
-      .slice(0, 3)
-      .map((game) => ({
+    const decisions = new Map((board?.gameDecisions || []).map((decision) => [decision.eventId, decision]));
+    return games.map((game) => {
+      const decision = decisions.get(game.eventId);
+      const approved = projectionCurrent && officialPublished && decision?.status === "APPROVED";
+      const status = !projectionCurrent || (decision?.status === "APPROVED" && !officialPublished)
+        ? "PENDING"
+        : decision?.status || "PENDING";
+      return {
         eventId: game.eventId,
         matchup: matchupLabel(game),
-        status: currentVerdict(game),
-        currentLine: marketLineLabel(game),
-        summary: compactWatchReason(game),
+        status,
+        currentLine: approved ? decision.selection || "Official pick" : !projectionCurrent ? "Projection unavailable" : status === "NO_PLAY" ? "No play" : "No approved pick",
+        summary: !projectionCurrent
+          ? "Current model projections are unavailable. No model pick or Official decision is shown."
+          : decision?.status === "APPROVED" && !officialPublished
+            ? "Official publication has not been confirmed."
+            : decision?.reason || "No approved game decision is available for this scheduled matchup.",
+        detail: null,
         actionLabel: "VIEW GAME INTEL",
-      }));
-
-    if (fromGames.length > 0) {
-      return fromGames;
-    }
-
-    const closest = board?.noBetState?.closestOpportunity;
-    if (!closest) {
-      return [];
-    }
-
-    const game = gameByEventId.get(closest.eventId || "");
-    return [
-      {
-        eventId: closest.eventId || game?.eventId || "",
-        matchup: matchupLabel(game),
-        status: "WATCH",
-        currentLine: closest.selection || "Closest setup",
-        summary: board?.noBetState?.summary || "SIA is waiting for a better number before publishing a bet.",
-        detail: closest.distanceFromTrigger || null,
-        actionLabel: "VIEW GAME INTEL",
-      },
-    ];
-  }, [board?.noBetState, gameByEventId, games]);
+      };
+    });
+  }, [board?.gameDecisions, games, officialPublished, projectionCurrent]);
 
   const title = useMemo(() => {
+    if (!projectionCurrent) return "Model Analysis Pending";
     if (items.length === 0) return "No High-Conviction Bets";
     if (items.length === 1) return "Top Opportunity";
     return "Top Opportunities";
-  }, [items.length]);
+  }, [items.length, projectionCurrent]);
 
-  const readLine = primary
+  const readLine = !projectionCurrent
+    ? `Current model projections are unavailable or pending (${board?.projectionReadinessReason || "readiness not confirmed"}). SIA is not presenting current model analysis or Official picks.`
+    : !officialPublished
+      ? "Official picks are pending publication. No candidate is shown as an Official pick."
+      : primary
     ? `SIA found ${items.length} production bet${items.length === 1 ? "" : "s"} worth acting on right now.`
     : board?.noBetState?.summary || "SIA does not currently see a production-quality edge worth taking.";
   const primaryLineStatus = primary
@@ -373,7 +375,7 @@ export default function Home() {
               </p>
             </div>
             <div className="flex items-center gap-2 text-xs">
-              <Badge variant="outline" className="border-emerald-400/20 bg-emerald-400/[0.05] text-emerald-300">Production Bets Only</Badge>
+              <Badge variant="outline" className={officialPublished ? "border-emerald-400/20 bg-emerald-400/[0.05] text-emerald-300" : "border-amber-400/20 bg-amber-400/[0.05] text-amber-300"}>{officialPublished ? "Production Bets Only" : projectionCurrent ? "Publication Pending" : "Projection Pending"}</Badge>
               <Badge variant="outline" className="border-white/[0.08] bg-white/[0.03] text-zinc-300">{gamesLoading ? "Watchlist Updating" : `${watchlist.length} Watch Items`}</Badge>
             </div>
           </div>
@@ -444,11 +446,23 @@ export default function Home() {
             </article>
           ) : (
             <article className="mt-6 rounded-3xl border border-dashed border-white/[0.12] bg-black/20 p-5 md:p-6">
-              <p className="text-[11px] uppercase tracking-[0.2em] text-zinc-600">NO BET</p>
-              <h3 className="mt-2 text-2xl font-semibold text-white">SIA does not currently see a production-quality edge worth taking.</h3>
-              <p className="mt-3 max-w-3xl text-sm leading-6 text-zinc-400">{board.noBetState?.summary || "SIA is waiting for a better price, a stronger edge, or more favorable market movement before publishing a bet."}</p>
+              <p className="text-[11px] uppercase tracking-[0.2em] text-zinc-600">{!projectionCurrent ? "PROJECTION PENDING" : !officialPublished ? "PUBLICATION PENDING" : "NO BET"}</p>
+              <h3 className="mt-2 text-2xl font-semibold text-white">
+                {!projectionCurrent
+                  ? "Current model projections are unavailable."
+                  : !officialPublished
+                    ? "Official picks are pending publication."
+                    : "SIA does not currently see a production-quality edge worth taking."}
+              </h3>
+              <p className="mt-3 max-w-3xl text-sm leading-6 text-zinc-400">
+                {!projectionCurrent
+                  ? `Readiness: ${board.projectionReadinessReason || "PROJECTION_NOT_CURRENT"}. No current model analysis or Official picks are shown.`
+                  : !officialPublished
+                    ? "No candidate is shown as an Official pick until the publication gate passes."
+                    : board.noBetState?.summary || "SIA is waiting for a better price, a stronger edge, or more favorable market movement before publishing a bet."}
+              </p>
 
-              {board.noBetState?.closestOpportunity ? (
+              {projectionCurrent && officialPublished && board.noBetState?.closestOpportunity ? (
                 <div className="mt-5 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-4">
                   <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">Closest legitimate opportunity</p>
                   <div className="mt-2 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -540,8 +554,8 @@ export default function Home() {
           <section className="mt-8">
             <div className="flex items-end justify-between gap-3">
               <div>
-                <p className="text-xs uppercase tracking-[0.2em] text-zinc-600">SIA Watchlist</p>
-                <h3 className="mt-2 text-xl font-semibold tracking-tight text-white">Games worth monitoring before they qualify</h3>
+                <p className="text-xs uppercase tracking-[0.2em] text-zinc-600">Game-day decisions</p>
+                <h3 className="mt-2 text-xl font-semibold tracking-tight text-white">Every scheduled game has a current status</h3>
               </div>
               {gamesLoading ? <p className="text-xs uppercase tracking-[0.16em] text-zinc-600">Updating</p> : null}
             </div>
@@ -551,8 +565,8 @@ export default function Home() {
                 {watchlist.map((item) => (
                   <article key={item.eventId + item.currentLine} className="rounded-2xl border border-white/[0.08] bg-black/20 p-5">
                     <div className="flex items-center justify-between gap-3">
-                      <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-600">WATCH</p>
-                      <Badge variant="outline" className="border-white/[0.08] bg-white/[0.03] text-zinc-300">{item.status}</Badge>
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-600">{item.status === "APPROVED" ? "OFFICIAL DECISION" : "GAME DECISION"}</p>
+                      <Badge variant="outline" className={item.status === "APPROVED" ? "border-emerald-400/20 bg-emerald-400/[0.05] text-emerald-300" : item.status === "NO_PLAY" ? "border-white/[0.08] bg-white/[0.03] text-zinc-300" : "border-amber-400/20 bg-amber-400/[0.05] text-amber-300"}>{item.status}</Badge>
                     </div>
                     <h4 className="mt-3 text-lg font-semibold text-white">{item.matchup}</h4>
                     <p className="mt-1 text-sm text-zinc-300">{item.currentLine}</p>
@@ -568,7 +582,9 @@ export default function Home() {
               </div>
             ) : (
               <div className="mt-4 rounded-2xl border border-white/[0.08] bg-black/20 p-5 text-sm text-zinc-400">
-                SIA does not have a separate watchlist item right now. The board is either in no-bet mode or fully focused on the qualified production picks above.
+                {projectionCurrent
+                  ? "SIA has no additional scheduled-game decisions to display."
+                  : "No current game decisions are available. The scheduled slate remains visible, but model analysis and Official picks are pending."}
               </div>
             )}
           </section>

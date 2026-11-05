@@ -137,6 +137,8 @@ type OpportunitiesResponse = {
   provider?: string;
   dataStatus?: string;
   lastUpdated?: string | null;
+  projectionReadiness?: string;
+  projectionReadinessReason?: string;
   opportunities: Opportunity[];
 };
 
@@ -189,7 +191,12 @@ export default function OpportunitiesPage() {
     useState<Opportunity[]>([]);
 
   const [freshness, setFreshness] =
-    useState<{ dataStatus?: string; lastUpdated?: string | null }>({});
+    useState<{
+      dataStatus?: string;
+      lastUpdated?: string | null;
+      projectionReadiness?: string;
+      projectionReadinessReason?: string;
+    }>({});
 
   const [loading, setLoading] =
     useState(true);
@@ -229,7 +236,11 @@ export default function OpportunitiesPage() {
   useEffect(() => {
     async function initializeWeek() {
       try {
-        const source = await fetchJson<DecisionBoardWeekResponse>("/api/decision-board?limit=1");
+        const source = await fetchJson<DecisionBoardWeekResponse>(
+          "/api/decision-board?weekOnly=true",
+          undefined,
+          30000
+        );
         const resolvedWeek = resolveCanonicalWeekFromDecisionBoard(source);
         if (resolvedWeek == null) {
           throw new Error("Canonical week unavailable");
@@ -257,7 +268,9 @@ export default function OpportunitiesPage() {
         void trackAnalyticsEvent("OpportunitiesViewed", { page: "opportunities" });
 
         const data = await fetchJson<OpportunitiesResponse>(
-          buildOpportunitiesRequestPath(selectedWeek)
+          buildOpportunitiesRequestPath(selectedWeek),
+          undefined,
+          30000
         );
 
         const resolvedWeek = resolveWeekFromOpportunitiesEnvelope(data, selectedWeek);
@@ -277,10 +290,17 @@ export default function OpportunitiesPage() {
           return normalized;
         });
 
-        setOpportunities(data.opportunities);
-        setFreshness({ dataStatus: data.dataStatus, lastUpdated: data.lastUpdated });
+        const projectionReadiness = String(data.projectionReadiness || "UNAVAILABLE").toUpperCase();
+        const projectionCurrent = projectionReadiness === "CURRENT";
+        setOpportunities(projectionCurrent ? data.opportunities || [] : []);
+        setFreshness({
+          dataStatus: data.dataStatus,
+          lastUpdated: data.lastUpdated,
+          projectionReadiness,
+          projectionReadinessReason: data.projectionReadinessReason || "PROJECTION_READINESS_UNAVAILABLE",
+        });
         if (data.weekScheduledGames != null) setWeekScheduledGames(data.weekScheduledGames);
-        if (data.weekQualifiedOpportunities != null) setWeekQualifiedOpportunities(data.weekQualifiedOpportunities);
+        setWeekQualifiedOpportunities(projectionCurrent ? data.weekQualifiedOpportunities || 0 : 0);
 
         const saved =
           localStorage.getItem(
@@ -582,7 +602,7 @@ export default function OpportunitiesPage() {
             >
               View My Card →
             </Link>
-            {freshness.dataStatus && (
+            {freshness.dataStatus && freshness.projectionReadiness === "CURRENT" && (
               <FreshnessBadge
                 status={freshness.dataStatus}
                 lastUpdated={freshness.lastUpdated}
@@ -591,6 +611,15 @@ export default function OpportunitiesPage() {
             )}
           </div>
         </div>
+
+        {!loading && freshness.projectionReadiness !== "CURRENT" && (
+          <div role="status" className="mt-5 rounded-xl border border-amber-400/20 bg-amber-400/[0.04] px-5 py-4 text-sm text-amber-200">
+            <p className="font-semibold">Current projections unavailable</p>
+            <p className="mt-1 text-amber-100/80">
+              Week {week} is pending model readiness ({freshness.projectionReadinessReason || "PROJECTION_READINESS_UNAVAILABLE"}). No opportunities or Official picks are shown.
+            </p>
+          </div>
+        )}
 
         {/* THIN-WEEK NOTICE */}
         {!loading && weekQualifiedOpportunities > 0 && weekQualifiedOpportunities < 4 && (
@@ -1292,14 +1321,13 @@ export default function OpportunitiesPage() {
           <section className="mt-8 rounded-3xl border border-white/[0.08] bg-[#0D131C] p-8">
 
             <h2 className="text-2xl font-semibold">
-              No opportunities
-              match those filters.
+              {freshness.projectionReadiness === "CURRENT" ? "No opportunities match those filters." : "No current opportunities are available."}
             </h2>
 
             <p className="mt-3 text-sm text-zinc-500">
-              Reset the filters to
-              return to the full
-              model board.
+              {freshness.projectionReadiness === "CURRENT"
+                ? "Reset the filters to return to the full model board."
+                : "The slate remains available, but current model analysis is pending. This page will show opportunities only after projection readiness is current and qualification passes."}
             </p>
 
             <Button

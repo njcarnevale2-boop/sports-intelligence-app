@@ -1,12 +1,8 @@
-const DEFAULT_API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "";
-
 const MAX_PUBLIC_ERROR_LENGTH = 240;
 
 export function buildApiUrl(path: string) {
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-  const base = DEFAULT_API_BASE_URL.replace(/\/$/, "");
-
-  return `${base}${normalizedPath}`;
+  return normalizedPath;
 }
 
 function sanitizePublicErrorDetail(detail: unknown): string | null {
