@@ -13,7 +13,7 @@ from .persistence import ResultEngineStore
 from .status import NormalizedResultStatus
 from .validation import accepted_result_payload_hash, deterministic_bridge_id, deterministic_result_id
 
-NFLVERSE_VERSIONED_RESULT_POLICY_VERSION = "nflverse_versioned_result_v1"
+NFLVERSE_VERSIONED_RESULT_POLICY_VERSION = "nflverse_versioned_result_v2"
 NFLVERSE_VERSIONED_SOURCE = "nflverse"
 
 _ARTIFACT_SHA256_RE = re.compile(r"^[A-Fa-f0-9]{64}$")
@@ -276,8 +276,8 @@ def _build_single_observation_accepted_result(observation: RawResultObservation)
         first_observed_at_utc=observation.observed_at_utc,
         confirmed_at_utc=observation.observed_at_utc,
         accepted_at_utc=accepted_at,
-        confirmation_count=2,
-        observation_ids=(observation.observation_id, observation.observation_id),
+        confirmation_count=1,
+        observation_ids=(observation.observation_id,),
         payload_hash="",
         acceptance_policy_version=NFLVERSE_VERSIONED_RESULT_POLICY_VERSION,
         correction_of_result_id=None,

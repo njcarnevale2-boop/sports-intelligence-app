@@ -449,6 +449,9 @@ class ResultEngineStore:
                     f"Accepted result already exists for canonical_event_key={result.canonical_event_key}: existing_result_id={existing_result_id}"
                 )
 
+            if len(set(result.observation_ids)) != len(result.observation_ids):
+                raise ResultEnginePersistenceError("New accepted results require distinct observation_ids")
+
             _atomic_write_text(path, text)
             self._collect_accepted_locked()
             return result

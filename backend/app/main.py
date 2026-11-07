@@ -18,6 +18,7 @@ from app.routes.auth import router as auth_router
 from app.routes.performance import router as performance_router
 from app.routes.analytics import router as analytics_router
 from app.routes.games import router as games_router
+from app.routes.experimental_power import router as experimental_power_router
 from app.routes.recommendation_snapshot import router as recommendation_snapshot_router
 from app.routes.decision_ledger import router as decision_ledger_router
 from app.routes.social import router as social_router
@@ -76,6 +77,7 @@ app.include_router(auth_router)
 app.include_router(performance_router)
 app.include_router(analytics_router)
 app.include_router(games_router)
+app.include_router(experimental_power_router)
 app.include_router(social_router)
 app.include_router(recommendation_snapshot_router)
 app.include_router(decision_ledger_router)

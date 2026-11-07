@@ -286,13 +286,31 @@ def validate_accepted_result(result: AcceptedFinalGameResult) -> AcceptedFinalGa
     if accepted_at < confirmed_at:
         raise ResultEngineValidationError("accepted_at_utc cannot be earlier than confirmed_at_utc")
 
-    if isinstance(result.confirmation_count, bool) or not isinstance(result.confirmation_count, int) or result.confirmation_count < 2:
-        raise ResultEngineValidationError("confirmation_count must be an integer >= 2")
+    single_source = result.acceptance_policy_version == "nflverse_versioned_result_v2"
+    minimum_count = 1 if single_source else 2
+    if isinstance(result.confirmation_count, bool) or not isinstance(result.confirmation_count, int) or result.confirmation_count < minimum_count:
+        raise ResultEngineValidationError(f"confirmation_count must be an integer >= {minimum_count}")
 
-    if not isinstance(result.observation_ids, tuple) or len(result.observation_ids) < 2:
-        raise ResultEngineValidationError("observation_ids must include at least two ids")
+    if not isinstance(result.observation_ids, tuple) or len(result.observation_ids) < minimum_count:
+        raise ResultEngineValidationError(f"observation_ids must include at least {minimum_count} ids")
     for index, item in enumerate(result.observation_ids):
         _validate_identifier(item, f"observation_ids[{index}]")
+
+    unique_count = len(set(result.observation_ids))
+    legacy_single_source = (
+        result.acceptance_policy_version == "nflverse_versioned_result_v1"
+        and result.source == "nflverse"
+        and result.confirmation_count == 2
+        and len(result.observation_ids) == 2
+        and unique_count == 1
+    )
+    if not legacy_single_source:
+        if unique_count != len(result.observation_ids):
+            raise ResultEngineValidationError("observation_ids must be distinct")
+        if result.confirmation_count != unique_count:
+            raise ResultEngineValidationError("confirmation_count must match distinct observation_ids")
+    if single_source and (result.source != "nflverse" or unique_count != 1):
+        raise ResultEngineValidationError("nflverse single-source policy requires exactly one observation")
 
     _validate_identifier(result.acceptance_policy_version, "acceptance_policy_version")
     _validate_identifier(result.payload_hash, "payload_hash")

@@ -161,6 +161,8 @@ def test_valid_completed_result_normalization(tmp_path: Path):
     assert out.accepted is not None
     assert out.accepted.acceptance_policy_version == NFLVERSE_VERSIONED_RESULT_POLICY_VERSION
     assert out.accepted.accepted_status.value == "FINAL"
+    assert out.accepted.confirmation_count == 1
+    assert out.accepted.observation_ids == (out.observation_id,)
     assert out.artifact.provider == "nflverse"
     assert out.artifact.source_locator.startswith("https://github.com/nflverse/")
 
@@ -260,7 +262,8 @@ def test_15_of_16_batch_blocks(tmp_path: Path):
     assert evaluation.is_handoff_eligible is False
 
 
-def test_16_of_16_batch_succeeds(tmp_path: Path):
+def test_16_of_16_batch_succeeds(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("app.services.result_engine.sportradar_batch_manifest._utc_now_iso", lambda: "2025-09-21T00:00:00Z")
     store = _store(tmp_path)
     ingester = NflverseVersionedResultIngester(store=store)
     expected_events = _synthetic_expected_events()
