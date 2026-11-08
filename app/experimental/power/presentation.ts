@@ -19,6 +19,85 @@ export type ProjectionGroups = {
 };
 
 export const MARKET_DATA_UNAVAILABLE = "MARKET_DATA_UNAVAILABLE" as const;
+export const MAX_MARKET_AGE_MS = 5 * 60 * 1000;
+
+type TimedMarketGame = {
+  kickoffUtc: string;
+  marketStatus: "AVAILABLE" | "MARKET_DATA_UNAVAILABLE" | "ALREADY_STARTED";
+  marketQuotes: { quoteTimestamp: string }[];
+};
+
+export function marketExpiryAt(games: TimedMarketGame[], capturedAt: string | null): number | null {
+  const capturedMs = capturedAt ? Date.parse(capturedAt) : NaN;
+  if (!Number.isFinite(capturedMs)) return null;
+
+  let expiry = capturedMs + MAX_MARKET_AGE_MS;
+  let hasQuotes = false;
+  for (const game of games) {
+    const kickoffMs = Date.parse(game.kickoffUtc);
+    if (!Number.isFinite(kickoffMs)) return null;
+    if (game.marketStatus === "ALREADY_STARTED" && kickoffMs > capturedMs) return null;
+    for (const quote of game.marketQuotes) {
+      const quoteMs = Date.parse(quote.quoteTimestamp);
+      if (!Number.isFinite(quoteMs) || quoteMs > capturedMs || quoteMs >= kickoffMs) return null;
+      expiry = Math.min(expiry, quoteMs + MAX_MARKET_AGE_MS);
+      hasQuotes = true;
+    }
+  }
+  return hasQuotes ? expiry : null;
+}
+
+export function visibleMarketQuotes<T extends { quoteTimestamp: string }>(
+  game: { kickoffUtc: string; marketStatus: TimedMarketGame["marketStatus"]; marketQuotes: T[] },
+  capturedAt: string | null,
+  expiry: number | null,
+  nowMs: number,
+): T[] {
+  const capturedMs = capturedAt ? Date.parse(capturedAt) : NaN;
+  const kickoffMs = Date.parse(game.kickoffUtc);
+  if (
+    game.marketStatus !== "AVAILABLE" ||
+    !Number.isFinite(nowMs) || !Number.isFinite(capturedMs) || !Number.isFinite(kickoffMs) ||
+    capturedMs > nowMs || expiry === null || nowMs >= expiry || nowMs >= kickoffMs
+  ) return [];
+  return game.marketQuotes;
+}
+
+export function nextProjectionUpdateAt(games: TimedMarketGame[], capturedAt: string | null, nowMs: number): number | null {
+  const deadlines = games.map((game) => Date.parse(game.kickoffUtc));
+  const expiry = marketExpiryAt(games, capturedAt);
+  if (expiry !== null) deadlines.push(expiry);
+  const upcoming = deadlines.filter((deadline) => Number.isFinite(deadline) && deadline > nowMs);
+  return upcoming.length ? Math.min(...upcoming) : null;
+}
+
+type ClearedMarketData<T extends { games: { marketQuotes: unknown[] }[] }> = Omit<
+  T,
+  "marketDataStatus" | "marketDataReason" | "marketDataCapturedAt" | "games"
+> & {
+  marketDataStatus: typeof MARKET_DATA_UNAVAILABLE;
+  marketDataReason: "REFRESH_FAILED";
+  marketDataCapturedAt: null;
+  games: (Omit<T["games"][number], "marketStatus" | "marketQuotes"> & {
+    marketStatus: typeof MARKET_DATA_UNAVAILABLE;
+    marketQuotes: [];
+  })[];
+};
+
+export function clearMarketData<T extends { games: { marketQuotes: unknown[] }[] }>(data: T): ClearedMarketData<T> {
+  const games = data.games.map((game) => ({
+    ...game,
+    marketStatus: MARKET_DATA_UNAVAILABLE,
+    marketQuotes: [],
+  })) as ClearedMarketData<T>["games"];
+  return {
+    ...data,
+    marketDataStatus: MARKET_DATA_UNAVAILABLE,
+    marketDataReason: "REFRESH_FAILED",
+    marketDataCapturedAt: null,
+    games,
+  };
+}
 
 function finiteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);

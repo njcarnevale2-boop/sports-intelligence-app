@@ -6,7 +6,10 @@ import { ArrowLeft } from "lucide-react";
 
 import { fetchJson } from "@/app/lib/api";
 import TeamLogo from "@/components/team-logo";
-import { buildProjectionGroups, formatKickoffUtc, MARKET_DATA_UNAVAILABLE, signedSpread } from "./presentation";
+import {
+  buildProjectionGroups, clearMarketData, formatKickoffUtc, marketExpiryAt,
+  MARKET_DATA_UNAVAILABLE, nextProjectionUpdateAt, signedSpread, visibleMarketQuotes,
+} from "./presentation";
 
 type MarketQuote = {
   sportsbookKey: string;
@@ -61,17 +64,20 @@ export default function ExperimentalPowerPage() {
   useEffect(() => {
     const tick = () => setNow(Date.now());
     tick();
-    const timer = window.setInterval(tick, 30000);
-    return () => window.clearInterval(timer);
+    document.addEventListener("visibilitychange", tick);
+    return () => document.removeEventListener("visibilitychange", tick);
   }, []);
 
   useEffect(() => {
     let cancelled = false;
+    let inFlight = false;
     async function load() {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const payload = await fetchJson<PowerResponse>(
           "/api/experimental/power-market-comparison?season=2026&week=9",
-          undefined,
+          { cache: "no-store" },
           30000
         );
         if (
@@ -88,16 +94,42 @@ export default function ExperimentalPowerPage() {
           throw new Error("Unexpected experimental analysis contract");
         }
         buildProjectionGroups(payload.games, Date.now());
-        if (!cancelled) setData(payload);
+        if (!cancelled) {
+          setData(payload);
+          setNow(Date.now());
+          setError("");
+        }
       } catch {
-        if (!cancelled) setError("Experimental power analysis is unavailable.");
+        if (!cancelled) {
+          setData((previous) => previous ? clearMarketData(previous) : null);
+          setNow(Date.now());
+          setError("Experimental power analysis is unavailable.");
+        }
+      } finally {
+        inFlight = false;
       }
     }
     void load();
-    return () => { cancelled = true; };
+    const timer = window.setInterval(() => void load(), 30000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, []);
 
+  useEffect(() => {
+    if (!data || now === null) return;
+    const deadline = nextProjectionUpdateAt(data.games, data.marketDataCapturedAt, now);
+    if (deadline === null) return;
+    const delay = Math.min(Math.max(0, deadline - Date.now()), 2147483647);
+    const timer = window.setTimeout(() => setNow(Date.now()), delay);
+    return () => window.clearTimeout(timer);
+  }, [data, now]);
+
   const groups = data && now !== null ? buildProjectionGroups(data.games, now) : null;
+  const marketExpiry = data ? marketExpiryAt(data.games, data.marketDataCapturedAt) : null;
+  const hasMarketQuotes = data !== null && now !== null && data.marketDataStatus === "AVAILABLE" &&
+    data.games.some((game) => visibleMarketQuotes(game, data.marketDataCapturedAt, marketExpiry, now).length > 0);
 
   function renderGames(games: NonNullable<typeof groups>["upcoming"], started: boolean) {
     if (games.length === 0) {
@@ -121,7 +153,9 @@ export default function ExperimentalPowerPage() {
           <tbody>
             {games.map((game) => {
               const source = data?.games.find((item) => item.eventId === game.eventId);
-              const marketQuotes = started ? [] : source?.marketQuotes ?? [];
+              const marketQuotes = data && source && now !== null && data.marketDataStatus === "AVAILABLE"
+                ? visibleMarketQuotes(source, data.marketDataCapturedAt, marketExpiry, now)
+                : [];
               return (
               <tr key={game.eventId} className="border-b border-white/[0.06]">
                 <th scope="row" className="py-4 font-medium">
@@ -177,13 +211,13 @@ export default function ExperimentalPowerPage() {
             EXPERIMENTAL — NOT VALIDATED FOR BETTING. Not approved for Official publication. Personnel not evaluated. Probabilities and EV not computed.
           </p>
           <p role="status" className="mt-3 border-l-2 border-amber-400 pl-3 text-sm text-amber-100">
-            {data?.marketDataStatus === "AVAILABLE"
+            {hasMarketQuotes
               ? `Validated staging capture · observed ${data.marketDataCapturedAt ?? "timestamp unavailable"}. No probabilities, EV, or recommendations.`
               : `${MARKET_DATA_UNAVAILABLE}: ${data?.marketDataReason ?? "no validated real sportsbook capture is connected"}. Synthetic and historical lines are not shown.`}
           </p>
           {data && <p className="mt-3 break-all text-xs text-zinc-500">{data.season} · {groups?.upcoming.length ?? 0} pregame · {groups?.started.length ?? 0} started · {data.modelVersion} · {data.artifactId}</p>}
         </header>
-        {error ? <p role="alert" className="py-8 text-sm text-rose-300">{error}</p> : !data ? (
+        {error && !data ? <p role="alert" className="py-8 text-sm text-rose-300">{error}</p> : !data ? (
           <p className="py-8 text-sm text-zinc-500">Loading experimental power analysis...</p>
         ) : !groups ? <p className="py-8 text-sm text-zinc-500">Checking kickoff times...</p> : (
           <>

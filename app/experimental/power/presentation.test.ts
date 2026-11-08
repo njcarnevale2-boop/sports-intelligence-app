@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildProjectionGroups, MARKET_DATA_UNAVAILABLE, signedSpread } from "./presentation.ts";
+import {
+  buildProjectionGroups, clearMarketData, marketExpiryAt, MARKET_DATA_UNAVAILABLE,
+  nextProjectionUpdateAt, signedSpread, visibleMarketQuotes,
+} from "./presentation.ts";
 
 const now = Date.parse("2026-11-07T12:00:00Z");
 
@@ -63,4 +66,55 @@ test("inconsistent spread sign is rejected", () => {
     () => buildProjectionGroups([{ eventId: "bad-sign", awayTeam: "AWY", homeTeam: "HME", kickoffUtc: "2026-11-08T18:00:00Z", homeExpectedMargin: 3, homeFairSpread: 3 }], now),
     /Home fair spread sign mismatch/,
   );
+});
+
+test("quotes expire at the earliest quote or capture freshness boundary", () => {
+  const capturedAt = "2026-11-07T12:00:00Z";
+  const game = {
+    kickoffUtc: "2026-11-07T13:00:00Z",
+    marketStatus: "AVAILABLE" as const,
+    marketQuotes: [{ quoteTimestamp: "2026-11-07T11:59:30Z" }],
+  };
+  const expiry = marketExpiryAt([game], capturedAt);
+  assert.equal(expiry, Date.parse("2026-11-07T12:04:30Z"));
+  assert.equal(visibleMarketQuotes(game, capturedAt, expiry, expiry! - 1).length, 1);
+  assert.deepEqual(visibleMarketQuotes(game, capturedAt, expiry, expiry!), []);
+  assert.equal(nextProjectionUpdateAt([game], capturedAt, now), expiry);
+});
+
+test("kickoff immediately suppresses quotes and schedules a clock update", () => {
+  const capturedAt = "2026-11-07T12:00:00Z";
+  const game = {
+    kickoffUtc: "2026-11-07T12:01:00Z",
+    marketStatus: "AVAILABLE" as const,
+    marketQuotes: [{ quoteTimestamp: capturedAt }],
+  };
+  const expiry = marketExpiryAt([game], capturedAt);
+  const kickoff = Date.parse(game.kickoffUtc);
+  assert.equal(nextProjectionUpdateAt([game], capturedAt, now), kickoff);
+  assert.equal(visibleMarketQuotes(game, capturedAt, expiry, kickoff - 1).length, 1);
+  assert.deepEqual(visibleMarketQuotes(game, capturedAt, expiry, kickoff), []);
+});
+
+test("a failed refresh clears cached market data but preserves projections", () => {
+  const data = {
+    marketDataStatus: "AVAILABLE" as const,
+    marketDataReason: null,
+    marketDataCapturedAt: "2026-11-07T12:00:00Z",
+    games: [{ eventId: "game", homeFairSpread: -3.5, marketStatus: "AVAILABLE" as const, marketQuotes: [{ quoteTimestamp: "2026-11-07T12:00:00Z" }] }],
+  };
+  const cleared = clearMarketData(data);
+  assert.equal(cleared.marketDataStatus, MARKET_DATA_UNAVAILABLE);
+  assert.equal(cleared.marketDataReason, "REFRESH_FAILED");
+  assert.equal(cleared.marketDataCapturedAt, null);
+  assert.deepEqual(cleared.games[0].marketQuotes, []);
+  assert.equal(cleared.games[0].marketStatus, MARKET_DATA_UNAVAILABLE);
+  assert.equal(cleared.games[0].homeFairSpread, -3.5);
+});
+
+test("capture with a previously captured started game fails closed", () => {
+  const capturedAt = "2026-11-07T12:00:00Z";
+  const started = { kickoffUtc: "2026-11-07T12:01:00Z", marketStatus: "ALREADY_STARTED" as const, marketQuotes: [] };
+  const upcoming = { kickoffUtc: "2026-11-07T13:00:00Z", marketStatus: "AVAILABLE" as const, marketQuotes: [{ quoteTimestamp: capturedAt }] };
+  assert.equal(marketExpiryAt([started, upcoming], capturedAt), null);
 });
