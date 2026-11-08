@@ -8,7 +8,7 @@ import { fetchJson } from "@/app/lib/api";
 import TeamLogo from "@/components/team-logo";
 import {
   buildProjectionGroups, clearMarketData, formatKickoffUtc, marketExpiryAt,
-  MARKET_DATA_UNAVAILABLE, nextProjectionUpdateAt, signedSpread, visibleMarketQuotes,
+  MARKET_DATA_UNAVAILABLE, nextProjectionUpdateAt, signedSpread, spreadSelections,
 } from "./presentation";
 
 type MarketQuote = {
@@ -129,7 +129,7 @@ export default function ExperimentalPowerPage() {
   const groups = data && now !== null ? buildProjectionGroups(data.games, now) : null;
   const marketExpiry = data ? marketExpiryAt(data.games, data.marketDataCapturedAt) : null;
   const hasMarketQuotes = data !== null && now !== null && data.marketDataStatus === "AVAILABLE" &&
-    data.games.some((game) => visibleMarketQuotes(game, data.marketDataCapturedAt, marketExpiry, now).length > 0);
+    data.games.some((game) => spreadSelections(game, data.marketDataCapturedAt, marketExpiry, now).selections.length > 0);
 
   function renderGames(games: NonNullable<typeof groups>["upcoming"], started: boolean) {
     if (games.length === 0) {
@@ -153,9 +153,10 @@ export default function ExperimentalPowerPage() {
           <tbody>
             {games.map((game) => {
               const source = data?.games.find((item) => item.eventId === game.eventId);
-              const marketQuotes = data && source && now !== null && data.marketDataStatus === "AVAILABLE"
-                ? visibleMarketQuotes(source, data.marketDataCapturedAt, marketExpiry, now)
-                : [];
+              const market = data && source && now !== null && data.marketDataStatus === "AVAILABLE"
+                ? spreadSelections(source, data.marketDataCapturedAt, marketExpiry, now)
+                : null;
+              const selections = started ? [] : market?.selections ?? [];
               return (
               <tr key={game.eventId} className="border-b border-white/[0.06]">
                 <th scope="row" className="py-4 font-medium">
@@ -163,7 +164,7 @@ export default function ExperimentalPowerPage() {
                     <TeamLogo src={`https://a.espncdn.com/i/teamlogos/nfl/500/${game.awayTeam.toLowerCase()}.png`} alt={game.awayTeam} size={22} />
                     {game.awayTeam} <span className="text-zinc-600">@</span> {game.homeTeam}
                     <TeamLogo src={`https://a.espncdn.com/i/teamlogos/nfl/500/${game.homeTeam.toLowerCase()}.png`} alt={game.homeTeam} size={22} />
-                    {started && <span className="basis-full text-xs text-amber-300">Already started · historical projection</span>}
+                    {started && <span className="basis-full text-xs text-amber-300">NOT PREGAME · historical projection</span>}
                   </span>
                 </th>
                 <td className="py-4 text-zinc-400">{formatKickoffUtc(game.kickoffUtc)}</td>
@@ -174,16 +175,19 @@ export default function ExperimentalPowerPage() {
                   <span className="block text-xs text-zinc-500">{game.awayTeam} {signedSpread(game.awayFairSpread)}</span>
                 </td>
                 <td className="py-4 text-amber-100">
-                  {marketQuotes.length > 0 ? marketQuotes.map((quote) => (
-                    <span key={`${quote.sportsbookKey}-${quote.providerEventId}`} className="mb-1 block">
+                  {selections.length > 0 ? selections.map(({ quote, side, team, sportsbookSpread, fairSpread, pointDifference, price }) => (
+                    <span key={`${quote.sportsbookKey}-${quote.providerEventId}`} className="mb-2 block">
                       <span className="font-medium">{quote.sportsbookTitle}</span>: {game.homeTeam} {signedSpread(quote.homeSpreadPoint)} ({signedOdds(quote.homePrice)})
                       <span className="block">{game.awayTeam} {signedSpread(quote.awaySpreadPoint)} ({signedOdds(quote.awayPrice)})</span>
-                      <span className="block text-xs text-zinc-500">SIA − book: {signedSpread(game.homeFairSpread - quote.homeSpreadPoint)} pts</span>
+                      <span className="block text-xs text-emerald-300">
+                        {side === "TIE" ? "No difference" : `Model-favored: ${team} ${signedSpread(sportsbookSpread)} (${signedOdds(price)})`}
+                      </span>
+                      <span className="block text-xs text-zinc-500">{side === "TIE" ? game.homeTeam : team} fair {signedSpread(fairSpread)} · difference {signedSpread(pointDifference)} pts</span>
                     </span>
-                  )) : started ? "Not shown after kickoff" : MARKET_DATA_UNAVAILABLE}
+                  )) : started ? `NOT PREGAME · ${MARKET_DATA_UNAVAILABLE}` : MARKET_DATA_UNAVAILABLE}
                 </td>
                 <td className="py-4 text-zinc-500">
-                  {marketQuotes.length > 0 ? marketQuotes.map((quote) => (
+                  {selections.length > 0 ? selections.map(({ quote }) => (
                     <span key={`${quote.sportsbookKey}-${quote.providerEventId}-time`} className="mb-1 block text-xs">
                       {quote.quoteTimestamp}
                     </span>
@@ -208,7 +212,7 @@ export default function ExperimentalPowerPage() {
           <p className="text-xs uppercase text-amber-300">Experimental · Power Only</p>
           <h1 className="mt-2 text-2xl font-semibold">Week 9 Spread Analysis</h1>
           <p role="status" className="mt-3 text-sm text-amber-200">
-            EXPERIMENTAL — NOT VALIDATED FOR BETTING. Not approved for Official publication. Personnel not evaluated. Probabilities and EV not computed.
+            EXPERIMENTAL / UNVALIDATED — NOT OFFICIAL PICKS. Not validated for betting. Personnel not evaluated. Probabilities and EV not computed.
           </p>
           <p role="status" className="mt-3 border-l-2 border-amber-400 pl-3 text-sm text-amber-100">
             {hasMarketQuotes

@@ -3,7 +3,7 @@ import test from "node:test";
 
 import {
   buildProjectionGroups, clearMarketData, marketExpiryAt, MARKET_DATA_UNAVAILABLE,
-  nextProjectionUpdateAt, signedSpread, visibleMarketQuotes,
+  nextProjectionUpdateAt, signedSpread, spreadSelections, visibleMarketQuotes,
 } from "./presentation.ts";
 
 const now = Date.parse("2026-11-07T12:00:00Z");
@@ -117,4 +117,37 @@ test("capture with a previously captured started game fails closed", () => {
   const started = { kickoffUtc: "2026-11-07T12:01:00Z", marketStatus: "ALREADY_STARTED" as const, marketQuotes: [] };
   const upcoming = { kickoffUtc: "2026-11-07T13:00:00Z", marketStatus: "AVAILABLE" as const, marketQuotes: [{ quoteTimestamp: capturedAt }] };
   assert.equal(marketExpiryAt([started, upcoming], capturedAt), null);
+});
+
+test("spread selections normalize home and away sides per sportsbook", () => {
+  const capturedAt = "2026-11-07T12:00:00Z";
+  const baseQuote = { quoteTimestamp: capturedAt, homePrice: -110, awayPrice: -110 };
+  const game = {
+    eventId: "game", awayTeam: "AWY", homeTeam: "HME", kickoffUtc: "2026-11-07T13:00:00Z",
+    homeExpectedMargin: 3, homeFairSpread: -3, marketStatus: "AVAILABLE" as const,
+    marketQuotes: [
+      { ...baseQuote, sportsbookKey: "home-book", homeSpreadPoint: -2, awaySpreadPoint: 2 },
+      { ...baseQuote, sportsbookKey: "away-book", homeSpreadPoint: -4, awaySpreadPoint: 4 },
+      { ...baseQuote, sportsbookKey: "tie-book", homeSpreadPoint: -3, awaySpreadPoint: 3 },
+    ],
+  };
+  const result = spreadSelections(game, capturedAt, marketExpiryAt([game], capturedAt), now);
+  assert.equal(result.status, "AVAILABLE");
+  assert.deepEqual(result.selections.map(({ side, team, sportsbookSpread, fairSpread, pointDifference }) => ({ side, team, sportsbookSpread, fairSpread, pointDifference })), [
+    { side: "HOME", team: "HME", sportsbookSpread: -2, fairSpread: -3, pointDifference: 1 },
+    { side: "AWAY", team: "AWY", sportsbookSpread: 4, fairSpread: 3, pointDifference: 1 },
+    { side: "TIE", team: null, sportsbookSpread: -3, fairSpread: -3, pointDifference: 0 },
+  ]);
+});
+
+test("spread selections fail closed for missing, quarantined, stale, and started games", () => {
+  const capturedAt = "2026-11-07T12:00:00Z";
+  const quote = { quoteTimestamp: capturedAt, homeSpreadPoint: -2, awaySpreadPoint: 2, homePrice: -110, awayPrice: -110 };
+  const game = { eventId: "game", awayTeam: "AWY", homeTeam: "HME", kickoffUtc: "2026-11-07T12:01:00Z", homeExpectedMargin: 3, homeFairSpread: -3, marketStatus: "AVAILABLE" as const, marketQuotes: [quote] };
+  const expiry = marketExpiryAt([game], capturedAt);
+  assert.equal(spreadSelections({ ...game, marketQuotes: [] }, capturedAt, expiry, now).status, MARKET_DATA_UNAVAILABLE);
+  assert.equal(spreadSelections({ ...game, marketStatus: MARKET_DATA_UNAVAILABLE }, capturedAt, expiry, now).status, MARKET_DATA_UNAVAILABLE);
+  assert.equal(spreadSelections(game, capturedAt, expiry, Date.parse(game.kickoffUtc)).status, "NOT_PREGAME");
+  assert.equal(spreadSelections({ ...game, kickoffUtc: "2026-11-07T13:00:00Z" }, capturedAt, expiry, expiry!).status, MARKET_DATA_UNAVAILABLE);
+  assert.equal(spreadSelections({ ...game, marketQuotes: [{ ...quote, awaySpreadPoint: 9 }] }, capturedAt, expiry, now).status, MARKET_DATA_UNAVAILABLE);
 });

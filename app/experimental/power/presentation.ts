@@ -63,6 +63,47 @@ export function visibleMarketQuotes<T extends { quoteTimestamp: string }>(
   return game.marketQuotes;
 }
 
+type SpreadQuote = {
+  quoteTimestamp: string;
+  homeSpreadPoint: number;
+  awaySpreadPoint: number;
+  homePrice: number;
+  awayPrice: number;
+};
+
+export function spreadSelections<T extends SpreadQuote>(
+  game: ProjectionInput & { marketStatus: TimedMarketGame["marketStatus"]; marketQuotes: T[] },
+  capturedAt: string | null,
+  expiry: number | null,
+  nowMs: number,
+) {
+  const kickoff = Date.parse(game.kickoffUtc);
+  if (!Number.isFinite(nowMs) || !Number.isFinite(kickoff)) return { status: MARKET_DATA_UNAVAILABLE, selections: [] };
+  if (nowMs >= kickoff) return { status: "NOT_PREGAME" as const, selections: [] };
+  if (!Number.isFinite(game.homeFairSpread) || !Number.isFinite(game.homeExpectedMargin) ||
+      Math.abs(game.homeFairSpread + game.homeExpectedMargin) > 0.01) {
+    return { status: MARKET_DATA_UNAVAILABLE, selections: [] };
+  }
+  const quotes = visibleMarketQuotes(game, capturedAt, expiry, nowMs);
+  const selections = quotes.flatMap((quote) => {
+    if (![quote.homeSpreadPoint, quote.awaySpreadPoint, quote.homePrice, quote.awayPrice].every(Number.isFinite) ||
+        quote.homePrice === 0 || quote.awayPrice === 0 || Math.abs(quote.homeSpreadPoint + quote.awaySpreadPoint) > 0.01) return [];
+    const homeDifference = quote.homeSpreadPoint - game.homeFairSpread;
+    const tie = Math.abs(homeDifference) < 1e-9;
+    const home = homeDifference > 0;
+    return [{
+      quote,
+      side: tie ? "TIE" as const : home ? "HOME" as const : "AWAY" as const,
+      team: tie ? null : home ? game.homeTeam : game.awayTeam,
+      sportsbookSpread: home || tie ? quote.homeSpreadPoint : quote.awaySpreadPoint,
+      fairSpread: home || tie ? game.homeFairSpread : -game.homeFairSpread,
+      pointDifference: tie ? 0 : home ? homeDifference : quote.awaySpreadPoint + game.homeFairSpread,
+      price: home || tie ? quote.homePrice : quote.awayPrice,
+    }];
+  });
+  return { status: selections.length ? "AVAILABLE" as const : MARKET_DATA_UNAVAILABLE, selections };
+}
+
 export function nextProjectionUpdateAt(games: TimedMarketGame[], capturedAt: string | null, nowMs: number): number | null {
   const deadlines = games.map((game) => Date.parse(game.kickoffUtc));
   const expiry = marketExpiryAt(games, capturedAt);
