@@ -180,17 +180,29 @@ def _validate_capture(*, power: dict[str, Any], capture_dir: Path, now: datetime
             raise ValueError("Capture coverage contains invalid IDs or reason codes")
     covered_ids = set(coverage["covered_candidate_event_ids"])
     uncovered_ids = set(coverage["uncovered_candidate_event_ids"])
+    quarantined = coverage.get("quarantined_candidate_event_ids", [])
+    if not isinstance(quarantined, list) or not all(isinstance(value, str) and value for value in quarantined) or quarantined != sorted(set(quarantined)):
+        raise ValueError("Capture quarantine contains invalid candidate IDs")
+    quarantined_ids = set(quarantined)
+    rejected_quarantine_ids = {
+        item.get("candidate_event_id") for item in snapshot.get("rejected_events") or []
+        if item.get("reason") == "KICKOFF_MISMATCH"
+    }
     rejection_codes = set(coverage["rejection_reason_codes"])
     expected_rejection_codes = {
         item["reason"] for item in (snapshot.get("rejected_events") or []) + (snapshot.get("rejected_quotes") or [])
     }
     if uncovered_ids:
         expected_rejection_codes.add("NO_VALIDATED_SPREAD")
-    allowed_rejection_codes = {"UNMATCHED_EVENT", "KICKOFF_ALREADY_OCCURRED", "NO_BOOKMAKERS", "STALE_QUOTE", "NO_MARKETS", "NO_VALIDATED_SPREAD"}
+    allowed_rejection_codes = {"UNMATCHED_EVENT", "KICKOFF_ALREADY_OCCURRED", "NO_BOOKMAKERS", "STALE_QUOTE", "NO_MARKETS", "NO_VALIDATED_SPREAD", "KICKOFF_MISMATCH"}
     if (
         set(coverage["eligible_candidate_event_ids"]) != eligible_ids
         or snapshot.get("eligible_candidate_event_ids") != sorted(eligible_ids)
         or not covered_ids or covered_ids & uncovered_ids or covered_ids | uncovered_ids != eligible_ids
+        or not quarantined_ids <= set(games_by_id) or quarantined_ids & covered_ids
+        or quarantined_ids != rejected_quarantine_ids
+        or snapshot.get("quarantined_candidate_event_ids", []) != quarantined
+        or coverage.get("quarantined_game_count", 0) != len(quarantined_ids)
         or coverage.get("eligible_game_count") != len(eligible_ids)
         or coverage.get("covered_game_count") != len(covered_ids)
         or coverage.get("uncovered_game_count") != len(uncovered_ids)
@@ -317,14 +329,18 @@ def load_experimental_market_comparison(*, season: int, week: int) -> dict[str, 
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
         return _no_market(power, "NO_VALIDATED_CAPTURE_AVAILABLE")
 
+    unavailable_ids = set(snapshot["coverage"].get("uncovered_candidate_event_ids", [])) | set(
+        snapshot["coverage"].get("quarantined_candidate_event_ids", [])
+    )
     games = []
     for game in power.get("games", []):
         started = _parse_utc(game["kickoffUtc"]) <= now
-        quotes = [] if started else quotes_by_event.get(str(game["eventId"]), [])
+        unavailable = str(game["eventId"]) in unavailable_ids
+        quotes = [] if started or unavailable else quotes_by_event.get(str(game["eventId"]), [])
         games.append(
             {
                 **game,
-                "marketStatus": "ALREADY_STARTED" if started else "AVAILABLE" if quotes else "MARKET_DATA_UNAVAILABLE",
+                "marketStatus": "MARKET_DATA_UNAVAILABLE" if unavailable else "ALREADY_STARTED" if started else "AVAILABLE" if quotes else "MARKET_DATA_UNAVAILABLE",
                 "marketQuotes": quotes,
             }
         )

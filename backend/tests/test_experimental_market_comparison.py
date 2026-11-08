@@ -296,6 +296,31 @@ def test_manifest_and_snapshot_coverage_must_agree(tmp_path: Path):
         _validate_capture(power=power, capture_dir=capture_dir, now=NOW)
 
 
+@pytest.mark.parametrize("mutation", ["covered_quarantine", "mismatched_quarantine"])
+def test_quarantine_metadata_cannot_expose_quotes_or_misidentify_games(tmp_path: Path, mutation: str):
+    power = _power_payload()
+    power["games"].append({**power["games"][0], "eventId": "2026_09_BUF_MIN", "awayTeam": "BUF", "homeTeam": "MIN"})
+    capture_dir = _capture_fixture(tmp_path, power)
+
+    def alter(snapshot):
+        covered_id = power["games"][0]["eventId"]
+        uncovered_id = power["games"][1]["eventId"]
+        quarantine_id = covered_id if mutation == "covered_quarantine" else uncovered_id
+        snapshot["quarantined_candidate_event_ids"] = [quarantine_id]
+        snapshot["coverage"].update(
+            quarantined_candidate_event_ids=[quarantine_id], quarantined_game_count=1,
+            rejection_reason_codes=["KICKOFF_MISMATCH", "NO_VALIDATED_SPREAD"],
+        )
+        snapshot["rejected_events"] = [{"reason": "KICKOFF_MISMATCH", "candidate_event_id": covered_id}]
+
+    def sync_coverage(manifest):
+        manifest["coverage"] = json.loads((capture_dir / "snapshot.json").read_text())["coverage"]
+
+    _rewrite_capture(capture_dir, change_snapshot=alter, change_manifest=sync_coverage)
+    with pytest.raises(ValueError, match="coverage does not match"):
+        _validate_capture(power=power, capture_dir=capture_dir, now=NOW)
+
+
 def test_matching_coverage_metadata_cannot_claim_an_unquoted_game(tmp_path: Path):
     power = _power_payload()
     power["games"].append({**power["games"][0], "eventId": "2026_09_BUF_MIN", "awayTeam": "BUF", "homeTeam": "MIN"})

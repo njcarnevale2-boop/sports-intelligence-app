@@ -108,7 +108,7 @@ def _event_identity_diagnostics(
                         details[f"{side}_team_fingerprint"] = _sha256_bytes(str(raw).encode("utf-8", "surrogatepass"))[:16]
                 try:
                     kickoff = _parse_utc(event.get("commence_time"), field="provider kickoff")
-                    details["provider_kickoff_utc"] = kickoff.isoformat(timespec="seconds").replace("+00:00", "Z")
+                    details["provider_kickoff_utc"] = kickoff.isoformat(timespec="microseconds" if kickoff.microsecond else "seconds").replace("+00:00", "Z")
                 except SnapshotPreparationError:
                     kickoff = None
                 possible = []
@@ -129,7 +129,7 @@ def _event_identity_diagnostics(
                     details["possible_candidate_events"] = possible
             entries.append(details)
     entries.sort(key=lambda item: (
-        item["reason"] in {"UNMATCHED_EVENT", "KICKOFF_ALREADY_OCCURRED", "NO_BOOKMAKERS"},
+        item["reason"] in {"UNMATCHED_EVENT", "KICKOFF_ALREADY_OCCURRED", "NO_BOOKMAKERS", "KICKOFF_MISMATCH"},
         item["provider_event_index"],
         item["reason"],
     ))
@@ -513,7 +513,7 @@ def execute_one_shot(
         raise LiveCaptureError("Provider response contains duplicate events; no data was written", diagnostics=identity_diagnostics)
     if any(item.get("reason") == "DUPLICATE_BOOKMAKER_MARKET" for item in snapshot["rejected_quotes"]):
         raise LiveCaptureError("Provider response contains duplicate bookmaker markets; no data was written")
-    allowed_event_rejections = {"UNMATCHED_EVENT", "KICKOFF_ALREADY_OCCURRED", "NO_BOOKMAKERS"}
+    allowed_event_rejections = {"UNMATCHED_EVENT", "KICKOFF_ALREADY_OCCURRED", "NO_BOOKMAKERS", "KICKOFF_MISMATCH"}
     allowed_quote_rejections = {"STALE_QUOTE", "NO_MARKETS"}
     if any(item.get("reason") not in allowed_event_rejections for item in snapshot["rejected_events"]):
         raise LiveCaptureError("Provider response contains invalid event identity; no data was written", diagnostics=identity_diagnostics)
@@ -536,6 +536,9 @@ def execute_one_shot(
     eligible_ids = {event["candidate_event_id"] for event in eligible}
     covered_ids = {check["candidate_event_id"] for check in snapshot["spread_pair_checks"] if check["valid"]}
     uncovered_ids = eligible_ids - covered_ids
+    quarantined_ids = set(snapshot["quarantined_candidate_event_ids"])
+    if not quarantined_ids <= {event["candidate_event_id"] for event in candidate["allowlist"]} or quarantined_ids & covered_ids:
+        raise LiveCaptureError("Provider response quarantine coverage is inconsistent; no data was written")
     if not covered_ids or not covered_ids <= eligible_ids:
         raise LiveCaptureError("Provider response has no valid pregame spread coverage; no data was written")
     if set(validation["eligible_games_missing_spread_quotes"]) != uncovered_ids:
@@ -548,12 +551,18 @@ def execute_one_shot(
         "eligible_candidate_event_ids": sorted(eligible_ids),
         "covered_candidate_event_ids": sorted(covered_ids),
         "uncovered_candidate_event_ids": sorted(uncovered_ids),
+        "quarantined_candidate_event_ids": sorted(quarantined_ids),
         "eligible_game_count": len(eligible_ids),
         "covered_game_count": len(covered_ids),
         "uncovered_game_count": len(uncovered_ids),
+        "quarantined_game_count": len(quarantined_ids),
         "rejection_reason_codes": sorted(rejection_codes),
     }
-    snapshot["rejected_events"] = [{"reason": item["reason"]} for item in snapshot["rejected_events"]]
+    snapshot["rejected_events"] = [
+        {"reason": item["reason"], "candidate_event_id": item["candidate_event_id"]}
+        if item["reason"] == "KICKOFF_MISMATCH" else {"reason": item["reason"]}
+        for item in snapshot["rejected_events"]
+    ]
     snapshot["rejected_quotes"] = [{"reason": item["reason"]} for item in snapshot["rejected_quotes"]]
     snapshot["coverage"] = coverage
     snapshot["event_identity_diagnostics"] = identity_diagnostics

@@ -90,6 +90,45 @@ def test_unmatched_and_incorrectly_timed_events_are_rejected():
     assert "UNMATCHED_EVENT" in reasons
 
 
+def test_observed_kickoff_mismatches_quarantine_games_without_affecting_other_quotes():
+    candidate = _loaded_candidate()
+    observed_at = "2026-11-08T16:04:19Z"
+    response = _fixture(candidate, observed_at=observed_at)
+    events = {event["id"]: event for event in response}
+    cin = events["synthetic-oddsapi-2026_09_CIN_ATL"]
+    lv = events["synthetic-oddsapi-2026_09_LV_SF"]
+    exact_lv = json.loads(json.dumps(lv))
+    exact_lv["id"] = "conflicting-exact-lv"
+    response.append(exact_lv)
+    cin["commence_time"] = "2026-11-08T13:05:00Z"
+    lv["commence_time"] = "2026-11-08T21:25:00Z"
+    for index in range(11):
+        unrelated = json.loads(json.dumps(lv))
+        unrelated.update(id=f"future-{index}", away_team="Arizona Cardinals", home_team="Buffalo Bills", commence_time="2026-11-15T18:00:00Z")
+        response.append(unrelated)
+
+    snapshot = _prepare(candidate, response, observed_at=observed_at)
+    assert snapshot["quarantined_candidate_event_ids"] == ["2026_09_CIN_ATL", "2026_09_LV_SF"]
+    mismatches = [event for event in snapshot["rejected_events"] if event["reason"] == "KICKOFF_MISMATCH"]
+    assert {event["candidate_event_id"] for event in mismatches} == {"2026_09_CIN_ATL", "2026_09_LV_SF"}
+    assert sum(event["reason"] == "UNMATCHED_EVENT" for event in snapshot["rejected_events"]) == 11
+    quoted_ids = {quote["candidate_event_id"] for quote in snapshot["quotes"]}
+    assert "2026_09_CIN_ATL" not in quoted_ids and "2026_09_LV_SF" not in quoted_ids
+    assert quoted_ids
+    assert "2026_09_LV_SF" in snapshot["validation"]["eligible_games_missing_spread_quotes"]
+
+
+def test_subsecond_kickoff_difference_does_not_match_candidate():
+    candidate = _loaded_candidate()
+    response = _fixture(candidate)
+    target = response[1]
+    candidate_id = target["id"].removeprefix("synthetic-oddsapi-")
+    target["commence_time"] = target["commence_time"].replace("Z", ".500Z")
+    snapshot = _prepare(candidate, response)
+    assert candidate_id in snapshot["quarantined_candidate_event_ids"]
+    assert not any(quote["candidate_event_id"] == candidate_id for quote in snapshot["quotes"])
+
+
 def test_duplicate_provider_events_reject_the_candidate_match():
     candidate = _loaded_candidate()
     response = _fixture(candidate)

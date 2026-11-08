@@ -353,6 +353,64 @@ def test_partial_response_writes_only_covered_games_with_hashed_coverage(tmp_pat
     assert max(map(len, quotes_by_event.values())) == 2
 
 
+@pytest.mark.parametrize("lv_kickoff", ["2026-11-08T21:25:00Z", "2026-11-08T13:05:00Z"])
+def test_observed_kickoff_mismatches_preserve_other_games_in_capture_and_api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lv_kickoff: str):
+    staging_root = tmp_path / "stage"
+    candidate = _candidate(staging_root)
+    observed_at = datetime(2026, 11, 8, 16, 4, 19, tzinfo=timezone.utc)
+    env = _environment(candidate, staging_root, overrides={"SIA_WEEK9_ODDS_CAPTURE_OBSERVED_AT": "2026-11-08T16:04:19Z"})
+    monkeypatch.setattr(live_capture, "_utc_now", lambda: observed_at)
+    response = _provider_response(candidate, observed=observed_at)
+    events = {event["id"]: event for event in response}
+    cin = events["synthetic-oddsapi-2026_09_CIN_ATL"]
+    lv = events["synthetic-oddsapi-2026_09_LV_SF"]
+    exact_lv = deepcopy(lv)
+    exact_lv["id"] = "conflicting-exact-lv"
+    response.append(exact_lv)
+    cin["commence_time"] = "2026-11-08T13:05:00Z"
+    lv["commence_time"] = lv_kickoff
+    for index in range(11):
+        extra = deepcopy(lv)
+        extra.update(id=f"future-{index}", away_team="Arizona Cardinals", home_team="Buffalo Bills", commence_time="2026-11-15T18:00:00Z")
+        response.append(extra)
+
+    snapshot = execute_one_shot(candidate, live_authorized=True, environ=env, staging_root=staging_root, transport=FakeTransport(_http_response(response)))
+    coverage = snapshot["coverage"]
+    quarantine = {"2026_09_CIN_ATL", "2026_09_LV_SF"}
+    assert set(coverage["quarantined_candidate_event_ids"]) == quarantine
+    assert coverage["quarantined_game_count"] == 2
+    assert "KICKOFF_MISMATCH" in coverage["rejection_reason_codes"]
+    assert quarantine.isdisjoint(coverage["covered_candidate_event_ids"])
+    assert "2026_09_LV_SF" in coverage["uncovered_candidate_event_ids"]
+    diagnostics = snapshot["event_identity_diagnostics"]["events"]
+    assert any(event["reason"] == "KICKOFF_MISMATCH" and event.get("provider_kickoff_utc") == lv_kickoff and any(match["candidate_event_id"] == "2026_09_LV_SF" for match in event.get("possible_candidate_events", [])) for event in diagnostics)
+    assert sum(item["reason"] == "UNMATCHED_EVENT" for item in snapshot["rejected_events"]) == 11
+    capture_dir = Path(env["SIA_WEEK9_ODDS_CAPTURE_OUTPUT_DIR"])
+    assert json.loads((capture_dir / "manifest.json").read_text())["coverage"] == coverage
+
+    power = {
+        "artifactId": candidate["candidate_id"], "artifactHash": candidate["candidate_hash"],
+        "scheduleVersion": candidate["schedule_version"], "scheduleHash": candidate["schedule_hash"],
+        "games": [
+            {"eventId": event["candidate_event_id"], "awayTeam": event["away_team"], "homeTeam": event["home_team"], "kickoffUtc": event["kickoff_utc"], "homeExpectedMargin": event["model_margin_home"]}
+            for event in candidate["allowlist"]
+        ],
+    }
+    monkeypatch.setattr("app.services.experimental_market_comparison.STAGING_RUNTIME_ROOT", staging_root)
+    monkeypatch.setattr("app.services.experimental_market_comparison.load_experimental_power", lambda **_: power)
+    monkeypatch.setattr("app.services.experimental_market_comparison._utc_now", lambda: observed_at)
+    for name in ("RENDER", "RENDER_SERVICE_NAME", "NFL_ANALYTICS_OS_ROOT", "SIA_WEEK9_ODDS_CAPTURE_OUTPUT_DIR"):
+        monkeypatch.setenv(name, env[name])
+    from app.services.experimental_market_comparison import load_experimental_market_comparison
+
+    result = load_experimental_market_comparison(season=2026, week=9)
+    games = {game["eventId"]: game for game in result["games"]}
+    assert result["marketDataStatus"] == "AVAILABLE"
+    assert all(games[event_id]["marketStatus"] == "MARKET_DATA_UNAVAILABLE" and not games[event_id]["marketQuotes"] for event_id in quarantine)
+    assert any(game["marketQuotes"] for game in games.values())
+    assert games["2026_09_LV_SF"]["homeExpectedMargin"] == next(event["model_margin_home"] for event in candidate["allowlist"] if event["candidate_event_id"] == "2026_09_LV_SF")
+
+
 def test_stale_quote_is_uncovered_and_only_sanitized_reason_is_recorded(tmp_path: Path):
     staging_root = tmp_path / "stage"
     candidate = _candidate(staging_root)
@@ -418,7 +476,7 @@ def test_quote_becoming_stale_during_request_is_not_written(tmp_path: Path, monk
     assert not Path(env["SIA_WEEK9_ODDS_CAPTURE_OUTPUT_DIR"]).exists()
 
 
-def test_zero_coverage_duplicate_and_wrong_kickoff_fail_before_write(tmp_path: Path):
+def test_zero_coverage_and_duplicate_fail_before_write(tmp_path: Path):
     staging_root = tmp_path / "stage"
     candidate = _candidate(staging_root)
     env = _environment(candidate, staging_root)
@@ -428,9 +486,6 @@ def test_zero_coverage_duplicate_and_wrong_kickoff_fail_before_write(tmp_path: P
     duplicate = _provider_response(candidate)
     duplicate.append(dict(duplicate[1]))
     responses.append((duplicate, "duplicate events"))
-    wrong_kickoff = _provider_response(candidate)
-    wrong_kickoff[1]["commence_time"] = "2026-11-08T15:00:00Z"
-    responses.append((wrong_kickoff, "invalid event identity"))
 
     for provider_events, reason in responses:
         transport = FakeTransport(_http_response(provider_events))
@@ -440,7 +495,7 @@ def test_zero_coverage_duplicate_and_wrong_kickoff_fail_before_write(tmp_path: P
         assert not Path(env["SIA_WEEK9_ODDS_CAPTURE_OUTPUT_DIR"]).exists()
 
 
-@pytest.mark.parametrize("case", ["kickoff", "team", "duplicate", "duplicate_candidate", "malformed", "missing_id", "invalid_kickoff", "wrong_sport"])
+@pytest.mark.parametrize("case", ["team", "duplicate", "duplicate_candidate", "malformed", "missing_id", "invalid_kickoff", "wrong_sport"])
 def test_identity_failures_return_sanitized_structured_diagnostics(tmp_path: Path, case: str):
     staging_root = tmp_path / "stage"
     candidate = _candidate(staging_root)
@@ -448,10 +503,7 @@ def test_identity_failures_return_sanitized_structured_diagnostics(tmp_path: Pat
     response = _provider_response(candidate)
     target = response[1]
     target["id"] = FAKE_KEY
-    if case == "kickoff":
-        target["commence_time"] = "2026-11-08T15:00:00Z"
-        expected = "KICKOFF_MISMATCH"
-    elif case == "team":
+    if case == "team":
         target["home_team"] = FAKE_KEY
         expected = "INVALID_TEAM_IDENTITY"
     elif case == "duplicate":
@@ -485,11 +537,7 @@ def test_identity_failures_return_sanitized_structured_diagnostics(tmp_path: Pat
     assert FAKE_KEY not in json.dumps(diagnostics)
     assert len(transport.calls) == 1
     assert not Path(env["SIA_WEEK9_ODDS_CAPTURE_OUTPUT_DIR"]).exists()
-    if case == "kickoff":
-        assert entries[0]["category"] == "KICKOFF_MISMATCH"
-        assert entries[0]["possible_candidate_events"]
-        assert entries[0]["provider_kickoff_utc"] == "2026-11-08T15:00:00Z"
-    elif case == "team":
+    if case == "team":
         assert entries[0]["category"] == "TEAM_IDENTITY_MISMATCH"
         assert "home_team_fingerprint" in entries[0]
     elif case == "duplicate":
@@ -531,7 +579,7 @@ def test_blocking_identity_diagnostics_precede_truncated_extra_events(tmp_path: 
     candidate = _candidate(staging_root)
     env = _environment(candidate, staging_root)
     response = _provider_response(candidate)
-    response[1]["commence_time"] = "2026-11-08T15:00:00Z"
+    response[1]["home_team"] = "unknown-team-name"
     for index in range(55):
         extra = deepcopy(response[1])
         extra.update(id=f"extra-{index}", away_team="Arizona Cardinals", home_team="Buffalo Bills")
@@ -541,7 +589,7 @@ def test_blocking_identity_diagnostics_precede_truncated_extra_events(tmp_path: 
     diagnostics = failure.value.diagnostics
     assert diagnostics["truncated"] is True
     assert len(diagnostics["events"]) == 50
-    assert diagnostics["events"][0]["reason"] == "KICKOFF_MISMATCH"
+    assert diagnostics["events"][0]["reason"] == "INVALID_TEAM_IDENTITY"
 
 
 def test_duplicate_bookmaker_market_fails_closed_even_when_another_copy_is_valid(tmp_path: Path):

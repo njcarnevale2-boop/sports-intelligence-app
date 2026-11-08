@@ -409,6 +409,7 @@ def prepare_snapshot(
     id_counts = Counter(response_ids)
     matched_by_candidate: dict[str, list[dict[str, Any]]] = defaultdict(list)
     rejected_events: list[dict[str, Any]] = []
+    quarantined_candidate_ids: set[str] = set()
     unmatched_count = 0
 
     for provider_event in provider_response:
@@ -433,7 +434,8 @@ def prepare_snapshot(
         away = _team(provider_event.get("away_team"))
         home = _team(provider_event.get("home_team"))
         try:
-            kickoff = _utc_text(_parse_utc(provider_event.get("commence_time"), field="provider commence_time"))
+            provider_kickoff = _parse_utc(provider_event.get("commence_time"), field="provider commence_time")
+            kickoff = provider_kickoff.isoformat(timespec="microseconds" if provider_kickoff.microsecond else "seconds").replace("+00:00", "Z")
         except SnapshotPreparationError:
             rejected_events.append({"provider_event_id": provider_id, "reason": "INVALID_KICKOFF"})
             unmatched_count += 1
@@ -448,8 +450,14 @@ def prepare_snapshot(
             rejected_events.append({"provider_event_id": provider_id, "reason": "AMBIGUOUS_CANDIDATE_MATCH"})
             unmatched_count += 1
         elif not candidates:
-            reason = "KICKOFF_MISMATCH" if pair_index.get((away, home)) else "UNMATCHED_EVENT"
-            rejected_events.append({"provider_event_id": provider_id, "reason": reason})
+            pair_candidates = pair_index.get((away, home), [])
+            if len(pair_candidates) == 1:
+                candidate_event_id = pair_candidates[0]["candidate_event_id"]
+                quarantined_candidate_ids.add(candidate_event_id)
+                rejected_events.append({"provider_event_id": provider_id, "candidate_event_id": candidate_event_id, "reason": "KICKOFF_MISMATCH"})
+            else:
+                reason = "AMBIGUOUS_CANDIDATE_MATCH" if pair_candidates else "UNMATCHED_EVENT"
+                rejected_events.append({"provider_event_id": provider_id, "reason": reason})
             unmatched_count += 1
         elif _parse_utc(candidates[0]["kickoff_utc"], field="candidate kickoff") <= observation:
             rejected_events.append(
@@ -471,7 +479,7 @@ def prepare_snapshot(
     accepted_quotes: list[dict[str, Any]] = []
     rejected_quotes: list[dict[str, Any]] = []
     spread_pair_checks: list[dict[str, Any]] = []
-    matched_event_ids = sorted(set(matched_by_candidate) - duplicate_candidate_ids)
+    matched_event_ids = sorted(set(matched_by_candidate) - duplicate_candidate_ids - quarantined_candidate_ids)
 
     for candidate_event_id in matched_event_ids:
         provider_event = matched_by_candidate[candidate_event_id][0]
@@ -684,6 +692,7 @@ def prepare_snapshot(
         },
         "allowlist": allowlist,
         "eligible_candidate_event_ids": sorted(eligible_ids),
+        "quarantined_candidate_event_ids": sorted(quarantined_candidate_ids),
         "excluded_games": excluded,
         "quotes": accepted_quotes,
         "rejected_events": rejected_events,
