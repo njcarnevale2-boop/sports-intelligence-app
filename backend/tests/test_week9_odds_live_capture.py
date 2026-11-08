@@ -440,6 +440,110 @@ def test_zero_coverage_duplicate_and_wrong_kickoff_fail_before_write(tmp_path: P
         assert not Path(env["SIA_WEEK9_ODDS_CAPTURE_OUTPUT_DIR"]).exists()
 
 
+@pytest.mark.parametrize("case", ["kickoff", "team", "duplicate", "duplicate_candidate", "malformed", "missing_id", "invalid_kickoff", "wrong_sport"])
+def test_identity_failures_return_sanitized_structured_diagnostics(tmp_path: Path, case: str):
+    staging_root = tmp_path / "stage"
+    candidate = _candidate(staging_root)
+    env = _environment(candidate, staging_root)
+    response = _provider_response(candidate)
+    target = response[1]
+    target["id"] = FAKE_KEY
+    if case == "kickoff":
+        target["commence_time"] = "2026-11-08T15:00:00Z"
+        expected = "KICKOFF_MISMATCH"
+    elif case == "team":
+        target["home_team"] = FAKE_KEY
+        expected = "INVALID_TEAM_IDENTITY"
+    elif case == "duplicate":
+        response.append(deepcopy(target))
+        expected = "DUPLICATE_PROVIDER_EVENT_ID"
+    elif case == "duplicate_candidate":
+        other = deepcopy(target)
+        other["id"] = "different-event-id"
+        response.append(other)
+        expected = "DUPLICATE_CANDIDATE_MATCH"
+    elif case == "malformed":
+        response.append(None)
+        expected = "EVENT_NOT_OBJECT"
+    elif case == "missing_id":
+        target.pop("id")
+        expected = "MISSING_PROVIDER_EVENT_ID"
+    elif case == "invalid_kickoff":
+        target["commence_time"] = FAKE_KEY
+        expected = "INVALID_KICKOFF"
+    else:
+        target["sport_key"] = "another-sport"
+        expected = "WRONG_SPORT"
+    transport = FakeTransport(_http_response(response))
+    with pytest.raises(LiveCaptureError) as failure:
+        execute_one_shot(candidate, live_authorized=True, environ=env, staging_root=staging_root, transport=transport)
+    diagnostics = failure.value.diagnostics
+    assert diagnostics is not None
+    entries = [entry for entry in diagnostics["events"] if entry["reason"] == expected]
+    assert entries
+    assert FAKE_KEY not in str(failure.value)
+    assert FAKE_KEY not in json.dumps(diagnostics)
+    assert len(transport.calls) == 1
+    assert not Path(env["SIA_WEEK9_ODDS_CAPTURE_OUTPUT_DIR"]).exists()
+    if case == "kickoff":
+        assert entries[0]["category"] == "KICKOFF_MISMATCH"
+        assert entries[0]["possible_candidate_events"]
+        assert entries[0]["provider_kickoff_utc"] == "2026-11-08T15:00:00Z"
+    elif case == "team":
+        assert entries[0]["category"] == "TEAM_IDENTITY_MISMATCH"
+        assert "home_team_fingerprint" in entries[0]
+    elif case == "duplicate":
+        assert entries[0]["category"] == "DUPLICATE_PROVIDER_EVENT"
+    elif case == "duplicate_candidate":
+        assert entries[0]["category"] == "DUPLICATE_CANDIDATE_EVENT"
+    else:
+        assert entries[0]["category"] == "MALFORMED_EVENT_IDENTITY"
+
+
+def test_non_list_provider_response_has_sanitized_diagnostic(tmp_path: Path):
+    staging_root = tmp_path / "stage"
+    candidate = _candidate(staging_root)
+    env = _environment(candidate, staging_root)
+    response = HttpResponse(status_code=200, headers={}, body=json.dumps({"secret": FAKE_KEY}).encode())
+    with pytest.raises(LiveCaptureError) as failure:
+        execute_one_shot(candidate, live_authorized=True, environ=env, staging_root=staging_root, transport=FakeTransport(response))
+    assert failure.value.diagnostics["response_reason"] == "RESPONSE_NOT_LIST"
+    assert FAKE_KEY not in str(failure.value)
+    assert not Path(env["SIA_WEEK9_ODDS_CAPTURE_OUTPUT_DIR"]).exists()
+
+
+def test_extra_provider_event_is_diagnosed_without_weakening_candidate_matching(tmp_path: Path):
+    staging_root = tmp_path / "stage"
+    candidate = _candidate(staging_root)
+    env = _environment(candidate, staging_root)
+    response = _provider_response(candidate)
+    extra = deepcopy(response[1])
+    extra.update(id=FAKE_KEY, away_team="Arizona Cardinals", home_team="Buffalo Bills")
+    response.append(extra)
+    snapshot = execute_one_shot(candidate, live_authorized=True, environ=env, staging_root=staging_root, transport=FakeTransport(_http_response(response)))
+    events = snapshot["event_identity_diagnostics"]["events"]
+    assert any(event["reason"] == "UNMATCHED_EVENT" and event["category"] == "EXTRA_PROVIDER_EVENT" for event in events)
+    assert FAKE_KEY not in json.dumps(snapshot)
+
+
+def test_blocking_identity_diagnostics_precede_truncated_extra_events(tmp_path: Path):
+    staging_root = tmp_path / "stage"
+    candidate = _candidate(staging_root)
+    env = _environment(candidate, staging_root)
+    response = _provider_response(candidate)
+    response[1]["commence_time"] = "2026-11-08T15:00:00Z"
+    for index in range(55):
+        extra = deepcopy(response[1])
+        extra.update(id=f"extra-{index}", away_team="Arizona Cardinals", home_team="Buffalo Bills")
+        response.append(extra)
+    with pytest.raises(LiveCaptureError) as failure:
+        execute_one_shot(candidate, live_authorized=True, environ=env, staging_root=staging_root, transport=FakeTransport(_http_response(response)))
+    diagnostics = failure.value.diagnostics
+    assert diagnostics["truncated"] is True
+    assert len(diagnostics["events"]) == 50
+    assert diagnostics["events"][0]["reason"] == "KICKOFF_MISMATCH"
+
+
 def test_duplicate_bookmaker_market_fails_closed_even_when_another_copy_is_valid(tmp_path: Path):
     staging_root = tmp_path / "stage"
     candidate = _candidate(staging_root)

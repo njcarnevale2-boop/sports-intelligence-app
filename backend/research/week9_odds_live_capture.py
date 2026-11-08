@@ -20,6 +20,7 @@ from research.week9_odds_snapshot_prepare import (
     _sha256_bytes,
     _sha256_json,
     load_candidate_allowlist,
+    normalize_team,
     prepare_snapshot,
 )
 
@@ -49,7 +50,95 @@ QUOTA_HEADER_NAMES = (
 
 
 class LiveCaptureError(ValueError):
-    pass
+    def __init__(self, message: str, *, diagnostics: dict[str, Any] | None = None):
+        self.diagnostics = diagnostics
+        if diagnostics is not None:
+            message = f"{message}; event_diagnostics={json.dumps(diagnostics, sort_keys=True)}"
+        super().__init__(message)
+
+
+def _event_identity_diagnostics(
+    rejected_events: list[dict[str, Any]], provider_events: list[Any], candidate: dict[str, Any],
+) -> dict[str, Any]:
+    categories = {
+        "UNMATCHED_EVENT": "EXTRA_PROVIDER_EVENT",
+        "KICKOFF_MISMATCH": "KICKOFF_MISMATCH",
+        "INVALID_TEAM_IDENTITY": "TEAM_IDENTITY_MISMATCH",
+        "DUPLICATE_PROVIDER_EVENT_ID": "DUPLICATE_PROVIDER_EVENT",
+        "DUPLICATE_CANDIDATE_MATCH": "DUPLICATE_CANDIDATE_EVENT",
+        "KICKOFF_ALREADY_OCCURRED": "ALREADY_STARTED",
+        "NO_BOOKMAKERS": "NO_BOOKMAKERS",
+    }
+    entries: list[dict[str, Any]] = []
+    seen: set[tuple[int, str]] = set()
+    for rejection in rejected_events:
+        reason = rejection["reason"]
+        provider_id = rejection.get("provider_event_id")
+        if provider_id is None:
+            indexes = [
+                index for index, event in enumerate(provider_events)
+                if (reason == "EVENT_NOT_OBJECT" and not isinstance(event, dict))
+                or (reason == "MISSING_PROVIDER_EVENT_ID" and isinstance(event, dict) and not event.get("id"))
+            ]
+        else:
+            indexes = [
+                index for index, event in enumerate(provider_events)
+                if isinstance(event, dict) and str(event.get("id") or "") == provider_id
+            ]
+        for index in indexes:
+            if (index, reason) in seen:
+                continue
+            seen.add((index, reason))
+            event = provider_events[index]
+            details: dict[str, Any] = {
+                "reason": reason,
+                "category": categories.get(reason, "MALFORMED_EVENT_IDENTITY"),
+                "provider_event_index": index,
+            }
+            if isinstance(event, dict):
+                if event.get("id"):
+                    details["provider_event_fingerprint"] = _sha256_bytes(str(event["id"]).encode("utf-8", "surrogatepass"))[:16]
+                away = normalize_team(event.get("away_team"))
+                home = normalize_team(event.get("home_team"))
+                details["away_team"] = away
+                details["home_team"] = home
+                for side, normalized in (("away", away), ("home", home)):
+                    raw = event.get(f"{side}_team")
+                    if normalized is None and raw is not None:
+                        details[f"{side}_team_fingerprint"] = _sha256_bytes(str(raw).encode("utf-8", "surrogatepass"))[:16]
+                try:
+                    kickoff = _parse_utc(event.get("commence_time"), field="provider kickoff")
+                    details["provider_kickoff_utc"] = kickoff.isoformat(timespec="seconds").replace("+00:00", "Z")
+                except SnapshotPreparationError:
+                    kickoff = None
+                possible = []
+                for candidate_event in candidate["allowlist"]:
+                    if reason == "UNMATCHED_EVENT" or (away is None and home is None):
+                        continue
+                    if away is not None and candidate_event["away_team"] != away:
+                        continue
+                    if home is not None and candidate_event["home_team"] != home:
+                        continue
+                    if reason != "KICKOFF_MISMATCH" and kickoff is not None and _parse_utc(candidate_event["kickoff_utc"], field="candidate kickoff") != kickoff:
+                        continue
+                    possible.append({
+                        "candidate_event_id": candidate_event["candidate_event_id"],
+                        "candidate_kickoff_utc": candidate_event["kickoff_utc"],
+                    })
+                if possible:
+                    details["possible_candidate_events"] = possible
+            entries.append(details)
+    entries.sort(key=lambda item: (
+        item["reason"] in {"UNMATCHED_EVENT", "KICKOFF_ALREADY_OCCURRED", "NO_BOOKMAKERS"},
+        item["provider_event_index"],
+        item["reason"],
+    ))
+    return {
+        "schema_version": "week9_event_identity_diagnostics_v1",
+        "rejected_event_count": len(rejected_events),
+        "events": entries[:50],
+        "truncated": len(entries) > 50,
+    }
 
 
 def _utc_now() -> datetime:
@@ -392,6 +481,17 @@ def execute_one_shot(
         provider_events = json.loads(response.body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise LiveCaptureError("Provider returned invalid JSON; no data was written") from exc
+    if not isinstance(provider_events, list):
+        raise LiveCaptureError(
+            "Provider response validation failed; no data was written",
+            diagnostics={
+                "schema_version": "week9_event_identity_diagnostics_v1",
+                "rejected_event_count": 0,
+                "events": [],
+                "truncated": False,
+                "response_reason": "RESPONSE_NOT_LIST",
+            },
+        )
 
     provider_body_sha = _sha256_bytes(response.body)
     try:
@@ -407,15 +507,16 @@ def execute_one_shot(
         raise LiveCaptureError(f"Provider response validation failed: {exc}") from exc
 
     validation = snapshot["validation"]
+    identity_diagnostics = _event_identity_diagnostics(snapshot["rejected_events"], provider_events, candidate)
     duplicate_event_reasons = {"DUPLICATE_PROVIDER_EVENT_ID", "DUPLICATE_CANDIDATE_MATCH"}
     if any(item.get("reason") in duplicate_event_reasons for item in snapshot["rejected_events"]):
-        raise LiveCaptureError("Provider response contains duplicate events; no data was written")
+        raise LiveCaptureError("Provider response contains duplicate events; no data was written", diagnostics=identity_diagnostics)
     if any(item.get("reason") == "DUPLICATE_BOOKMAKER_MARKET" for item in snapshot["rejected_quotes"]):
         raise LiveCaptureError("Provider response contains duplicate bookmaker markets; no data was written")
     allowed_event_rejections = {"UNMATCHED_EVENT", "KICKOFF_ALREADY_OCCURRED", "NO_BOOKMAKERS"}
     allowed_quote_rejections = {"STALE_QUOTE", "NO_MARKETS"}
     if any(item.get("reason") not in allowed_event_rejections for item in snapshot["rejected_events"]):
-        raise LiveCaptureError("Provider response contains invalid event identity; no data was written")
+        raise LiveCaptureError("Provider response contains invalid event identity; no data was written", diagnostics=identity_diagnostics)
     if any(item.get("reason") not in allowed_quote_rejections for item in snapshot["rejected_quotes"]):
         raise LiveCaptureError("Provider response contains malformed quotes; no data was written")
     if any(quote.get("market") != "spreads" or quote.get("outcome_side") not in {"home", "away"} for quote in snapshot["quotes"]):
@@ -455,6 +556,7 @@ def execute_one_shot(
     snapshot["rejected_events"] = [{"reason": item["reason"]} for item in snapshot["rejected_events"]]
     snapshot["rejected_quotes"] = [{"reason": item["reason"]} for item in snapshot["rejected_quotes"]]
     snapshot["coverage"] = coverage
+    snapshot["event_identity_diagnostics"] = identity_diagnostics
 
     snapshot.update(
         {
