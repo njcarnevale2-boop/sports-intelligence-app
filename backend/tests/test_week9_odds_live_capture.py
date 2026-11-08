@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import urllib.parse
+from copy import deepcopy
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -314,24 +315,122 @@ def test_provider_failures_are_sanitized_and_do_not_write(tmp_path: Path, respon
     assert not Path(env["SIA_WEEK9_ODDS_CAPTURE_OUTPUT_DIR"]).exists()
 
 
-def test_partial_response_duplicate_wrong_kickoff_and_stale_quotes_fail_before_write(tmp_path: Path):
+def test_partial_response_writes_only_covered_games_with_hashed_coverage(tmp_path: Path):
+    staging_root = tmp_path / "stage"
+    candidate = _candidate(staging_root)
+    env = _environment(candidate, staging_root)
+    response = _provider_response(candidate)
+    response.pop(1)
+    second_book = deepcopy(response[1]["bookmakers"][0])
+    second_book["key"] = "second-fixture-book"
+    response[1]["bookmakers"].append(second_book)
+    snapshot = execute_one_shot(candidate, live_authorized=True, environ=env, staging_root=staging_root, transport=FakeTransport(_http_response(response)))
+    coverage = snapshot["coverage"]
+    assert coverage["status"] == "PARTIAL"
+    assert coverage["covered_game_count"] == 13
+    assert coverage["uncovered_game_count"] == 1
+    assert snapshot["validation"]["spread_pairs_validated"] == 14
+    assert "NO_VALIDATED_SPREAD" in coverage["rejection_reason_codes"]
+    assert set(coverage["covered_candidate_event_ids"]) == {quote["candidate_event_id"] for quote in snapshot["quotes"]}
+    manifest = json.loads((Path(env["SIA_WEEK9_ODDS_CAPTURE_OUTPUT_DIR"]) / "manifest.json").read_text())
+    assert manifest["coverage"] == coverage
+
+    from app.services.experimental_market_comparison import _validate_capture
+
+    power = {
+        "artifactId": candidate["candidate_id"],
+        "artifactHash": candidate["candidate_hash"],
+        "scheduleVersion": candidate["schedule_version"],
+        "scheduleHash": candidate["schedule_hash"],
+        "games": [
+            {"eventId": event["candidate_event_id"], "awayTeam": event["away_team"], "homeTeam": event["home_team"], "kickoffUtc": event["kickoff_utc"]}
+            for event in candidate["allowlist"]
+        ],
+    }
+    quotes_by_event = _validate_capture(power=power, capture_dir=Path(env["SIA_WEEK9_ODDS_CAPTURE_OUTPUT_DIR"]), now=NOW)
+    assert {event_id for event_id, quotes in quotes_by_event.items() if quotes} == set(coverage["covered_candidate_event_ids"])
+    assert all(not quotes_by_event[event_id] for event_id in coverage["uncovered_candidate_event_ids"])
+    assert max(map(len, quotes_by_event.values())) == 2
+
+
+def test_stale_quote_is_uncovered_and_only_sanitized_reason_is_recorded(tmp_path: Path):
+    staging_root = tmp_path / "stage"
+    candidate = _candidate(staging_root)
+    env = _environment(candidate, staging_root)
+    response = _provider_response(candidate)
+    response[1]["bookmakers"][0]["markets"][0]["last_update"] = "2026-11-07T11:00:00Z"
+    snapshot = execute_one_shot(candidate, live_authorized=True, environ=env, staging_root=staging_root, transport=FakeTransport(_http_response(response)))
+    assert snapshot["coverage"]["uncovered_game_count"] == 1
+    assert "STALE_QUOTE" in snapshot["coverage"]["rejection_reason_codes"]
+    assert snapshot["rejected_quotes"] == [{"reason": "STALE_QUOTE"}]
+
+
+def test_shorter_freshness_policy_is_rejected_before_request(tmp_path: Path):
+    staging_root = tmp_path / "stage"
+    candidate = _candidate(staging_root)
+    env = _environment(candidate, staging_root, overrides={"SIA_WEEK9_ODDS_CAPTURE_MAX_QUOTE_AGE_SECONDS": "60"})
+    transport = FakeTransport(_http_response(_provider_response(candidate)))
+    with pytest.raises(LiveCaptureError, match="exactly 300 seconds"):
+        execute_one_shot(candidate, live_authorized=True, environ=env, staging_root=staging_root, transport=transport)
+    assert transport.calls == []
+
+
+def test_kickoff_at_request_time_is_rejected_without_transport(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    staging_root = tmp_path / "stage"
+    candidate = _candidate(staging_root)
+    kickoff = datetime(2026, 11, 8, 14, 30, tzinfo=timezone.utc)
+    observed = "2026-11-08T14:29:59Z"
+    env = _environment(candidate, staging_root, overrides={"SIA_WEEK9_ODDS_CAPTURE_OBSERVED_AT": observed})
+    monkeypatch.setattr(live_capture, "_utc_now", lambda: kickoff)
+    transport = FakeTransport(_http_response([]))
+    with pytest.raises(LiveCaptureError, match="started before the request"):
+        execute_one_shot(candidate, live_authorized=True, environ=env, staging_root=staging_root, transport=transport)
+    assert transport.calls == []
+
+
+def test_kickoff_during_request_is_rejected_without_writing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    staging_root = tmp_path / "stage"
+    candidate = _candidate(staging_root)
+    kickoff = datetime(2026, 11, 8, 14, 30, tzinfo=timezone.utc)
+    observed = kickoff - timedelta(seconds=1)
+    env = _environment(candidate, staging_root, overrides={"SIA_WEEK9_ODDS_CAPTURE_OBSERVED_AT": "2026-11-08T14:29:59Z"})
+    clock_values = iter([observed, observed, kickoff])
+    monkeypatch.setattr(live_capture, "_utc_now", lambda: next(clock_values))
+    transport = FakeTransport(_http_response(_provider_response(candidate, observed=observed)))
+    with pytest.raises(LiveCaptureError, match="started during the request"):
+        execute_one_shot(candidate, live_authorized=True, environ=env, staging_root=staging_root, transport=transport)
+    assert len(transport.calls) == 1
+    assert not Path(env["SIA_WEEK9_ODDS_CAPTURE_OUTPUT_DIR"]).exists()
+
+
+def test_quote_becoming_stale_during_request_is_not_written(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    staging_root = tmp_path / "stage"
+    candidate = _candidate(staging_root)
+    env = _environment(candidate, staging_root)
+    response = _provider_response(candidate)
+    response[1]["bookmakers"][0]["markets"][0]["last_update"] = "2026-11-07T11:55:05Z"
+    clock_values = iter([NOW, NOW, NOW + timedelta(seconds=10)])
+    monkeypatch.setattr(live_capture, "_utc_now", lambda: next(clock_values))
+    transport = FakeTransport(_http_response(response))
+    with pytest.raises(LiveCaptureError, match="became stale during the request"):
+        execute_one_shot(candidate, live_authorized=True, environ=env, staging_root=staging_root, transport=transport)
+    assert len(transport.calls) == 1
+    assert not Path(env["SIA_WEEK9_ODDS_CAPTURE_OUTPUT_DIR"]).exists()
+
+
+def test_zero_coverage_duplicate_and_wrong_kickoff_fail_before_write(tmp_path: Path):
     staging_root = tmp_path / "stage"
     candidate = _candidate(staging_root)
     env = _environment(candidate, staging_root)
 
     responses = []
-    partial = _provider_response(candidate)
-    partial.pop(1)
-    responses.append((partial, "Partial provider response"))
+    responses.append(([], "no valid pregame spread coverage"))
     duplicate = _provider_response(candidate)
     duplicate.append(dict(duplicate[1]))
     responses.append((duplicate, "duplicate events"))
     wrong_kickoff = _provider_response(candidate)
     wrong_kickoff[1]["commence_time"] = "2026-11-08T15:00:00Z"
-    responses.append((wrong_kickoff, "Partial provider response"))
-    stale = _provider_response(candidate)
-    stale[1]["bookmakers"][0]["markets"][0]["last_update"] = "2026-11-07T11:00:00Z"
-    responses.append((stale, "Partial provider response"))
+    responses.append((wrong_kickoff, "invalid event identity"))
 
     for provider_events, reason in responses:
         transport = FakeTransport(_http_response(provider_events))
@@ -362,7 +461,7 @@ def test_invalid_spread_sign_or_malformed_outcome_fails_without_persisting(tmp_p
     provider_events = _provider_response(candidate)
     provider_events[1]["bookmakers"][0]["markets"][0]["outcomes"][1]["point"] += 2
     transport = FakeTransport(_http_response(provider_events))
-    with pytest.raises(LiveCaptureError, match="Partial provider response"):
+    with pytest.raises(LiveCaptureError, match="malformed quotes"):
         execute_one_shot(candidate, live_authorized=True, environ=env, staging_root=staging_root, transport=transport)
     assert len(transport.calls) == 1
     assert not Path(env["SIA_WEEK9_ODDS_CAPTURE_OUTPUT_DIR"]).exists()

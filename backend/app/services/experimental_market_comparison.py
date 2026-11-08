@@ -99,8 +99,10 @@ def _validate_capture(*, power: dict[str, Any], capture_dir: Path, now: datetime
     if manifest.get("snapshot_file") != "snapshot.json" or manifest.get("snapshot_sha256") != _sha256_bytes(snapshot_bytes):
         raise ValueError("Capture snapshot file hash mismatch")
     if (
-        manifest.get("environment") != "staging"
+        manifest.get("capture_version") != CAPTURE_VERSION
+        or manifest.get("environment") != "staging"
         or manifest.get("provider_requests") != 1
+        or manifest.get("provider_credit_limit") != 1
         or manifest.get("database_writes") is not False
         or manifest.get("opportunity_history_writes") is not False
         or manifest.get("active_pointer_writes") is not False
@@ -129,12 +131,8 @@ def _validate_capture(*, power: dict[str, Any], capture_dir: Path, now: datetime
     ):
         raise ValueError("Capture snapshot is not a one-request staging capture")
     validation = snapshot.get("validation") or {}
-    if (
-        validation.get("allowlist_games") != 15
-        or validation.get("eligible_games_missing_spread_quotes") != []
-        or validation.get("spread_pairs_validated") != validation.get("pregame_eligible_games")
-    ):
-        raise ValueError("Capture snapshot does not certify complete pregame spread coverage")
+    if validation.get("allowlist_games") != 15:
+        raise ValueError("Capture snapshot has invalid candidate coverage")
     if (
         candidate.get("candidate_id") != power.get("artifactId")
         or candidate.get("candidate_hash") != power.get("artifactHash")
@@ -161,18 +159,55 @@ def _validate_capture(*, power: dict[str, Any], capture_dir: Path, now: datetime
 
     observed_at = _parse_utc(snapshot.get("observed_at"))
     max_age = int(snapshot.get("max_quote_age_seconds") or 0)
-    if max_age <= 0 or max_age > MAX_CAPTURE_AGE_SECONDS:
+    if max_age != MAX_CAPTURE_AGE_SECONDS:
         raise ValueError("Capture freshness policy is invalid")
     if observed_at > now or (now - observed_at).total_seconds() > MAX_CAPTURE_AGE_SECONDS:
         raise ValueError("Capture observation is stale or in the future")
 
     games_by_id = {str(game["eventId"]): game for game in power.get("games", [])}
+    if len(games_by_id) != len(power.get("games", [])):
+        raise ValueError("Candidate contains duplicate event IDs")
+    eligible_ids = {
+        event_id for event_id, game in games_by_id.items()
+        if _parse_utc(game["kickoffUtc"]) > observed_at
+    }
+    coverage = snapshot.get("coverage")
+    if not isinstance(coverage, dict) or manifest.get("coverage") != coverage:
+        raise ValueError("Capture manifest coverage mismatch")
+    for field in ("eligible_candidate_event_ids", "covered_candidate_event_ids", "uncovered_candidate_event_ids", "rejection_reason_codes"):
+        values = coverage.get(field)
+        if not isinstance(values, list) or not all(isinstance(value, str) and value for value in values) or values != sorted(set(values)):
+            raise ValueError("Capture coverage contains invalid IDs or reason codes")
+    covered_ids = set(coverage["covered_candidate_event_ids"])
+    uncovered_ids = set(coverage["uncovered_candidate_event_ids"])
+    rejection_codes = set(coverage["rejection_reason_codes"])
+    expected_rejection_codes = {
+        item["reason"] for item in (snapshot.get("rejected_events") or []) + (snapshot.get("rejected_quotes") or [])
+    }
+    if uncovered_ids:
+        expected_rejection_codes.add("NO_VALIDATED_SPREAD")
+    allowed_rejection_codes = {"UNMATCHED_EVENT", "KICKOFF_ALREADY_OCCURRED", "NO_BOOKMAKERS", "STALE_QUOTE", "NO_MARKETS", "NO_VALIDATED_SPREAD"}
+    if (
+        set(coverage["eligible_candidate_event_ids"]) != eligible_ids
+        or snapshot.get("eligible_candidate_event_ids") != sorted(eligible_ids)
+        or not covered_ids or covered_ids & uncovered_ids or covered_ids | uncovered_ids != eligible_ids
+        or coverage.get("eligible_game_count") != len(eligible_ids)
+        or coverage.get("covered_game_count") != len(covered_ids)
+        or coverage.get("uncovered_game_count") != len(uncovered_ids)
+        or coverage.get("status") != ("PARTIAL" if uncovered_ids else "COMPLETE")
+        or rejection_codes != expected_rejection_codes or not rejection_codes <= allowed_rejection_codes
+        or validation.get("pregame_eligible_games") != len(eligible_ids)
+        or validation.get("eligible_games_with_spread_quotes") != len(covered_ids)
+        or validation.get("eligible_games_missing_spread_quotes") != sorted(uncovered_ids)
+    ):
+        raise ValueError("Capture coverage does not match candidate eligibility")
     quotes_by_event: dict[str, list[dict[str, Any]]] = {event_id: [] for event_id in games_by_id}
     grouped: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
+    provider_events: dict[str, str] = {}
     for quote in snapshot.get("quotes") or []:
         event_id = str(quote.get("candidate_event_id") or "")
         game = games_by_id.get(event_id)
-        if game is None:
+        if game is None or event_id not in covered_ids:
             raise ValueError("Capture contains an event outside the Week 9 candidate")
         if (
             normalize_team_id(quote.get("away_team")) != game["awayTeam"]
@@ -192,8 +227,12 @@ def _validate_capture(*, power: dict[str, Any], capture_dir: Path, now: datetime
             raise ValueError("Capture canonical event key mismatch")
         side = str(quote.get("outcome_side") or "")
         book = str(quote.get("sportsbook_key") or "")
-        if side not in {"home", "away"} or not book:
+        provider_event_id = str(quote.get("provider_event_id") or "")
+        if side not in {"home", "away"} or not book or not provider_event_id:
             raise ValueError("Capture spread quote lacks sportsbook or side")
+        if provider_event_id in provider_events and provider_events[provider_event_id] != event_id:
+            raise ValueError("Capture provider event is mapped to multiple candidate games")
+        provider_events[provider_event_id] = event_id
         quote_update = _parse_utc(quote.get("effective_quote_update"))
         quote_observed = _parse_utc(quote.get("observation_timestamp"))
         kickoff = _parse_utc(game["kickoffUtc"])
@@ -215,7 +254,7 @@ def _validate_capture(*, power: dict[str, Any], capture_dir: Path, now: datetime
             "price": price,
             "sportsbookKey": book,
             "sportsbookTitle": str(quote.get("sportsbook_title") or book),
-            "providerEventId": str(quote.get("provider_event_id") or ""),
+            "providerEventId": provider_event_id,
             "bookmakerLastUpdate": quote.get("bookmaker_last_update"),
             "marketLastUpdate": quote.get("market_last_update"),
             "quoteTimestamp": quote.get("effective_quote_update"),
@@ -224,6 +263,10 @@ def _validate_capture(*, power: dict[str, Any], capture_dir: Path, now: datetime
     for (event_id, _book), sides in grouped.items():
         if set(sides) != {"home", "away"}:
             raise ValueError("Capture is missing a paired home/away spread outcome")
+        if sides["home"]["providerEventId"] != sides["away"]["providerEventId"]:
+            raise ValueError("Capture spread outcomes have different provider event identities")
+        if sides["home"]["quoteTimestamp"] != sides["away"]["quoteTimestamp"]:
+            raise ValueError("Capture spread outcomes have different quote timestamps")
         if abs(sides["home"]["point"] + sides["away"]["point"]) > 0.01:
             raise ValueError("Capture home/away spread signs do not pair")
         quotes_by_event[event_id].append(
@@ -238,6 +281,12 @@ def _validate_capture(*, power: dict[str, Any], capture_dir: Path, now: datetime
         )
     for quotes in quotes_by_event.values():
         quotes.sort(key=lambda quote: (quote["sportsbookKey"], quote["quoteTimestamp"]))
+        if len({quote["providerEventId"] for quote in quotes}) > 1:
+            raise ValueError("Capture game has multiple provider event identities")
+    if {event_id for event_id, quotes in quotes_by_event.items() if quotes} != covered_ids:
+        raise ValueError("Capture validated game coverage does not match metadata")
+    if validation.get("spread_pairs_validated") != len(grouped):
+        raise ValueError("Capture validated sportsbook pair count does not match quotes")
     return quotes_by_event
 
 

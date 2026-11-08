@@ -228,8 +228,8 @@ def authorize_live_capture(
         credit_limit = int(_require_env(env, "SIA_WEEK9_ODDS_CAPTURE_MAX_CREDITS"))
     except ValueError as exc:
         raise LiveCaptureError("Quote-age and credit limits must be integers") from exc
-    if max_age <= 0 or max_age > 3600:
-        raise LiveCaptureError("Maximum quote age must be between 1 and 3600 seconds")
+    if max_age != DEFAULT_MAX_QUOTE_AGE_SECONDS:
+        raise LiveCaptureError("Maximum quote age must be exactly 300 seconds")
     if credit_limit != MAX_PROVIDER_CREDITS:
         raise LiveCaptureError("This adapter requires an explicit one-credit maximum")
 
@@ -324,6 +324,7 @@ def write_staging_snapshot(snapshot: dict[str, Any], *, output_dir: Path, stagin
         "candidate_id": snapshot["candidate"]["candidate_id"],
         "candidate_hash": snapshot["candidate"]["candidate_hash"],
         "schedule_hash": snapshot["candidate"]["schedule_hash"],
+        "coverage": snapshot["coverage"],
     }
     manifest["manifest_sha256"] = _sha256_json(manifest)
     manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
@@ -366,12 +367,16 @@ def execute_one_shot(
     skew = abs((started_at.astimezone(timezone.utc) - observed_at).total_seconds())
     if skew > MAX_OBSERVATION_CLOCK_SKEW_SECONDS:
         raise LiveCaptureError("Observation timestamp expired before request")
+    if observed_at > started_at:
+        raise LiveCaptureError("Observation timestamp is in the future")
     eligible = [
         event for event in candidate["allowlist"]
         if _parse_utc(event["kickoff_utc"], field="candidate kickoff") > observed_at
     ]
     if not eligible:
         raise LiveCaptureError("No pregame candidate events remain")
+    if any(_parse_utc(event["kickoff_utc"], field="candidate kickoff") <= started_at for event in eligible):
+        raise LiveCaptureError("A candidate event started before the request")
 
     url = build_request_url(authorization.api_key)
     try:
@@ -407,11 +412,49 @@ def execute_one_shot(
         raise LiveCaptureError("Provider response contains duplicate events; no data was written")
     if any(item.get("reason") == "DUPLICATE_BOOKMAKER_MARKET" for item in snapshot["rejected_quotes"]):
         raise LiveCaptureError("Provider response contains duplicate bookmaker markets; no data was written")
-    if validation["eligible_games_missing_spread_quotes"]:
-        raise LiveCaptureError(
-            "Partial provider response: missing valid spreads for "
-            f"{len(validation['eligible_games_missing_spread_quotes'])} eligible candidate games; no data was written"
-        )
+    allowed_event_rejections = {"UNMATCHED_EVENT", "KICKOFF_ALREADY_OCCURRED", "NO_BOOKMAKERS"}
+    allowed_quote_rejections = {"STALE_QUOTE", "NO_MARKETS"}
+    if any(item.get("reason") not in allowed_event_rejections for item in snapshot["rejected_events"]):
+        raise LiveCaptureError("Provider response contains invalid event identity; no data was written")
+    if any(item.get("reason") not in allowed_quote_rejections for item in snapshot["rejected_quotes"]):
+        raise LiveCaptureError("Provider response contains malformed quotes; no data was written")
+    if any(quote.get("market") != "spreads" or quote.get("outcome_side") not in {"home", "away"} for quote in snapshot["quotes"]):
+        raise LiveCaptureError("Provider response contains malformed spread outcomes; no data was written")
+
+    completed_at = _utc_now()
+    if completed_at < started_at or any(
+        _parse_utc(event["kickoff_utc"], field="candidate kickoff") <= completed_at for event in eligible
+    ):
+        raise LiveCaptureError("A candidate event started during the request or the system clock moved backwards")
+    if any(
+        (completed_at - _parse_utc(quote["effective_quote_update"], field="quote update")).total_seconds()
+        > authorization.max_quote_age_seconds
+        for quote in snapshot["quotes"]
+    ):
+        raise LiveCaptureError("A quote became stale during the request; no data was written")
+    eligible_ids = {event["candidate_event_id"] for event in eligible}
+    covered_ids = {check["candidate_event_id"] for check in snapshot["spread_pair_checks"] if check["valid"]}
+    uncovered_ids = eligible_ids - covered_ids
+    if not covered_ids or not covered_ids <= eligible_ids:
+        raise LiveCaptureError("Provider response has no valid pregame spread coverage; no data was written")
+    if set(validation["eligible_games_missing_spread_quotes"]) != uncovered_ids:
+        raise LiveCaptureError("Provider response coverage is inconsistent; no data was written")
+    rejection_codes = {item["reason"] for item in snapshot["rejected_events"] + snapshot["rejected_quotes"]}
+    if uncovered_ids:
+        rejection_codes.add("NO_VALIDATED_SPREAD")
+    coverage = {
+        "status": "PARTIAL" if uncovered_ids else "COMPLETE",
+        "eligible_candidate_event_ids": sorted(eligible_ids),
+        "covered_candidate_event_ids": sorted(covered_ids),
+        "uncovered_candidate_event_ids": sorted(uncovered_ids),
+        "eligible_game_count": len(eligible_ids),
+        "covered_game_count": len(covered_ids),
+        "uncovered_game_count": len(uncovered_ids),
+        "rejection_reason_codes": sorted(rejection_codes),
+    }
+    snapshot["rejected_events"] = [{"reason": item["reason"]} for item in snapshot["rejected_events"]]
+    snapshot["rejected_quotes"] = [{"reason": item["reason"]} for item in snapshot["rejected_quotes"]]
+    snapshot["coverage"] = coverage
 
     snapshot.update(
         {
