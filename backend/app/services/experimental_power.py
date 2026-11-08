@@ -82,7 +82,8 @@ def load_experimental_power(*, season: int, week: int) -> dict:
             "analysisType": "EXPERIMENTAL_POWER_ONLY", "projectionReadiness": "NOT_ACTIVE",
             "artifactId": artifact["artifact_id"], "artifactHash": artifact["artifact_hash"],
             "modelVersion": artifact["model_version"], "powerThroughWeek": snapshot.through_week,
-            "scheduleVersion": artifact["schedule_version"], "personnelApproval": "NOT_EVALUATED",
+            "scheduleVersion": artifact["schedule_version"], "scheduleHash": artifact["schedule_hash"],
+            "personnelApproval": "NOT_EVALUATED",
             "probabilitiesComputed": False, "evComputed": False,
             "productionEligible": False, "officialEligible": False,
         }

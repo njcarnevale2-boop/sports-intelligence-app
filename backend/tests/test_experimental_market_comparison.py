@@ -262,6 +262,24 @@ def test_valid_capture_returns_sportsbook_spread_without_probability_or_ev(monke
     assert result["evComputed"] is False
 
 
+def test_real_candidate_power_response_matches_capture_schedule_identity(monkeypatch, tmp_path: Path):
+    from app.services.experimental_power import load_experimental_power
+    from research.week9_odds_snapshot_prepare import DEFAULT_CANDIDATE_ROOT, EXPECTED_BUNDLE_SHA256, EXPECTED_SCHEDULE_HASH
+
+    monkeypatch.setenv("SIA_EXPERIMENTAL_POWER_ENABLED", "true")
+    monkeypatch.setenv("SIA_POWER_CANDIDATE_ROOT", str(DEFAULT_CANDIDATE_ROOT))
+    monkeypatch.setenv("SIA_POWER_CANDIDATE_MANIFEST_SHA256", EXPECTED_BUNDLE_SHA256)
+    power = load_experimental_power(season=2026, week=9)
+    assert power["scheduleHash"] == EXPECTED_SCHEDULE_HASH
+    power["games"].sort(key=lambda game: game["kickoffUtc"] <= OBSERVED)
+    capture_dir = _capture_fixture(tmp_path, power)
+    _staging_env(monkeypatch, tmp_path, capture_dir)
+    monkeypatch.setattr("app.services.experimental_market_comparison._utc_now", lambda: NOW)
+    result = load_experimental_market_comparison(season=2026, week=9)
+    assert result["marketDataStatus"] == "AVAILABLE", result["marketDataReason"]
+    assert next(game for game in result["games"] if game["eventId"] == power["games"][0]["eventId"])["marketQuotes"]
+
+
 def test_partial_capture_returns_available_and_unavailable_games(monkeypatch, tmp_path: Path):
     power = _power_payload()
     power["games"].append({**power["games"][0], "eventId": "2026_09_BUF_MIN", "awayTeam": "BUF", "homeTeam": "MIN"})
